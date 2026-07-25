@@ -1,6 +1,6 @@
 # Architecture
 
-Version: 0.10.3
+Version: 0.11.0
 
 ```
 app.py                  Gradio UI — thin wiring over the stage functions (5 tabs)
@@ -54,9 +54,14 @@ studio/
                         in metadata.json; zip_dataset() bundles a folder into a .zip;
                         resolve_export_items() classifies candidates by caption sidecar
                         state (ready/empty/missing) — shared by the UI gate and the CLI
-  shotplan.py           Default shot plan (curated 24 shots: angles, poses, emotions,
-                        settings + outfit merged into each shot) + Shot model +
-                        apply_wardrobe() outfit injection + apply_prop_exclusion()
+  shotplan.py           Shot plans + Shot model. default_plan() = Character (curated 24:
+                        angles, poses, emotions, settings + outfit); concept_plan() =
+                        Concept (18: 10-angle turnaround, framing/scale, context — no
+                        emotion, no outfit). Same Shot model for both, so the ② table,
+                        YAML plans and the pipeline need no special case.
+                        plan_for_type()/plan_subject() are the single selection seam
+                        shared by UI + CLI (Style → empty plan). Plus apply_wardrobe()
+                        outfit injection + apply_prop_exclusion()
   wardrobe.py           Compositional unisex outfit pool for the outfit column
                         (colour x garment; one pool, no gender picker)
   plan_io.py            Save/load shot plans as YAML (user-editable prompt libraries)
@@ -69,9 +74,10 @@ studio/
                         sample_steps) and expects_tags (drives the caption/model
                         sanity check). _sample_prompt varies by TrainConfig.dataset_type;
                         caption_mismatch_warning() is the ④→⑤ advisory
-  user_config.py        Persist trainer install paths, last training settings, and the
-                        custom captioner endpoint (URL/model/key-env-NAME/spacing) to
-                        .cache/user_settings.json (no secrets; gitignored)
+  user_config.py        Persist trainer install paths, last training settings, the header
+                        dataset type, and the custom captioner endpoint (URL/model/
+                        key-env-NAME/spacing) to .cache/user_settings.json (no secrets;
+                        gitignored)
   update_check.py       Best-effort GitHub-release check (cached 24h) -> dismissible
                         UI banner when a newer version is published
   comfy_api.py          Thin ComfyUI HTTP client (upload, queue, poll, fetch, free)
@@ -150,7 +156,8 @@ change that violates one as incomplete.
 ```
 sources ─① preprocess→ runs/<stamp>-prepped/*_prepped.png
         └─ restore (comfyui models | basic lanczos) → isolate (SAM3) → [tighten crop] → resize
-prepped ─② generate→ runs/<stamp>-generated/<shot-id>.png   (one per plan row; Character only)
+prepped ─② generate→ runs/<stamp>-generated/<shot-id>.png   (one per plan row;
+                     Character 24-shot plan | Concept 18-shot plan; Style never generates)
 any folder ─③ caption→ *.txt sidecars (trigger-first; framing per dataset type; per-model template)
 folders(s) ─④ export→ datasets/<name>-dataset/NN.png + NN.txt + metadata.json (+ dataset_type,
                      caption_style) + metadata.jsonl
@@ -158,11 +165,14 @@ dataset ──⑤ train  → writes ai-toolkit config.yaml OR kohya/musubi datas
                      dataset folder + prints the run command (optional; nothing launched)
 ```
 
-Dataset types: **Character** (default; identity, generates a 24-shot set in ②), **Style** (an
-aesthetic — caption the *content*, not the look; bring your own images, start at ③), **Concept**
-(an object/action/idea — caption the *context*, not the fixed form; bring your own images).
-Style/Concept are Phase 1: caption framing + defaults only. Synthetic Style/Concept generation
-in ② is deliberately not built (Style never generates; Concept generation is a possible Phase 2).
+Dataset types: **Character** (default; identity, 24-shot set in ②), **Style** (an aesthetic —
+caption the *content*, not the look; bring your own images, start at ③), **Concept** (an
+object/action/idea — caption the *context*, not the fixed form; 18-shot object set in ②).
+The type is chosen once in the header, remembered between launches (`user_config`), and tunes
+caption framing, the ② shot plan and its character-only controls, the ① isolation default and
+SAM3 subject, the ⑤ sample prompt, and the ④ metadata. **Style never generates** — an aesthetic
+can't be synthesized from a reference the way an identity or an object can — so ②'s buttons are
+disabled for it in the UI and `cli.py build --dataset-type style` skips the stage outright.
 
 ## Gotchas (hard-won)
 
@@ -228,6 +238,29 @@ in ② is deliberately not built (Style never generates; Concept generation is a
   third-party node in a bundled workflow is a silent portability failure.
 - **Gemini refusals return no image part** — that's detected and reported as a refusal;
   retries don't help, so only transient errors are retried.
+- **The Concept plan reuses the character machinery, not a parallel one.** `concept_plan()` emits
+  the same `Shot` model with `emotion`/`outfit` left empty, so the ② dataframe, `plan_io` YAML
+  round-trip, `apply_wardrobe` (a no-op on an empty outfit) and `generate_shots` need no branch.
+  Its angle shots reuse the **attested** `<sks>` grammar from the character plan (view + camera
+  height + shot size) — the one addition, `front view high-angle`, mirrors the existing low-angle
+  shot. Do not invent grammar the Multiple-Angles LoRA was never trained on (a "top view" would
+  silently render a plain front view); a test pins the vocabulary. The non-angle kinds are
+  `framing` (scale: detail → wide) and `context` (where it sits / how it's used, including a hand
+  for scale), which keep LoRA strength at 0 like character pose shots.
+- **Character-only ② controls are hidden, not just ignored, for Concept.** Wardrobe
+  (`OUTFIT_SHOT_KINDS` includes `angle`, so the randomizer *would* dress an object's turnaround)
+  and prop exclusion (its clause literally says "show only the character and the clothing worn on
+  their body") are character ideas. The UI hides the outfit buttons + blurb and defaults
+  prop-exclusion off; the CLI's `_dress()` is a no-op with a note for non-character types and
+  `--exclude-props/--keep-props` defaults **per type** (a tri-state `None` option, since a typer
+  default can't depend on another flag). `--isolate/--no-isolate` is tri-state for the same reason.
+- **Local prompts interpolate the subject — nothing downstream formats them.** `_build_local_prompt`
+  used to emit a literal `{subject}` for pose/emotion shots; no caller ever called `.format()` on
+  it, so ComfyUI received the braces verbatim in 15 of the 24 character shots. It now takes the
+  subject, and `_subject_phrase()` strips a leading article so "the same the object" can't happen
+  (the cloud builder had that wart too). Settings are complete phrases ("in a warmly lit interior
+  room", "outdoors at golden hour"), so neither builder prefixes its own "in" — that produced
+  "in in a warmly lit interior room" / "in against a plain … background".
 - **Shot plan is a curated list, not a cartesian product.** Each of the 24 default
   shots combines a unique angle/pose/emotion/setting. Scene/lighting is folded into
   other shot kinds so the dataset is not skewed by many images of the same standing
@@ -302,6 +335,21 @@ in ② is deliberately not built (Style never generates; Concept generation is a
   so it is unchanged. Taggers (`wd_tagger`) ignore dataset type entirely — they read tags from
   image features, not from a framed instruction. This is the one place the global-mode exception
   to Design-rule #2 lives.
+- **One handler owns every type-dependent control, and it runs on load too.**
+  `on_dataset_type_change` returns updates for all 17 type-sensitive controls across ①–④ (isolation
+  default + SAM3 subject, ② guidance/labels/plan/buttons/wardrobe/props, ③ name+trigger tooltips and
+  the Style-only sparse toggle, ④ name label) and persists the choice. It is wired to both
+  `dataset_type.change` **and** `demo.load`, because the header seeds its value from
+  `user_config.get_dataset_type()` — without the load pass a remembered Style/Concept type would
+  arrive with Character defaults still applied. A test asserts the handler's return arity equals the
+  wired outputs list; Gradio would otherwise mismatch them silently. Style's ② table is
+  **empty**, not a character plan — 24 shots you can't generate is a lie the guidance note
+  would have to talk you out of.
+- **⑤ reconciles the dataset's recorded type with the header.** The header is a remembered global,
+  but ⑤ can be pointed at any folder, and the type drives the sample prompt. `dataset_type_note()`
+  reads `metadata.json` on Inspect and reports the recorded `dataset_type`/`caption_style`, warning
+  when it differs from the header. Advisory only, silent for datasets without metadata, and never
+  raises on a corrupt file.
 - **The tagger is a captioner backend, not a style.** `backend="wd_tagger"` runs an ONNX
   tagger that emits canonical tags directly from image features — so it *ignores* the
   prose/tags/e621 selector and the dataset-type framing, and both `caption_images` and the UI's
@@ -440,10 +488,11 @@ grouped by stage. Milestone versions are noted only where they explain a design 
 - **① Preprocess** — restore (ComfyUI models / basic Lanczos / auto), SAM3 subject isolation
   (built-in transformers or ComfyUI, with measured over-cut fixes), optional tighten-to-subject
   crop, resize to target long-side.
-- **② Generate & curate** — curated 24-shot plan (angles/poses/emotions/settings), Qwen-Image-Edit
-  2511 + Multiple-Angles LoRA (local) or Gemini (cloud), chained rear views, prop exclusion,
-  wardrobe randomizer, per-shot outfit column, save/load YAML plans, sharpness + exposure/contrast
-  advisories, per-model cost estimate. Character datasets only.
+- **② Generate & curate** — curated 24-shot Character plan (angles/poses/emotions/settings) or
+  18-shot Concept plan (turnaround/framing/context), Qwen-Image-Edit 2511 + Multiple-Angles LoRA
+  (local) or Gemini (cloud), chained rear views, prop exclusion, wardrobe randomizer, per-shot
+  outfit column, save/load YAML plans, sharpness + exposure/contrast advisories, per-model cost
+  estimate. Character + Concept; Style never generates (buttons disabled, with guidance).
 - **③ Caption** — prose / Danbooru-tag / e621-tag styles per call; local VLMs (Qwen3-VL, JoyCaption,
   NSFW), dedicated WD + Z3D ONNX taggers, Gemini/Groq/any-OpenAI-endpoint; dataset-type framing
   (character/style/concept + Style sparse mode); tagger thresholds, rating tag, keep-underscores;
@@ -466,11 +515,10 @@ Candidate to-dos that fit the project shape (standalone stages, per-stage local/
 heavy imports, honest output). Recorded when noticed; **not** built without a green light. Roughly
 ordered by benefit-to-cost.
 
-- **Concept & Style synthetic generation (② Phase 2).** Phase 1 ships Style/Concept via caption
-  framing + defaults (users bring their own images). Phase 2 would add a concept shot plan in
-  `shotplan.py` (angle + context variation, no emotions/wardrobe) so object concepts can be
-  multi-angled via the existing Qwen-Edit + angles LoRA. Style never generates. Touches the shot
-  model; needs its own tests.
+- **Concept plan tuning from real runs (②).** The 18-shot concept plan is verified by unit tests on
+  the rendered prompts, not by a generation run — the shot mix (10 angles / 4 framing / 4 context)
+  and the `front view high-angle` addition are reasoned, not measured. If object turnarounds come
+  back weak, retune the mix or drop the shots the LoRA can't do, and record the finding here.
 - **Face-similarity identity guard (② curate).** Flag generated shots that drift from the
   reference's identity. Genuinely useful for character LoRAs but needs a face-recognition
   dependency (InsightFace + onnxruntime); could be an optional extra like the gated SAM3 download.
@@ -488,6 +536,11 @@ ordered by benefit-to-cost.
 ## Deferred (with rationale)
 
 Considered and deliberately **not** pursued, with the reason each stays out.
+
+- **Synthetic generation for Style datasets (②).** Permanently out, not deferred. Generation copies a
+  *subject* from a reference; a style is the property you'd have to already have in order to copy it,
+  so the honest workflow is to collect images that share the look and start at ③. ② is disabled for
+  Style rather than quietly producing character shots.
 
 - **In-app / cloud training launch, Test Studio / checkpoint ranking, Merge Lab.** These cross the
   "never launch training" line this tool holds on purpose — launching is fragile across trainer

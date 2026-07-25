@@ -15,7 +15,7 @@ import typer
 
 from studio import pipeline
 from studio.config import CAPTIONERS_BY_KEY, list_images, settings
-from studio.shotplan import default_plan
+from studio.shotplan import plan_for_type
 
 app = typer.Typer(add_completion=False, help=__doc__)
 
@@ -66,10 +66,43 @@ def _check_dataset_type(dataset_type: str) -> str:
     return dt
 
 
-def _dress(shots: list) -> list:
-    """Fill angle/pose shots with random unisex outfits (close-ups stay blank)."""
+def _plan_for(dataset_type: str, name: str) -> list:
+    """The shot plan for this dataset type — the same choice the ② tab makes.
+
+    Style never generates: an aesthetic can't be synthesized from a reference,
+    so we say so and exit instead of silently producing a character turnaround
+    (which, on the cloud engine, would also bill the user for it).
+    """
+    if dataset_type == "style":
+        raise typer.BadParameter(
+            "Style datasets have no synthetic generation — collect your own images "
+            "that share the look, then run `caption` and `export` on that folder.")
+    return plan_for_type(dataset_type, name)
+
+
+def _props_default(exclude_props: bool | None, dataset_type: str) -> bool:
+    """Resolve --exclude-props/--keep-props when neither was passed.
+
+    The exclusion clause names bags, held objects and clothing, so it only makes
+    sense for a character; a concept dataset defaults to keeping props.
+    """
+    if exclude_props is None:
+        return dataset_type == "character"
+    return exclude_props
+
+
+def _dress(shots: list, dataset_type: str = "character") -> list:
+    """Fill angle/pose shots with random unisex outfits (close-ups stay blank).
+
+    Wardrobe is a character-only idea — an object has no clothing — so it is a
+    no-op (with a note) for any other dataset type.
+    """
     from studio.wardrobe import OUTFIT_SHOT_KINDS, random_outfits
 
+    if dataset_type != "character":
+        typer.echo(f"Skipping outfit randomization: not applicable to a "
+                   f"{dataset_type} dataset.")
+        return shots
     targets = [s for s in shots if s.kind in OUTFIT_SHOT_KINDS]
     outfits = random_outfits(len(targets))
     dressed = dict(zip((s.id for s in targets), outfits))
@@ -109,33 +142,39 @@ def generate(
     references: list[Path] = typer.Argument(..., exists=True,
                                             help="Reference image files and/or folders"),
     out: Path = typer.Option(None, help="Output folder (default: new runs/ subfolder)"),
-    name: str = typer.Option("", help="Character name used in prompts"),
+    name: str = typer.Option("", help="Character/concept name used in prompts"),
+    dataset_type: str = typer.Option(
+        "character", "--dataset-type",
+        help="character (24-shot set) | concept (18-shot object set); style does not generate"),
     engine: str = typer.Option(settings.default_engine, help="gemini (cloud) or comfyui (local)"),
     cloud_model: str = typer.Option("", help=f"Cloud image model (default {settings.gemini_image_model})"),
     max_shots: int = typer.Option(0, help="Limit number of shots (0 = full plan)"),
     isolate_angles: bool = typer.Option(False, help="Isolate generated angle shots onto white"),
-    subject_prompt: str = typer.Option("character", help="SAM3 prompt if isolating"),
+    subject_prompt: str = typer.Option(
+        "character", help="SAM3 prompt if isolating (name the object for a concept)"),
     exclude_prompt: str = typer.Option("", help="Props to remove when isolating"),
     exclude_props: bool = typer.Option(
-        True, "--exclude-props/--keep-props",
-        help="Ask the generator to omit bags/held objects from the reference"),
+        None, "--exclude-props/--keep-props",
+        help="Ask the generator to omit bags/held objects from the reference "
+             "(default: on for character, off for concept — the clause is character-worded)"),
     randomize_outfits: bool = typer.Option(
-        False, help="Dress angle/pose shots in random unisex outfits"),
+        False, help="Dress angle/pose shots in random unisex outfits (character only)"),
     front: bool = typer.Option(False, help="Jump ComfyUI's pending queue"),
 ):
     """Generate the shot set from reference image(s) (standalone)."""
+    dtype = _check_dataset_type(dataset_type)
     out = out or pipeline.new_run_dir("generated")
-    shots = default_plan(subject=f"character {name}" if name else "the character")
+    shots = _plan_for(dtype, name)
     if max_shots:
         shots = shots[:max_shots]
     if randomize_outfits:
-        shots = _dress(shots)
+        shots = _dress(shots, dtype)
     _echo_cloud_estimate(engine, cloud_model, len(shots))
     results = pipeline.generate_shots(
         _expand(references), shots, engine, out, cloud_model=cloud_model,
         isolate_angles=isolate_angles, subject_prompt=subject_prompt,
-        exclude_prompt=exclude_prompt, exclude_props=exclude_props, front=front,
-        progress=typer.echo)
+        exclude_prompt=exclude_prompt, exclude_props=_props_default(exclude_props, dtype),
+        front=front, progress=typer.echo)
     if not any(r.path for r in results):
         raise typer.Exit(1)
     typer.echo(f"Done: {out}")
@@ -274,7 +313,7 @@ def export(
 @app.command()
 def build(
     images: list[Path] = typer.Argument(..., exists=True, readable=True),
-    name: str = typer.Option("", help="Character name used in captions"),
+    name: str = typer.Option("", help="Character/concept name used in prompts + captions"),
     trigger: str = typer.Option("", help="LoRA trigger word placed first in every caption"),
     engine: str = typer.Option(settings.default_engine, help="gemini (cloud) or comfyui (local)"),
     captioner: str = typer.Option(settings.default_captioner,
@@ -284,7 +323,8 @@ def build(
         help="prose (natural language), tags (Danbooru: SDXL/Illustrious) or e621 (furry/Pony)"),
     dataset_type: str = typer.Option(
         "character", "--dataset-type",
-        help="character | style | concept — frames captions + recorded in metadata"),
+        help="character | style | concept — picks the shot plan (style skips generation), "
+             "frames captions, and is recorded in metadata"),
     sparse: bool = typer.Option(
         False, "--sparse", help="Style datasets only: trigger + a few words of content"),
     target: int = typer.Option(settings.target_long_side, help="Long-side resolution"),
@@ -292,8 +332,10 @@ def build(
     restore: bool = typer.Option(None, "--restore/--no-restore",
                                  help="Force restoration on/off (default: auto)"),
     max_shots: int = typer.Option(0, help="Limit number of shots (0 = full plan)"),
-    isolate: bool = typer.Option(True, "--isolate/--no-isolate",
-                                 help="Cut out subject, drop background/props"),
+    isolate: bool = typer.Option(
+        None, "--isolate/--no-isolate",
+        help="Cut out subject, drop background/props (default: on, except style — "
+             "a style is whole-image)"),
     tighten: bool = typer.Option(
         False, "--tighten/--no-tighten",
         help="Crop to the subject's bounding box after isolation (less white padding)"),
@@ -301,10 +343,11 @@ def build(
     exclude_prompt: str = typer.Option("", help="SAM3 prompt for held props to remove"),
     cloud_model: str = typer.Option("", help=f"Cloud image model (default {settings.gemini_image_model})"),
     exclude_props: bool = typer.Option(
-        True, "--exclude-props/--keep-props",
-        help="Ask the generator to omit bags/held objects from the reference"),
+        None, "--exclude-props/--keep-props",
+        help="Ask the generator to omit bags/held objects from the reference "
+             "(default: on for character, off for concept)"),
     randomize_outfits: bool = typer.Option(
-        False, help="Dress angle/pose shots in random unisex outfits"),
+        False, help="Dress angle/pose shots in random unisex outfits (character only)"),
     zip_: bool = typer.Option(False, "--zip", help="Also write a .zip of the dataset"),
     prefix: str = typer.Option(
         "", help="Fixed text added before every caption (e.g. Pony 'score_9, score_8_up')"),
@@ -322,26 +365,38 @@ def build(
     run_dir = pipeline.new_run_dir(name or trigger)
     typer.echo(f"Run dir: {run_dir}")
 
+    # Isolation defaults follow the dataset type (a style is whole-image), the
+    # same rule the ① tab applies when the header type changes.
+    do_isolate = (dtype != "style") if isolate is None else isolate
     reports = pipeline.preprocess_sources(
         _expand(images), run_dir / "prepped", target=target, force_restore=restore,
-        isolate=isolate, subject_prompt=subject_prompt, exclude_prompt=exclude_prompt,
+        isolate=do_isolate, subject_prompt=subject_prompt, exclude_prompt=exclude_prompt,
         tighten_crop=tighten, progress=typer.echo)
 
-    shots = default_plan(subject=f"character {name}" if name else "the character")
-    if max_shots:
-        shots = shots[:max_shots]
-    if randomize_outfits:
-        shots = _dress(shots)
-    _echo_cloud_estimate(engine, cloud_model, len(shots))
+    # Style has no synthetic generation — go straight from the preprocessed
+    # sources to captioning instead of running (and billing) a character
+    # turnaround the user can't use.
+    results = []
+    kept: list[Path] = []
+    if dtype == "style":
+        typer.echo("Style dataset: skipping ② generation — captioning your own images.")
+    else:
+        shots = _plan_for(dtype, name)
+        if max_shots:
+            shots = shots[:max_shots]
+        if randomize_outfits:
+            shots = _dress(shots, dtype)
+        _echo_cloud_estimate(engine, cloud_model, len(shots))
 
-    results = pipeline.generate_shots(
-        [r.output for r in reports], shots, engine, run_dir / "generated",
-        cloud_model=cloud_model, isolate_angles=isolate, subject_prompt=subject_prompt,
-        exclude_prompt=exclude_prompt, exclude_props=exclude_props, progress=typer.echo)
-    kept = [r.path for r in results if r.path]
-    if not kept:
-        typer.echo("No shots succeeded; aborting before captioning.")
-        raise typer.Exit(1)
+        results = pipeline.generate_shots(
+            [r.output for r in reports], shots, engine, run_dir / "generated",
+            cloud_model=cloud_model, isolate_angles=do_isolate, subject_prompt=subject_prompt,
+            exclude_prompt=exclude_prompt,
+            exclude_props=_props_default(exclude_props, dtype), progress=typer.echo)
+        kept = [r.path for r in results if r.path]
+        if not kept:
+            typer.echo("No shots succeeded; aborting before captioning.")
+            raise typer.Exit(1)
 
     all_images = [r.output for r in reports] + kept
     items = caption_images(all_images, captioner, name, trigger, progress=typer.echo,
@@ -351,12 +406,14 @@ def build(
         "character_name": name,
         "trigger": trigger,
         "dataset_type": dtype,
-        "engine": engine,
         "captioner": captioner,
         "caption_style": style,
         "sources": [str(s) for s in images],
-        "shots": [{"id": r.shot.id, "seed": r.seed, "error": r.error} for r in results],
     }
+    if results:  # generation ran (character/concept)
+        metadata["engine"] = engine
+        metadata["shots"] = [{"id": r.shot.id, "seed": r.seed, "error": r.error}
+                             for r in results]
     ds = package_dataset(items, output_root, name, trigger, metadata)
     if zip_:
         from studio.package import zip_dataset

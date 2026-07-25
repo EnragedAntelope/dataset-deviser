@@ -2,8 +2,9 @@
 
 **Turn a character, style, or concept into a ready-to-train LoRA dataset.** For a **character**,
 one reference image becomes ~24 consistent shots across camera angles, poses, emotions and
-settings. For a **style** or **concept**, bring your own images and get smart, correctly-framed
-captions. Either way the output is a flat folder that drops straight into any trainer
+settings; for a **concept**, 18 shots around one object — a turnaround plus framing and context.
+For a **style**, bring your own images and get smart, correctly-framed captions. Either way the
+output is a flat folder that drops straight into any trainer
 (**ai-toolkit / kohya / OneTrainer / …**), plus a ready-to-edit **training config** for
 ai-toolkit, kohya or musubi.
 
@@ -11,10 +12,10 @@ ai-toolkit, kohya or musubi.
 
 ## Why use it
 
-- **One reference → a full dataset.** No hunting for 24 angles of the same character — generate
-  them, consistently, from a single image.
-- **Character, style *or* concept.** Pick the **Dataset type** in the header; captions and
-  defaults retune so the trigger learns an identity, an aesthetic, or an object/idea.
+- **One reference → a full dataset.** No hunting for 24 angles of the same character (or 18 of
+  the same object) — generate them, consistently, from a single image.
+- **Character, style *or* concept.** Pick the **Dataset type** in the header; the shot plan,
+  captions and defaults retune so the trigger learns an identity, an aesthetic, or an object/idea.
 - **Local *or* cloud, per stage.** Every step has a free/private local path **and** a no-GPU
   cloud path. Mix and match: generate on the cloud, caption on your GPU, or the reverse.
 - **Every stage is standalone.** Point any tab (or CLI subcommand) at any folder — preprocess
@@ -35,25 +36,28 @@ Run them in order (each step auto-fills the next) or jump straight to the one yo
 |---|---|---|
 | ① Restore / upscale | ComfyUI models, or basic Lanczos | — |
 | ① Subject isolation | **Built-in SAM3** (no ComfyUI) or ComfyUI SAM3 | — |
-| ② Generate shots | ComfyUI: Qwen Image Edit 2511 + Multiple-Angles LoRA | Gemini (Nano Banana) |
+| ② Generate shots *(character + concept)* | ComfyUI: Qwen Image Edit 2511 + Multiple-Angles LoRA | Gemini (Nano Banana) |
 | ③ Caption | Qwen3-VL-8B, JoyCaption, NSFW finetune, **WD + e621 taggers**, LM Studio / Ollama / any OpenAI endpoint | Gemini Flash, Groq free tier |
 | ④ Export | always local (+ optional **.zip** and **Hugging Face** publish) | — |
 | ⑤ Train config | ai-toolkit (incl. SDXL) / **kohya sd-scripts** / musubi-tuner | — |
 
 ## Dataset types
 
-Pick one in the header — it retunes caption framing, the ① isolation default, and the ⑤ sample
-prompt. The trigger word is what the LoRA learns; captions describe everything *except* it.
+Pick one in the header (it's remembered next launch) — it retunes the ② shot plan, caption framing,
+the ① isolation default, and the ⑤ sample prompt. The trigger word is what the LoRA learns;
+captions describe everything *except* it.
 
 | Type | Trigger learns | Captions describe | ② Generate |
 |---|---|---|---|
-| **Character** *(default)* | an identity | what *varies* (pose, angle, setting) | ✅ 24-shot set from one image |
-| **Style** | an aesthetic / look | the image **content**, not the style/medium | bring your own images |
-| **Concept** | an object, action or idea | the **context**, not the concept's fixed form | bring your own images |
+| **Character** *(default)* | an identity | what *varies* (pose, angle, setting) | ✅ 24 shots: angles, poses, expressions |
+| **Style** | an aesthetic / look | the image **content**, not the style/medium | ✋ bring your own images |
+| **Concept** | an object, action or idea | the **context**, not the concept's fixed form | ✅ 18 shots: turnaround, framing, context |
 
 Style adds an optional **sparse captions** toggle (trigger + a few words) for a stronger style at
-the risk of the trigger absorbing content. Style/Concept skip ② — collect your own images and
-start at **③ Caption**.
+the risk of the trigger absorbing content. Style never generates — a look can't be copied off a
+reference the way an identity or an object can, so collect images that share it and start at
+**③ Caption**. Concept generation suits a solid object you have a clean reference of; for an
+action or an abstract idea, bring your own images too.
 
 > 💡 **Need source images?** My separate **[YouTube Screenshot Extractor](https://github.com/EnragedAntelope/youtube-screenshot-extractor)**
 > pulls high-quality frames from YouTube **and 1000+ other sites (and local video files)** — with
@@ -137,6 +141,7 @@ Every stage is a standalone subcommand; `--help` shows all options.
 ```bash
 python cli.py preprocess ./sources --out ./prepped
 python cli.py generate ./prepped --name "Sy Snootles" --engine comfyui --randomize-outfits
+python cli.py generate ./prepped --name "brass compass" --dataset-type concept  # 18-shot object set
 python cli.py caption ./folder --trigger sysnootles                       # prose sidecars
 python cli.py caption ./folder --trigger sysnootles --caption-style tags  # Danbooru tags
 python cli.py caption ./folder --trigger mystyle --dataset-type style     # style-framed
@@ -144,6 +149,7 @@ python cli.py caption ./folder --captioner wd-eva02 --drop-tags "watermark, sign
 python cli.py lint ./folder --trigger sysnootles                          # caption health report
 python cli.py export ./prepped ./generated --name "Sy Snootles" --trigger sysnootles --zip
 python cli.py build source.png --name "Sy Snootles" --trigger sysnootles  # all four stages
+python cli.py build ./my-style-shots --trigger mystyle --dataset-type style  # skips ② entirely
 ```
 
 ## API keys (cloud options only)

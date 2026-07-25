@@ -41,7 +41,7 @@ from studio.config import (
     load_caption_model_cache,
     settings,
 )
-from studio.shotplan import Shot, default_plan
+from studio.shotplan import Shot, plan_for_type
 from studio.trainer_configs import TRAINER_MODELS, TRAINERS
 
 TRAINER_CHOICES = [(label, key) for key, label in TRAINERS.items()]
@@ -81,34 +81,81 @@ DATASET_TYPE_CHOICES = [
 _YT_TOOL = "https://github.com/EnragedAntelope/youtube-screenshot-extractor"
 _TYPE_GUIDANCE = {
     "character": "",
-    "style": (f"**Style dataset** — ② synthetic generation is Character-only. Collect your "
-              f"own images that share the look (a [YouTube Screenshot Extractor]({_YT_TOOL}) "
-              "can pull high-quality frames from video), then go straight to **③ Caption → "
-              "④ Export → ⑤ Train**. Caption the *content*, not the style — the trigger learns "
-              "the look. Isolation defaults **off** (a style is whole-image)."),
-    "concept": (f"**Concept dataset** — ② synthetic generation is Character-only for now. Bring "
-                f"your own images of the object/action/idea (a [YouTube Screenshot Extractor]"
-                f"({_YT_TOOL}) helps), then go to **③ Caption**. Caption the *context*, not the "
-                "concept's fixed form. Isolation defaults **on** (good for objects); turn it off "
-                "for scenes/actions."),
+    "style": (f"**Style dataset — ② does not apply.** A style can't be synthesized from a "
+              f"reference the way an identity or an object can, so generation is disabled "
+              f"here. Collect your own images that share the look (a [YouTube Screenshot "
+              f"Extractor]({_YT_TOOL}) can pull high-quality frames from video), then go "
+              "straight to **③ Caption → ④ Export → ⑤ Train**. Caption the *content*, not the "
+              "style — the trigger learns the look. Isolation defaults **off** (a style is "
+              "whole-image)."),
+    "concept": ("**Concept dataset** — the plan below is an 18-shot *object* set: a "
+                "turnaround (angles), framing/scale variation, and context shots. It works "
+                "best for a **solid object** you have a clean reference of. For an action or "
+                "an abstract idea, bring your own images instead (a [YouTube Screenshot "
+                f"Extractor]({_YT_TOOL}) helps) and start at **③ Caption** — every row here "
+                "is editable, so you can also prune or rewrite shots. Isolation defaults "
+                "**on** with subject `object`; change it to name your thing (e.g. `radio`, "
+                "`sword`) or turn it off for scenes."),
 }
 _TRIGGER_INFO = {
     "character": "Unique token the LoRA learns as the subject. Placed first in every caption.",
     "style": "Unique token the LoRA learns as the STYLE/aesthetic. Placed first in every caption.",
     "concept": "Unique token the LoRA learns as the CONCEPT. Placed first in every caption.",
 }
+# Per-type wording for the "who/what is this dataset about" fields (②/③/④).
+_NAME_LABEL = {"character": "Character name", "style": "Style name",
+               "concept": "Concept name"}
+_NAME_INFO = {
+    "character": "Used in prose captions; taggers ignore it.",
+    "style": "Names the dataset only — Style captions are trigger-first and never "
+             "mention a name.",
+    "concept": "Names the dataset only — Concept captions are trigger-first and never "
+               "mention a name.",
+}
+# What SAM3 should keep when isolating, per type.
+_ISOLATE_SUBJECT = {"character": "character", "style": "character", "concept": "object"}
 
 
-def on_dataset_type_change(dataset_type: str):
-    """Retune the type-dependent controls: ① isolation default, ② guidance copy,
-    ③ trigger tooltip, and the Style-only sparse-caption toggle. The Character UI
-    is byte-identical to before when type=Character."""
-    guidance = _TYPE_GUIDANCE.get(dataset_type, "")
+def on_dataset_type_change(dataset_type: str, gen_name: str = ""):
+    """Retune every type-dependent control across the tabs, and remember the
+    choice for the next launch.
+
+    Character keeps exactly the UI it had before dataset types existed. Style
+    disables ② (a style cannot be generated); Concept swaps in the object shot
+    plan and drops the character-only controls (wardrobe, prop exclusion).
+    """
+    from studio import user_config
+
+    user_config.set_dataset_type(dataset_type)
+    is_concept = dataset_type == "concept"
+    is_style = dataset_type == "style"
+    label = _NAME_LABEL.get(dataset_type, _NAME_LABEL["character"])
+    subject_kw = _ISOLATE_SUBJECT.get(dataset_type, "character")
     return (
-        gr.Checkbox(value=(dataset_type != "style")),  # ① isolate default
-        gr.Markdown(value=guidance, visible=bool(guidance)),  # ② guidance
+        # ① preprocess
+        gr.Checkbox(value=not is_style),                       # isolate default
+        gr.Textbox(value=subject_kw),                          # SAM3 subject
+        # ② generate & curate
+        gr.Markdown(value=_TYPE_GUIDANCE.get(dataset_type, ""),
+                    visible=bool(_TYPE_GUIDANCE.get(dataset_type, ""))),
+        gr.Textbox(label=f"{label} (used in prompts)"),        # gen_name
+        gr.Button(value=f"Rebuild default plan with {label.lower()}",
+                  interactive=not is_style),                   # refresh plan
+        _plan_table(dataset_type, gen_name),                   # shot plan table
+        gr.Button(interactive=not is_style),                   # generate
+        gr.Button(interactive=not is_style),                   # regenerate
+        gr.Button(visible=not (is_style or is_concept)),       # randomize outfits
+        gr.Button(visible=not (is_style or is_concept)),       # clear outfits
+        gr.Markdown(visible=not (is_style or is_concept)),     # wardrobe blurb
+        gr.Checkbox(value=not is_concept),                     # exclude props
+        gr.Textbox(value=subject_kw),                          # ② isolation subject
+        # ③ caption
+        gr.Textbox(label=f"{label} (optional)",
+                   info=_NAME_INFO.get(dataset_type, _NAME_INFO["character"])),
         gr.Textbox(info=_TRIGGER_INFO.get(dataset_type, _TRIGGER_INFO["character"])),
-        gr.Checkbox(visible=(dataset_type == "style")),  # ③ sparse (style only)
+        gr.Checkbox(visible=is_style),                         # sparse (style only)
+        # ④ export
+        gr.Textbox(label=label),                               # exp_name
     )
 
 
@@ -177,14 +224,15 @@ PLAN_COLUMN_WIDTHS = ["110px", "70px", "110px", "200px", "220px",
                       "260px", "260px", "100px"]
 
 
+def _plan_table(dataset_type: str, name: str = "") -> pd.DataFrame:
+    """The ② table for a dataset type (empty for Style, which never generates)."""
+    return _shots_to_df(plan_for_type(dataset_type, name))
+
+
 def _shots_to_df(shots: list[Shot]) -> pd.DataFrame:
     """Single place that builds the plan table, so column order can't drift
     between the default plan and a loaded one."""
     return pd.DataFrame([s.model_dump() for s in shots], columns=PLAN_COLUMNS)
-
-
-def _plan_df(subject: str) -> pd.DataFrame:
-    return _shots_to_df(default_plan(subject=subject or "the character"))
 
 
 def randomize_outfits(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
@@ -659,8 +707,8 @@ def _fill_if_empty(current: str, incoming: str) -> str:
     return current.strip() or incoming
 
 
-def refresh_plan(name: str) -> pd.DataFrame:
-    return _plan_df(f"character {name}" if name else "the character")
+def refresh_plan(name: str, dataset_type: str = "character") -> pd.DataFrame:
+    return _plan_table(dataset_type, name)
 
 
 def do_save_plan(plan_df: pd.DataFrame, plan_name: str) -> str:
@@ -740,7 +788,39 @@ def save_trainer_path(trainer: str, path: str) -> str:
     return f"✅ Saved {trainer} install path: {path.strip() or '(cleared)'}"
 
 
-def inspect_dataset(dataset_dir: str) -> tuple[str, gr.Number]:
+def dataset_type_note(ds: Path, selected_type: str) -> str:
+    """Advisory line reconciling a dataset's recorded type with the header pick.
+
+    ④ writes `dataset_type` into `metadata.json`; the header selector resets to
+    the remembered type, which may not be the type of the folder you point ⑤ at.
+    The type drives the sample prompt, so a silent mismatch is worth surfacing.
+    Never blocks, and stays quiet for datasets with no/older metadata.
+    """
+    import json
+
+    meta_file = ds / "metadata.json"
+    if not meta_file.is_file():
+        return ""
+    try:
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(meta, dict):
+        return ""
+    recorded = str(meta.get("dataset_type") or "")
+    style = str(meta.get("caption_style") or "")
+    if not recorded:
+        return ""
+    line = f"\n\nRecorded in `metadata.json`: **{recorded}** dataset"
+    line += f", **{style}** captions." if style else "."
+    if recorded != selected_type:
+        line += (f" ⚠️ The header **Dataset type** is set to **{selected_type}** — the "
+                 f"sample prompt in the generated config follows the header. Switch it to "
+                 f"**{recorded}** if this is that dataset.")
+    return line
+
+
+def inspect_dataset(dataset_dir: str, dataset_type: str = "character") -> tuple[str, gr.Number]:
     """Read the dataset and suggest a step count derived from its image count."""
     from studio.dataset_stats import inspect
 
@@ -752,7 +832,8 @@ def inspect_dataset(dataset_dir: str) -> tuple[str, gr.Number]:
     stats = inspect(ds)
     if not stats.n_images:
         return f"⚠️ No images in {ds}", gr.Number()
-    return stats.summary(), gr.Number(value=stats.suggested_steps)
+    return stats.summary() + dataset_type_note(ds, dataset_type), \
+        gr.Number(value=stats.suggested_steps)
 
 
 def do_generate_train_config(trainer: str, model_key: str, dataset_dir: str,
@@ -857,8 +938,8 @@ with gr.Blocks(title="LoRA Dataset Studio") as demo:
         "Character, style, or concept → ready-to-train LoRA dataset. Every tab works standalone "
         "on any folder — or run them in order and each step auto-fills the next: "
         "**① Preprocess → ② Generate & curate → ③ Caption → ④ Export → ⑤ Train config**. "
-        "Pick the **Dataset type** below (Character generates a multi-angle set in ②; "
-        "Style & Concept bring their own images and start at ③)."
+        "Pick the **Dataset type** below (Character and Concept generate a shot set in ②; "
+        "Style brings its own images and starts at ③)."
     )
     gr.Markdown(
         "> ⚠️ **Cloud options cost money and you are responsible for what you make.** "
@@ -889,11 +970,14 @@ with gr.Blocks(title="LoRA Dataset Studio") as demo:
             "- This software is provided under the MIT License **with no warranty**; the authors are "
             "not liable for your use of it, for provider charges, or for content you create with it."
         )
+    # Seeded from the last session (a user usually builds several datasets of the
+    # same type); demo.load re-applies the dependent defaults below on launch.
     dataset_type = gr.Radio(
-        DATASET_TYPE_CHOICES, value="character", label="Dataset type",
-        info="What the LoRA learns. Character generates a multi-angle set in ②; "
-             "Style & Concept bring their own images and start at ③ Caption. Tunes "
-             "caption framing, the ① isolation default, and the ⑤ sample prompt.")
+        DATASET_TYPE_CHOICES, value=_uc_boot.get_dataset_type(), label="Dataset type",
+        info="What the LoRA learns, remembered between launches. Character and "
+             "Concept generate a shot set in ②; Style brings its own images and starts "
+             "at ③ Caption. Tunes caption framing, the ② shot plan, the ① isolation "
+             "default, and the ⑤ sample prompt.")
     results_state = gr.State([])
 
     with gr.Tabs():
@@ -930,7 +1014,8 @@ with gr.Blocks(title="LoRA Dataset Studio") as demo:
                     subject_prompt = gr.Textbox(label="Subject to keep (SAM3 prompt)",
                                                 value="character",
                                                 info="What SAM3 keeps — e.g. 'character', "
-                                                     "'person', 'robot'.")
+                                                     "'person', 'robot'. Name the thing itself "
+                                                     "for a Concept dataset ('radio', 'sword').")
                     exclude_prompt = gr.Textbox(
                         label="Objects to remove (props the subject holds/touches)",
                         placeholder="microphone, microphone stand",
@@ -946,9 +1031,11 @@ with gr.Blocks(title="LoRA Dataset Studio") as demo:
                     prep_gallery = gr.Gallery(label="Preprocessed output", columns=4, height=340)
 
         with gr.Tab("② Generate & Curate"):
-            gr.Markdown("Turn reference image(s) into a full shot set. Each plan row becomes "
-                        "one generated image; `chain_from` makes rear views build on a "
-                        "generated side view.")
+            gr.Markdown("Turn reference image(s) into a full shot set — 24 shots for a "
+                        "**Character**, 18 for a **Concept** (turnaround + framing + "
+                        "context). Each plan row becomes one generated image; `chain_from` "
+                        "makes rear views build on a generated side view. **Style** datasets "
+                        "don't generate — see ③.")
             # Type-specific guidance (Style/Concept collect their own images); hidden
             # for Character. Updated by the header dataset-type selector.
             gen_type_note = gr.Markdown(visible=False)
@@ -980,7 +1067,8 @@ with gr.Blocks(title="LoRA Dataset Studio") as demo:
                         info="Asks the generator to drop bags, held objects and "
                              "accessories carried in your reference, so they don't get "
                              "baked into every dataset image. Isolating the source in ① "
-                             "is the more reliable fix.")
+                             "is the more reliable fix. Character-oriented wording — off "
+                             "by default for Concept datasets.")
                     gen_isolate = gr.Checkbox(value=False,
                                               label="Isolate generated angle shots (white background)",
                                               info="Cut generated angle shots onto white too "
@@ -990,7 +1078,9 @@ with gr.Blocks(title="LoRA Dataset Studio") as demo:
                                                   label="Isolation backend",
                                                   info="Built-in SAM3 needs no ComfyUI.")
                     gen_subject = gr.Textbox(label="Subject prompt for isolation", value="character",
-                                             info="What to keep when isolating generated shots.")
+                                             info="What to keep when isolating generated shots "
+                                                  "— e.g. 'character', 'robot', or the object "
+                                                  "itself for a Concept dataset.")
                     gen_exclude = gr.Textbox(
                         label="Objects to remove when isolating (auto-filled by ①)",
                         placeholder="backpack, walkie talkie",
@@ -1005,10 +1095,10 @@ with gr.Blocks(title="LoRA Dataset Studio") as demo:
                     # shots are on screen at once. Unwrapped, the plan is
                     # scannable and the short columns (outfit/emotion) are fully
                     # readable; click any cell to see or edit its full text.
-                    plan = gr.Dataframe(value=_plan_df("the character"), label="Shot plan",
+                    plan = gr.Dataframe(value=_plan_table("character"), label="Shot plan",
                                         interactive=True, wrap=False,
                                         column_widths=PLAN_COLUMN_WIDTHS, max_height=520)
-                    gr.Markdown(
+                    wardrobe_note = gr.Markdown(
                         "The **outfit** column varies wardrobe without breaking identity — "
                         "leave blank to keep the reference's clothing. If your source images "
                         "all show the same clothes, randomizing here stops the LoRA learning "
@@ -1282,11 +1372,18 @@ with gr.Blocks(title="LoRA Dataset Studio") as demo:
            .then(lambda s, e: (s, e), [subject_prompt, exclude_prompt],
                  [gen_subject, gen_exclude])
 
-    # Header dataset-type selector retunes type-dependent controls across tabs.
-    dataset_type.change(on_dataset_type_change, [dataset_type],
-                        [isolate, gen_type_note, cap_trigger, cap_sparse])
+    # Header dataset-type selector retunes type-dependent controls across tabs
+    # (and persists the choice). demo.load applies the same handler on launch so
+    # a remembered Style/Concept type arrives with its defaults already set.
+    type_outputs = [isolate, subject_prompt,
+                    gen_type_note, gen_name, refresh, plan, btn_gen, btn_regen,
+                    btn_outfits, btn_outfits_clear, wardrobe_note,
+                    gen_exclude_props, gen_subject,
+                    cap_name, cap_trigger, cap_sparse, exp_name]
+    dataset_type.change(on_dataset_type_change, [dataset_type, gen_name], type_outputs)
+    demo.load(on_dataset_type_change, [dataset_type, gen_name], type_outputs)
 
-    refresh.click(refresh_plan, [gen_name], [plan])
+    refresh.click(refresh_plan, [gen_name, dataset_type], [plan])
     btn_outfits.click(randomize_outfits, [plan], [plan, plan_note])
     btn_outfits_clear.click(clear_outfits, [plan], [plan, plan_note])
     btn_save_plan.click(do_save_plan, [plan, plan_name], [plan_note])
@@ -1359,7 +1456,7 @@ with gr.Blocks(title="LoRA Dataset Studio") as demo:
     btn_export.click(do_export,
                      [exp_select, exp_name, exp_trigger, output_root, exp_zip, dataset_type],
                      [exp_result, tr_dataset, exp_ds_dir]) \
-              .then(inspect_dataset, [tr_dataset], [tr_stats, tr_steps]) \
+              .then(inspect_dataset, [tr_dataset, dataset_type], [tr_stats, tr_steps]) \
               .then(_fill_if_empty, [tr_name, exp_name], [tr_name]) \
               .then(_fill_if_empty, [tr_trigger, exp_trigger], [tr_trigger])
     btn_publish_hf.click(do_publish_hf, [exp_ds_dir, exp_hf_repo, exp_hf_private],
@@ -1370,7 +1467,7 @@ with gr.Blocks(title="LoRA Dataset Studio") as demo:
                       [tr_model, tr_path] + tr_hparams)
     tr_model.change(on_model_change, [tr_trainer, tr_model], tr_hparams)
     tr_save_path.click(save_trainer_path, [tr_trainer, tr_path], [tr_path_note])
-    btn_inspect.click(inspect_dataset, [tr_dataset], [tr_stats, tr_steps])
+    btn_inspect.click(inspect_dataset, [tr_dataset, dataset_type], [tr_stats, tr_steps])
     tr_gen.click(do_generate_train_config,
                  [tr_trainer, tr_model, tr_dataset, tr_path, tr_name, tr_trigger]
                  + tr_hparams + [tr_multi_res, dataset_type],

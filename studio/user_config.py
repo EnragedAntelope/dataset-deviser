@@ -48,6 +48,28 @@ def set_trainer_path(trainer: str, path: str) -> None:
     save_user_config({"trainer_paths": paths})
 
 
+def get_dataset_type() -> str:
+    """The header Dataset type from the last session ('character' if unset/bad).
+
+    A dataset is one type and users typically build several in a row, so making
+    them re-pick Style/Concept on every launch is pure friction. Validated on
+    read so a hand-edited file can't put the UI in an unknown state.
+    """
+    from studio.config import DATASET_TYPES
+
+    value = load_user_config().get("dataset_type", "")
+    return value if value in DATASET_TYPES else "character"
+
+
+def set_dataset_type(dataset_type: str) -> None:
+    """Persist the header type. Ignores unknown values, and skips the write when
+    nothing changed — the UI re-applies the type on every page load."""
+    from studio.config import DATASET_TYPES
+
+    if dataset_type in DATASET_TYPES and dataset_type != get_dataset_type():
+        save_user_config({"dataset_type": dataset_type})
+
+
 def get_last_train_settings() -> dict[str, Any]:
     return load_user_config().get("last_train", {})
 
