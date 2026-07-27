@@ -20,9 +20,9 @@ ai-toolkit, kohya or musubi.
   cloud path. Mix and match: generate on the cloud, caption on your GPU, or the reverse.
 - **Every stage is standalone.** Point any tab (or CLI subcommand) at any folder — preprocess
   only, caption only, export only. Bring your own images at any step.
-- **Trainer-ready output.** Flat `NN.png` + `NN.txt`, `metadata.json`/`metadata.jsonl`, optional
-  `.zip` and Hugging Face publish, and a generated config for Flux / SDXL / Qwen-Image / Krea /
-  Pony and more.
+- **Trainer-ready output.** Flat `NN.png` + `NN.txt` (JPEG/WEBP sources keep their own extension),
+  `metadata.json`/`metadata.jsonl`, optional `.zip` and Hugging Face publish, and a generated config
+  for Flux / SDXL / Qwen-Image / Krea / Pony and more.
 - **Honest by design.** No telemetry, no upsell. Configs are generated and shown — **training is
   never launched for you**. Cloud calls bill *your* key; this tool takes no cut.
 
@@ -72,10 +72,37 @@ setup.bat                    ./setup.sh
 start.bat                    ./start.sh
 ```
 
-`setup.bat` asks whether to install the **NVIDIA-GPU (CUDA)** or **CPU-only** build — pick CPU
-if you have no NVIDIA card and lean on the cloud options. Re-run it any time to switch. Then
-open <http://127.0.0.1:7861>. Setup can store API keys in a gitignored `.env` — skip them all
-and stay fully local, or add them later from [.env.example](.env.example).
+Needs **Python 3.10–3.13**. `setup.bat` asks whether to install the **NVIDIA-GPU (CUDA)** or
+**CPU-only** build — pick CPU if you have no NVIDIA card and lean on the cloud options. Then open
+<http://127.0.0.1:7861>.
+
+Setup then offers to store API keys in a gitignored `.env`. **Every key is optional** — skip them
+all and stay fully local. You can add or change one at any time, without re-running the installer:
+
+```text
+python cli.py keys                      # what's configured (masked)
+python cli.py keys --set GEMINI_API_KEY # set or replace one (input is hidden)
+python cli.py doctor                    # check the whole install
+```
+
+### Updating
+
+```text
+git pull
+setup.bat            # or ./setup.sh — installs anything the new version added
+```
+
+Re-running setup is safe and is also how you switch between the GPU and CPU builds. Skipping it
+after a `git pull` is the usual reason a new version won't start.
+
+### Troubleshooting
+
+- **The window closed instantly / nothing happened.** Open a terminal in the project folder and run
+  `start.bat` (or `.venv\Scripts\python.exe app.py`) from there so the error stays on screen.
+- **It won't start after a `git pull`.** Re-run `setup.bat` — the new version almost certainly needs
+  a dependency you don't have yet.
+- **Anything else.** `python cli.py doctor` checks your Python version, dependencies, API keys and
+  ComfyUI, and names what each missing piece blocks.
 
 > ### ⚠️ Costs & responsibility
 >
@@ -150,9 +177,14 @@ python cli.py lint ./folder --trigger sysnootles                          # capt
 python cli.py export ./prepped ./generated --name "Sy Snootles" --trigger sysnootles --zip
 python cli.py build source.png --name "Sy Snootles" --trigger sysnootles  # all four stages
 python cli.py build ./my-style-shots --trigger mystyle --dataset-type style  # skips ② entirely
+python cli.py doctor                                                      # check this install
+python cli.py keys --set GROQ_API_KEY                                     # set/replace a key
 ```
 
 ## API keys (cloud options only)
+
+Set or change any of them with `python cli.py keys` — they live only in a gitignored `.env`, and
+`python cli.py doctor` shows which are configured.
 
 - **Gemini** — image generation and/or captioning: <https://aistudio.google.com/apikey>
 - **Groq** — free-tier captioning: <https://console.groq.com/keys>

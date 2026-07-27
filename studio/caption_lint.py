@@ -208,8 +208,10 @@ def analyze_folder(
 
 
 def _read_caption(image: Path) -> str:
-    txt = image.with_suffix(".txt")
-    return txt.read_text(encoding="utf-8").strip() if txt.exists() else ""
+    """Shared forgiving sidecar read — see `studio.config.read_caption`."""
+    from studio.config import read_caption
+
+    return read_caption(image)
 
 
 def markdown_summary(

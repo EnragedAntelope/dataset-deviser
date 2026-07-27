@@ -52,6 +52,19 @@ def resolve_token(token: str = "") -> str:
     return (token or "").strip() or settings.resolved_key("HF_TOKEN")
 
 
+def _is_existing_public_repo(api, repo_id: str) -> bool:
+    """True only when `repo_id` already exists and is public.
+
+    Best-effort: any lookup failure (no such repo, no permission, network) means we
+    stay quiet rather than warn wrongly — the warning is a courtesy, not a gate.
+    """
+    try:
+        info = api.dataset_info(repo_id)
+    except Exception:
+        return False
+    return getattr(info, "private", True) is False
+
+
 def publish_dataset(
     ds_dir: Path | str,
     repo_id: str,
@@ -80,6 +93,13 @@ def publish_dataset(
     if "/" not in repo_id:  # qualify a bare name with the token's own username
         repo_id = f"{api.whoami()['name']}/{repo_id}"
     progress(f"Creating dataset repo {repo_id} ({'private' if private else 'PUBLIC'})...")
+    # `exist_ok=True` does NOT change an existing repo's visibility, so re-publishing
+    # into a repo that is already public would quietly stay public while the UI said
+    # "private". Say so plainly rather than implying a privacy guarantee we can't make.
+    if private and _is_existing_public_repo(api, repo_id):
+        progress(f"[warning] {repo_id} already exists and is PUBLIC. Uploading to it "
+                 "does not make it private — change its visibility in the repo's "
+                 "settings on huggingface.co, or publish under a different name.")
     api.create_repo(repo_id, repo_type="dataset", private=private, exist_ok=True)
     progress(f"Uploading {ds_dir.name} to {repo_id}...")
     api.upload_folder(folder_path=str(ds_dir), repo_id=repo_id, repo_type="dataset",

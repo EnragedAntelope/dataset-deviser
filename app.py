@@ -39,6 +39,7 @@ from studio.config import (
     CLOUD_IMAGE_PRICES,
     list_images,
     load_caption_model_cache,
+    read_caption,
     settings,
 )
 from studio.shotplan import Shot, plan_for_type
@@ -479,8 +480,9 @@ def load_one_caption(folder: str, filename: str) -> str:
     """Read the .txt sidecar for a single image into the inline editor."""
     if not folder.strip() or not filename:
         raise gr.Error("Load a folder and pick an image first.")
-    txt = (Path(folder.strip()) / filename).with_suffix(".txt")
-    return txt.read_text(encoding="utf-8") if txt.exists() else ""
+    # Forgiving read: the editor must be able to open (and so fix) a sidecar written
+    # by another tool in cp1252, not raise at the user.
+    return read_caption(Path(folder.strip()) / filename)
 
 
 def save_one_caption(folder: str, filename: str, text: str) -> str:
@@ -573,16 +575,15 @@ def do_analyze_captions(folder: str, trigger: str) -> str:
 
 
 def _export_flag(img: Path) -> str:
-    txt = img.with_suffix(".txt")
-    if not txt.exists():
+    if not img.with_suffix(".txt").exists():
         return "⚠ no caption"
-    return "✓" if txt.read_text(encoding="utf-8").strip() else "⚠ empty"
+    return "✓" if read_caption(img) else "⚠ empty"
 
 
-def _export_label(img: Path) -> tuple[str, str]:
+def _export_label(img: Path, flag: str) -> tuple[str, str]:
     """(checkbox label, value). Value is the full path so same-named files in
     different folders never collide; label is folder/name + caption flag."""
-    return f"{img.parent.name}/{img.name} — {_export_flag(img)}", str(img)
+    return f"{img.parent.name}/{img.name} — {flag}", str(img)
 
 
 def load_export_preview(folders_text: str, dup_distance: float = 5):
@@ -592,13 +593,16 @@ def load_export_preview(folders_text: str, dup_distance: float = 5):
     images = [img for folder in folders for img in list_images(folder)]
     if not images:
         raise gr.Error("No images found in the listed folder(s).")
-    gallery = [(str(img), f"{img.parent.name}/{img.name} — {_export_flag(img)}")
+    # One read per image: the flag feeds the gallery caption, the checkbox label and
+    # all three counters, and recomputing it five times meant five disk reads each.
+    flags = {img: _export_flag(img) for img in images}
+    gallery = [(str(img), f"{img.parent.name}/{img.name} — {flags[img]}")
                for img in images]
-    choices = [_export_label(img) for img in images]
+    choices = [_export_label(img, flags[img]) for img in images]
     values = [v for _, v in choices]  # all checked by default (uncheck to drop)
-    ready = sum(1 for img in images if _export_flag(img) == "✓")
-    empty = sum(1 for img in images if _export_flag(img) == "⚠ empty")
-    none_ = sum(1 for img in images if _export_flag(img) == "⚠ no caption")
+    ready = sum(1 for f in flags.values() if f == "✓")
+    empty = sum(1 for f in flags.values() if f == "⚠ empty")
+    none_ = sum(1 for f in flags.values() if f == "⚠ no caption")
     note = (f"**{len(images)} image(s)** — {ready} ready · {empty} empty caption · "
             f"{none_} no caption. All checked below; **uncheck to drop**. "
             "Images without a usable caption are skipped even if left checked.")
@@ -619,8 +623,7 @@ def load_export_preview(folders_text: str, dup_distance: float = 5):
 
         cap_pairs = []
         for img in images:
-            txt = img.with_suffix(".txt")
-            if txt.exists() and (c := txt.read_text(encoding="utf-8").strip()):
+            if c := read_caption(img):
                 cap_pairs.append((f"{img.parent.name}/{img.name}", c))
         # trigger unknown at preview -> skip the missing-trigger check; empties are
         # already summarized above, so only short/duplicate/ubiquitous add value.
@@ -657,7 +660,7 @@ def do_export(selected: list[str], name: str, trigger: str, output_root: str,
                        f"output folder path (valid drive, no forbidden characters, writable).")
     # Show the first numbered caption (README.txt is excluded).
     caption_files = sorted(p for p in ds.glob("*.txt") if p.name != "README.txt")
-    samples = [(p.name, p.read_text(encoding="utf-8").strip()) for p in caption_files]
+    samples = [(p.name, read_caption(p)) for p in caption_files]
     first = next(((n, t) for n, t in samples if t), None)
     sample_block = f"\n\nSample caption ({first[0]}):\n{first[1]}" if first else ""
     skipped = (f"\n⚠️ Skipped (no caption): {', '.join(res.missing)}"

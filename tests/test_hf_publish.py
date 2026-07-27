@@ -57,3 +57,48 @@ def test_publish_requires_existing_folder(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HF_TOKEN", "env-token")
     with pytest.raises(HFPublishError, match="not found"):
         publish_dataset(tmp_path / "nope", "my-lora")
+
+
+# --- visibility of an already-existing repo --------------------------------
+# `create_repo(exist_ok=True)` does not change an existing repo's visibility, so
+# publishing "privately" into an already-public repo left it public while the UI
+# reported private. That is a privacy claim we must not make silently.
+
+class _FakeInfo:
+    def __init__(self, private: bool) -> None:
+        self.private = private
+
+
+class _FakeApi:
+    def __init__(self, info: object | Exception) -> None:
+        self._info = info
+
+    def dataset_info(self, repo_id: str):
+        if isinstance(self._info, Exception):
+            raise self._info
+        return self._info
+
+
+def test_existing_public_repo_is_detected() -> None:
+    from studio.hf_publish import _is_existing_public_repo
+
+    assert _is_existing_public_repo(_FakeApi(_FakeInfo(private=False)), "u/n")
+
+
+def test_existing_private_repo_is_not_flagged() -> None:
+    from studio.hf_publish import _is_existing_public_repo
+
+    assert not _is_existing_public_repo(_FakeApi(_FakeInfo(private=True)), "u/n")
+
+
+def test_a_repo_that_does_not_exist_is_not_flagged() -> None:
+    """The common case: a brand-new repo must not produce a scary warning."""
+    from studio.hf_publish import _is_existing_public_repo
+
+    assert not _is_existing_public_repo(_FakeApi(RuntimeError("404")), "u/n")
+
+
+def test_lookup_failure_stays_quiet_rather_than_warning_wrongly() -> None:
+    from studio.hf_publish import _is_existing_public_repo
+
+    assert not _is_existing_public_repo(_FakeApi(OSError("network down")), "u/n")

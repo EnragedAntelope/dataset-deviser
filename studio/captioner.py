@@ -409,9 +409,14 @@ def drop_blacklisted_tags(caption: str, blacklist: list[str], style: str) -> str
 
 
 def _has_caption(image: Path) -> bool:
-    """True if the image already has a non-empty .txt sidecar."""
-    txt = image.with_suffix(".txt")
-    return txt.exists() and bool(txt.read_text(encoding="utf-8").strip())
+    """True if the image already has a non-empty .txt sidecar.
+
+    Reads through `read_caption`, so `--skip-captioned` is not defeated by a
+    sidecar this process did not write (a cp1252 one used to raise instead).
+    """
+    from studio.config import read_caption
+
+    return image.with_suffix(".txt").exists() and bool(read_caption(image))
 
 
 def finalize_caption(raw: str, trigger: str, character_name: str, aliases: list[str],

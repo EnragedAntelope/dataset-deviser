@@ -445,6 +445,10 @@ class Settings(BaseSettings):
     comfy_url: str = "http://127.0.0.1:8188"
     gemini_api_key: str = ""  # also read from GEMINI_API_KEY if unset
     groq_api_key: str = ""  # also read from GROQ_API_KEY if unset
+    # Declared so LDS_HF_TOKEN works like the other two keys. Without a field here,
+    # `LDS_HF_TOKEN=…` in .env was read by nothing and silently ignored, while the
+    # Gemini/Groq aliases worked — an inconsistency users had no way to see.
+    hf_token: str = ""  # also read from HF_TOKEN if unset
     gemini_image_model: str = "gemini-3-pro-image-preview"
 
     # Checks GitHub releases for a newer version at UI launch (cached 24h,
@@ -511,3 +515,20 @@ def list_images(folder: Path) -> list[Path]:
         return []
     return sorted(p for p in folder.iterdir()
                   if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
+
+
+def read_caption(path: Path) -> str:
+    """The stripped caption sidecar for `path` ("" if absent), read forgivingly.
+
+    Accepts either an image path or the `.txt` itself. Caption sidecars are *user*
+    files — hand-written, or produced by another tool — so a strict UTF-8 read is
+    wrong twice over: a cp1252 file raised UnicodeDecodeError and killed the whole
+    stage, and a UTF-8 BOM silently became part of the trigger word. `utf-8-sig`
+    drops the BOM, and `errors="replace"` degrades one bad byte to one replacement
+    character instead of losing the dataset. Never raises.
+    """
+    txt = path if path.suffix.lower() == ".txt" else path.with_suffix(".txt")
+    try:
+        return txt.read_text(encoding="utf-8-sig", errors="replace").strip()
+    except OSError:
+        return ""

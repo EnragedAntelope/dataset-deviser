@@ -13,7 +13,7 @@ from pathlib import Path
 
 import typer
 
-from studio import pipeline
+from studio import env_keys, pipeline
 from studio.config import CAPTIONERS_BY_KEY, list_images, settings
 from studio.shotplan import plan_for_type
 
@@ -420,6 +420,106 @@ def build(
 
         typer.echo(f"Zipped: {zip_dataset(ds)}")
     typer.echo(f"\nDone: {ds}")
+
+
+# --- setup / diagnostics ---------------------------------------------------
+# These two exist because a broken install used to announce itself only by a
+# console window closing. The setup scripts call `keys --setup` instead of
+# hand-rolling .env editing in batch/bash (see studio/env_keys.py).
+
+@app.command()
+def doctor() -> None:
+    """Check this install: Python, dependencies, API keys, ComfyUI.
+
+    Run this first whenever something doesn't start or a cloud option says it has
+    no key. Exits non-zero if anything actually needs fixing.
+    """
+    from studio.doctor import build_report, render
+
+    report = build_report()
+    typer.echo(render(report))
+    if not report.ok:
+        raise typer.Exit(1)
+
+
+@app.command()
+def keys(
+    set_: str = typer.Option(
+        "", "--set", metavar="NAME",
+        help=f"Set or change one key ({', '.join(env_keys.KEY_NAMES)}). Prompts without echo."),
+    setup: bool = typer.Option(
+        False, "--setup",
+        help="Walk through every key (Enter keeps the current value). Used by setup.bat/setup.sh."),
+) -> None:
+    """Show, set or change the API keys in .env.
+
+    With no options, lists which keys are configured (masked, never the whole
+    value). `--set NAME` changes one. `--setup` walks all of them, so re-running
+    setup can *fix* a mistyped key instead of skipping it.
+
+    Output here is deliberately ASCII: setup.bat runs it in a plain cmd window and
+    users redirect it, where a non-cp1252 glyph raises UnicodeEncodeError.
+    """
+    from studio.doctor import apply_key_input, key_report, prompt_secret
+
+    env_path = env_keys.default_env_path()
+
+    if set_ and setup:
+        raise typer.BadParameter("Use either --set or --setup, not both.")
+
+    if not set_ and not setup:
+        typer.echo(f"API keys in {env_path}:\n")
+        typer.echo("\n".join(key_report(env_path)))
+        typer.echo("\nChange one:  python cli.py keys --set GEMINI_API_KEY")
+        return
+
+    names = [set_.strip().upper()] if set_ else list(env_keys.KEY_NAMES)
+    for name in names:
+        if name not in env_keys.KEY_SPECS_BY_NAME:
+            raise typer.BadParameter(
+                f"Unknown key '{name}'. Known keys: {', '.join(env_keys.KEY_NAMES)}")
+
+    if setup:
+        typer.echo("\n--- API keys (all optional - press Enter to skip or keep) ---")
+        typer.echo(f"Stored only in {env_path} (gitignored, never uploaded).\n")
+
+    current = env_keys.read_env(env_path)
+    for name in names:
+        spec = env_keys.KEY_SPECS_BY_NAME[name]
+        existing = current.get(name, "") or ""
+        typer.echo(f"{name}: {spec.unlocks}")
+        typer.echo(f"  Get one at {spec.url}")
+        if existing:
+            typer.echo(f"  Currently set ({env_keys.mask(existing)}). "
+                       "Enter a new value to replace it, '-' to remove it, "
+                       "or press Enter to keep it.")
+        else:
+            typer.echo(f"  Not set - without it, {spec.without}.")
+        try:
+            # Hidden where there is a terminal, so the key stays out of the console
+            # scrollback; the old batch prompt echoed it in the clear.
+            raw = prompt_secret(f"  {name} (hidden, Enter to skip): ")
+        except (EOFError, KeyboardInterrupt):
+            typer.echo("\n  Skipped.")
+            typer.echo("")
+            continue
+        try:
+            changed = apply_key_input(env_path, name, raw)
+        except ValueError as e:
+            typer.echo(f"  [skipped] {e}")
+            typer.echo("")
+            continue
+        if changed:
+            typer.echo(f"  Saved to {env_path.name}."
+                       if raw.strip() != "-" else f"  Removed from {env_path.name}.")
+        elif existing:
+            typer.echo("  Kept the existing value.")
+        else:
+            typer.echo("  Skipped.")
+        typer.echo("")
+
+    if setup:
+        typer.echo("Change any of these later with:  python cli.py keys")
 
 
 if __name__ == "__main__":

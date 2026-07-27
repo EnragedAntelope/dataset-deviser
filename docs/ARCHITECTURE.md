@@ -1,13 +1,32 @@
 # Architecture
 
-Version: 0.11.0
+Version: 0.12.0
 
 ```
 app.py                  Gradio UI — thin wiring over the stage functions (5 tabs)
-cli.py                  Typer CLI — one subcommand per stage + `build` for all four
+cli.py                  Typer CLI — one subcommand per stage + `build` for all four,
+                        plus `doctor` (install self-check) and `keys` (view/set the
+                        .env API keys — what setup.bat/setup.sh call)
+setup.bat / setup.sh    One-time install: Python version gate, venv, GPU-or-CPU torch,
+                        requirements, ONNX Runtime, then `cli.py keys --setup` and
+                        `cli.py doctor`. Deliberately thin — see the shell gotchas
+start.bat / start.sh    Launch the UI, and explain a non-zero exit instead of vanishing
 studio/
+  env_keys.py           The ONE implementation of reading/editing the .env API keys:
+                        KEY_SPECS (what each key unlocks / where to get it),
+                        read_env(), set_managed_key() (in-place update, newline-safe,
+                        lands on the LDS_-alias spelling if that is the one in use),
+                        mask(), key_status(). Replaced the per-shell versions in
+                        setup.bat/setup.sh — see the shell gotchas
+  doctor.py             Install self-check behind `cli.py doctor`: Python version,
+                        required imports, torch/onnxruntime, ComfyUI reachability, and
+                        masked key status naming what each missing key blocks. Every
+                        check takes its inputs as parameters, so it is unit-tested
   config.py             Settings (env/.env overridable), captioner registry with
-                        per-model prompt templates, engine/price tables. Owns the
+                        per-model prompt templates, engine/price tables. Also the two
+                        dataset-folder-convention primitives: list_images() and
+                        read_caption() (forgiving sidecar read — utf-8-sig +
+                        errors=replace; see the caption-encoding gotcha). Owns the
                         DATASET_TYPES = (character|style|concept) constant and
                         CaptionerSpec.prompt_for(style, dataset_type, sparse):
                         character returns the tuned per-model templates verbatim;
@@ -49,7 +68,7 @@ studio/
                         (Gemini picker), spec_overrides (custom endpoint), apply_affixes
                         (prefix/suffix), drop_blacklisted_tags (drop-list),
                         merge_tagger_overrides (③ tag controls), skip_existing
-  package.py            Dataset export (NN.png/NN.txt + metadata.json + metadata.jsonl
+  package.py            Dataset export (NN.<ext>/NN.txt + metadata.json + metadata.jsonl
                         + README.txt); records dataset_type + a detected caption_style
                         in metadata.json; zip_dataset() bundles a folder into a .zip;
                         resolve_export_items() classifies candidates by caption sidecar
@@ -99,7 +118,16 @@ Run the suite with `pytest -q`; lint with `ruff check .` (rules in `pyproject.to
 
 `.github/workflows/ci.yml` runs both on every push to `main` and every PR, across Python
 3.10–3.12. It installs `requirements.txt` only (**no `torch`**): the suite is CPU-only and never
-needs the real ML backends, so CI stays fast and deterministic.
+needs the real ML backends, so CI stays fast and deterministic. The workflow declares
+`permissions: contents: read` — it only ever reads the repo, so the default write-capable token
+is more authority than it needs.
+
+The setup/launch scripts are the one thing `pytest` cannot reach. They are validated by running
+them: `setup.bat` against a stubbed copy that exercises every branch (happy GPU/CPU, fresh venv,
+old Python, new Python, pip failure, doctor failure) asserting no cmd parse error and that every
+path pauses, plus one real fresh-venv install; `bash -n` and failure-path runs for the `.sh`
+pair. The fragile logic was moved into `studio/env_keys.py` precisely so it could be tested
+properly — see the shell gotchas.
 
 ## Design rules
 
@@ -176,6 +204,48 @@ disabled for it in the UI and `cli.py build --dataset-type style` skips the stag
 
 ## Gotchas (hard-won)
 
+- **Never put an unescaped `(` or `)` inside a cmd `if … ( … )` block.** cmd ends the block
+  at the first bare `)`, so `echo free-tier captioning (SFW, rate-limited)` inside an `if`
+  left a stray `.` behind and the script died with `. was unexpected at this time`. This
+  shipped in `setup.bat` 0.11.0: it killed setup immediately after the Gemini key prompt,
+  so users got a Gemini key written, no Groq/HF prompt, no "Setup complete" — and, because
+  nothing paused, an instantly-closing window with no message. `setup.bat` now uses
+  `if not X goto :label` instead of parenthesized blocks, and every failure path goes
+  through `:die`, which pauses. **A `.bat` must never exit without pausing** — double-clicked,
+  `exit /b 1` closes the window before anyone can read the error.
+- **Batch/bash are the wrong place for `.env` editing.** The two setup scripts each
+  hand-rolled it and each broke differently: `setup.bat` *skipped* a key already present
+  (so a typo'd key was unfixable through the installer) and `echo K=v>> .env` glued onto the
+  last line of a file with no trailing newline; `setup.sh` appended unconditionally, so every
+  re-run duplicated all three keys. Both echoed the key in the clear. It now lives in
+  `studio/env_keys.py` behind `cli.py keys`, is unit-tested, prompts via `getpass`, and
+  behaves identically on both platforms. The shells only run pip.
+- **`.bat` files must be CRLF, `.sh` files LF** — enforced by `.gitattributes`
+  (`*.bat text eol=crlf`). An LF-only batch file breaks `goto`/`:label` resolution in cmd,
+  which `setup.bat` depends on throughout. A fresh clone gets this right; a working tree
+  whose files were written by LF-emitting tools does not, so test from a real clone.
+- **`LDS_`-prefixed keys outrank the bare names.** `Settings` uses `env_prefix="LDS_"`, so
+  pydantic-settings fills `gemini_api_key` from `LDS_GEMINI_API_KEY` in preference to
+  `GEMINI_API_KEY`. Anything that reports or writes a key must handle both spellings:
+  reporting only the bare name called a working key "not set", and *writing* only the bare
+  name would leave a stale `LDS_` line still winning at runtime, so the user's "changed" key
+  would silently have no effect. `env_keys.set_managed_key` lands on whichever spelling the
+  file already uses. `HF_TOKEN` needed a `Settings.hf_token` field added for the same
+  reason — without it `LDS_HF_TOKEN` was read by nothing at all.
+- **Export copies source bytes verbatim, so the extension must be the source's.** It used to
+  hard-code `NN.png`, which wrote JPEG bytes into a `.png` and declared `.png` in
+  `metadata.jsonl` — a real mislabel, since stage ④ is documented as working on *any*
+  folder. `package.py` now preserves the (normalised, lowercased, `.jpeg`→`.jpg`) suffix and
+  `metadata.jsonl`'s `file_name` is the name actually written, which HF `imagefolder`
+  resolves literally. Captions still pair by stem, so a mixed-format folder is fine.
+- **Caption sidecars are user files; read them forgivingly.** Every read used strict
+  `encoding="utf-8"`, so a cp1252 `.txt` from another tool raised `UnicodeDecodeError` and
+  killed the whole stage, and a UTF-8 BOM silently prefixed `﻿` to the trigger word in
+  every caption. `config.read_caption()` (`utf-8-sig`, `errors="replace"`) is now the single
+  reader for all of them.
+- **`create_repo(exist_ok=True)` does not change visibility.** Publishing "privately" into a
+  repo that already exists and is public left it public while the UI said private.
+  `hf_publish` now checks and warns plainly rather than implying a privacy guarantee.
 - **`facebook/sam3` is gated.** Users must accept Meta's license on the model page and
   authenticate (`HF_TOKEN` in `.env` or `hf auth login`) or `isolate.py` raises a clear
   error with instructions.
@@ -507,7 +577,16 @@ grouped by stage. Milestone versions are noted only where they explain a design 
 
 The **CLI** mirrors every stage (`preprocess`/`generate`/`caption`/`lint`/`export`/`build`) with
 the same options and the same shared seams (`resolve_captioner_config`, `merge_tagger_overrides`,
-`resolve_export_items`), so UI and CLI never drift.
+`resolve_export_items`), so UI and CLI never drift. It also carries the two setup-facing commands
+the installer itself uses: **`doctor`** (install self-check) and **`keys`** (view/set the `.env`
+API keys).
+
+- **Onboarding (0.12.0)** — the install path was rebuilt after a new user's `setup.bat` died at the
+  Gemini key prompt and closed its own window. Setup now gates the Python version, pauses on every
+  exit, and delegates key entry to `cli.py keys --setup`; `start.bat`/`start.sh` explain a non-zero
+  exit (usually a dependency added by a `git pull`) instead of vanishing; `cli.py doctor` reports
+  what is configured and what each missing key blocks. See the shell gotchas for why none of this
+  lives in the scripts any more.
 
 ## Future ideas & enhancements
 
@@ -532,6 +611,32 @@ ordered by benefit-to-cost.
 - **Alpha (RGBA) cutout option (①).** Export the isolated subject on transparency instead of white,
   for workflows that composite their own backgrounds. Small toggle; white stays the default (the
   Multiple-Angles LoRA is trained on white). Left as a maybe — build only if someone needs it.
+
+## Repo name collision (analysis, no decision yet)
+
+Recorded 2026-07-27 so the decision can be made from facts rather than re-researched.
+
+`lora-dataset-studio` is a crowded name. `perfectgf/lora-dataset-studio` was created
+2026-07-05 — six days before this repo — and has ~99 stars; four other repos share the name.
+That project is a whole-lifecycle workbench (in-app/cloud training, an Image Bank, scraping, a
+Test Studio with checkpoint ranking), which is **precisely** the scope the Deferred section below
+rejects on purpose. The differentiation is real: this tool builds datasets and stops at the
+trainer boundary.
+
+Renaming is cheap: 0 forks, 0 issues, 3 stars, nothing published to PyPI (`pyproject.toml` has
+no `[project]` table), and the name appears in ~19 places across 12 tracked files.
+
+**Existing clones keep working.** GitHub permanently redirects the old URL for the web UI,
+`git clone`, `git fetch` and `git push`, so anyone who already cloned can `git pull` as normal.
+Three things to get right if it happens:
+
+- **Never create a new repo under the old name** in the same account — that is the one action
+  that breaks the redirect.
+- `update_check.py` hardcodes `GITHUB_REPO`, and `httpx` does not follow redirects by default, so
+  the update banner goes quiet for anyone until they pull the commit that changes the constant.
+  It is a single constant, so nothing needs centralising first.
+- **Keep the `LDS_` env prefix** whatever the new name is. Renaming it would silently invalidate
+  every existing `.env` for no user benefit.
 
 ## Deferred (with rationale)
 

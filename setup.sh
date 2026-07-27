@@ -1,15 +1,30 @@
 #!/usr/bin/env bash
-# LoRA Dataset Studio - one-time setup (Linux / macOS)
+# LoRA Dataset Studio - one-time setup (Linux / macOS). Safe to re-run: use it to
+# install dependencies added by a `git pull`, or to change an API key.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 echo "=== LoRA Dataset Studio setup ==="
 echo
 
-# --- Python check ---
+# --- Python present and new enough? ---
 PY=python3
-command -v "$PY" >/dev/null 2>&1 || { echo "[ERROR] python3 not found — install Python 3.10+ first."; exit 1; }
+command -v "$PY" >/dev/null 2>&1 || {
+    echo "[ERROR] python3 not found — install Python 3.10 or newer first."
+    exit 1
+}
+if ! "$PY" -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)'; then
+    echo "[ERROR] $($PY --version) is too old — this project needs Python 3.10+."
+    echo "        Install a newer Python, delete the .venv folder, then re-run ./setup.sh"
+    exit 1
+fi
 echo "Found $($PY --version)"
+if ! "$PY" -c 'import sys; sys.exit(0 if sys.version_info[:2] <= (3, 13) else 1)'; then
+    echo "[note] That is newer than the versions this project is tested against"
+    echo "       (3.10-3.13). It usually works, but if pip cannot find a torch or"
+    echo "       onnxruntime wheel, use Python 3.13 instead."
+    echo
+fi
 
 # --- venv ---
 if [ ! -d .venv ]; then
@@ -17,6 +32,7 @@ if [ ! -d .venv ]; then
     "$PY" -m venv .venv
 fi
 PIP=.venv/bin/pip
+VENV_PY=.venv/bin/python
 
 # --- torch + ONNX Runtime: CUDA if an NVIDIA GPU is present, else platform default ---
 if command -v nvidia-smi >/dev/null 2>&1; then
@@ -32,53 +48,43 @@ else
     "$PIP" install torch torchvision
 fi
 
+echo
 echo "Installing dependencies..."
 "$PIP" install -r requirements.txt
 
 # ONNX Runtime for the WD/e621 taggers (③), matched to the chosen build. Kept
 # out of requirements.txt so the CPU vs CUDA variant tracks the torch install.
+echo
 echo "Installing ONNX Runtime ($WANT) for the taggers..."
 "$PIP" uninstall -y onnxruntime onnxruntime-gpu >/dev/null 2>&1 || true
 if [ "$WANT" = gpu ]; then
-    "$PIP" install onnxruntime-gpu || echo "[warn] onnxruntime-gpu failed - taggers can fall back to CPU via 'pip install onnxruntime'."
+    "$PIP" install onnxruntime-gpu \
+        || echo "[warn] onnxruntime-gpu failed - the taggers can still use the CPU build: pip install onnxruntime"
 else
-    "$PIP" install onnxruntime || echo "[warn] onnxruntime failed - the taggers need it; install later with 'pip install onnxruntime'."
+    "$PIP" install onnxruntime \
+        || echo "[warn] onnxruntime failed - the taggers need it; install it later with: pip install onnxruntime"
 fi
 
 # --- optional API keys -> .env ---
+# Handled by cli.py, NOT here: this script used to append keys unconditionally, so
+# every re-run duplicated them, and it could not show or change an existing value.
+# One tested Python implementation instead (studio/env_keys.py).
 echo
-echo "--- Optional API keys (press Enter to skip any of them) ---"
-echo "Keys are stored ONLY in the local .env file (gitignored, never uploaded)."
-echo
-echo "GEMINI_API_KEY : cloud image generation + Gemini captioner."
-echo "  Get one at https://aistudio.google.com/apikey - usage is billed by"
-echo "  Google to YOUR key. In-app prices are build-time estimates only."
-read -r -s -p "GEMINI_API_KEY (Enter to skip): " GKEY; echo
-echo
-echo "GROQ_API_KEY : free-tier cloud captioning (SFW, rate-limited)."
-echo "  Get one at https://console.groq.com/keys"
-read -r -s -p "GROQ_API_KEY (Enter to skip): " QKEY; echo
-echo
-echo "HF_TOKEN : needed for the built-in SAM3 subject isolation (gated model)."
-echo "  Accept the license at https://huggingface.co/facebook/sam3 then create a"
-echo "  read token at https://huggingface.co/settings/tokens"
-read -r -s -p "HF_TOKEN (Enter to skip): " HKEY; echo
+"$VENV_PY" cli.py keys --setup \
+    || echo "[warn] Key setup was interrupted - run 'python cli.py keys' any time to set them."
 
-touch .env
-chmod 600 .env
-[ -n "${GKEY:-}" ] && echo "GEMINI_API_KEY=$GKEY" >> .env
-[ -n "${QKEY:-}" ] && echo "GROQ_API_KEY=$QKEY" >> .env
-[ -n "${HKEY:-}" ] && echo "HF_TOKEN=$HKEY" >> .env
-
-# --- optional ComfyUI check ---
+# --- final report: dependencies, keys, optional backends ---
 echo
-if .venv/bin/python -c "from studio import comfy_api; import sys; sys.exit(0 if comfy_api.is_up() else 1)" >/dev/null 2>&1; then
-    echo "ComfyUI detected at the configured URL - the fully-local engine is available."
-else
-    echo "ComfyUI not detected (optional). Cloud generation + built-in SAM3 isolation"
-    echo "work without it. For fully-local image generation, see docs/comfyui-setup.md"
-    echo "for the required models and workflow dependencies."
+echo "=== Checking the finished install ==="
+if ! "$VENV_PY" cli.py doctor; then
+    echo
+    echo "[ERROR] The install check above found a problem. Fix what it lists, then"
+    echo "        re-run ./setup.sh. Re-run the check on its own with:"
+    echo "            .venv/bin/python cli.py doctor"
+    exit 1
 fi
 
 echo
-echo "=== Setup complete. Run ./start.sh to launch. ==="
+echo "=== Setup complete ($WANT build). Run ./start.sh to launch. ==="
+echo "    Re-run ./setup.sh any time to install new dependencies after a git pull."
+echo "    Change an API key with:  .venv/bin/python cli.py keys"
