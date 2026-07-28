@@ -3,7 +3,10 @@
 # manually with an NVIDIA GPU:
 #   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 # (torchvision is required by Qwen3-VL's processor even for still images)
-gradio>=5.0
+# Capped below 6: on Gradio 6 the components fed by demo.load in tabs ②/③ come
+# up stuck under a loading overlay that never clears (values arrive, spinner
+# counts up forever). Unpinned, a setup.bat run silently upgrades into it.
+gradio>=5.0,<6
 transformers>=4.57
 accelerate>=1.0
 google-genai>=1.0
