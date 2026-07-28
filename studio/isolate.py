@@ -19,6 +19,7 @@ from typing import Callable
 import numpy as np
 from PIL import Image, ImageFilter
 
+from studio import config
 from studio.config import settings
 
 
@@ -41,7 +42,11 @@ def _load_sam3():
         except ImportError as e:
             raise IsolationError(f"transformers/torch not available: {e}")
         try:
-            _model = Sam3Model.from_pretrained(settings.sam3_hf_id, device_map="auto")
+            # SAM3 is small enough for any one card, so it is pinned to a single
+            # device rather than handed to accelerate's "auto" — that sharded it
+            # across cuda:0/cuda:1 on multi-GPU machines and the forward pass
+            # died with a two-device tensor mismatch.
+            _model = Sam3Model.from_pretrained(settings.sam3_hf_id).to(config.torch_device())
             _processor = Sam3Processor.from_pretrained(settings.sam3_hf_id)
         except Exception as e:
             raise IsolationError(
