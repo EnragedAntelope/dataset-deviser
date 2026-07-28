@@ -24,6 +24,7 @@ from typing import Callable
 import httpx
 from PIL import Image
 
+from studio import config
 from studio.config import (
     CAPTION_IMAGE_PRICES,
     CAPTIONERS_BY_KEY,
@@ -198,9 +199,16 @@ class Captioner:
         from transformers import AutoModelForImageTextToText, AutoProcessor
 
         dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        # One GPU: "auto" is what we want — it offloads whatever does not fit.
+        # Two or more: "auto" shards the model across cards and the forward pass
+        # dies with a cuda:0/cuda:1 tensor mismatch, so pin to a single device.
+        # LDS_TORCH_DEVICE overrides either way.
+        device_map = settings.torch_device or (
+            "auto" if torch.cuda.device_count() <= 1 else config.torch_device()
+        )
         self._processor = AutoProcessor.from_pretrained(self.spec.hf_id)
         self._model = AutoModelForImageTextToText.from_pretrained(
-            self.spec.hf_id, dtype=dtype, device_map="auto"
+            self.spec.hf_id, dtype=dtype, device_map=device_map
         )
         self._model.eval()
 

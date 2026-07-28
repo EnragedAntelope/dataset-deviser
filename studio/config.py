@@ -467,6 +467,13 @@ class Settings(BaseSettings):
     # 7px destroyed 2.75% of the reference character for no gain). Raise only
     # for a prop genuinely merged into the subject segment.
     exclude_dilate_px: int = 0
+    # Device for in-process torch models. "" = first CUDA GPU, else CPU.
+    # Set e.g. "cuda:1" to pin the second card, or "cpu" to force CPU.
+    # Never left to accelerate's "auto": on a multi-GPU box that shards one
+    # model across cards and the forward pass dies with "Expected all tensors
+    # to be on the same device, but found at least two devices, cuda:0 and
+    # cuda:1". Sharding is only worth it for weights too big for one card.
+    torch_device: str = ""
     # "auto" = model restore through ComfyUI when reachable, else basic Lanczos;
     # "comfyui" = require ComfyUI; "basic" = never call ComfyUI
     restore_backend: str = "auto"
@@ -507,6 +514,19 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def torch_device() -> str:
+    """The single device local torch models load onto.
+
+    `LDS_TORCH_DEVICE` wins; otherwise the first CUDA GPU, else CPU. One device,
+    never a shard map — see the `torch_device` setting for why.
+    """
+    if settings.torch_device:
+        return settings.torch_device
+    import torch
+
+    return "cuda:0" if torch.cuda.is_available() else "cpu"
 
 
 def list_images(folder: Path) -> list[Path]:
