@@ -31,26 +31,58 @@ _UPSCALE_SETTINGS = ("dejpg_model", "upscale_model")  # in template node order
 _combo_cache: dict[tuple[str, str], list[str]] = {}
 
 
-def _server_filename(class_type: str, input_key: str, value: str) -> str:
+def _combo_options(class_type: str, input_key: str) -> list[str]:
+    """The server's accepted values for one combo input, cached per process.
+
+    Only successful lookups are cached: a failed one used to be stored as an
+    empty list, so a single timed-out call (ComfyUI stalls this endpoint while
+    it is busy) permanently disabled filename matching for the rest of the run.
+    """
+    key = (class_type, input_key)
+    if _combo_cache.get(key):
+        return _combo_cache[key]
+    try:
+        info = httpx.get(f"{settings.comfy_url}/object_info/{class_type}",
+                         timeout=30).json()
+        options = info[class_type]["input"]["required"][input_key][0]
+    except Exception:
+        return []
+    if isinstance(options, list):
+        _combo_cache[key] = options
+        return options
+    return []
+
+
+def _server_filename(class_type: str, input_key: str, value: str,
+                     setting_attr: str) -> str:
     """Match `value` against the server's file list ignoring path separators —
     ComfyUI enumerates subfolder files with the server OS's separator, and a
-    graph value must match that list exactly."""
-    if "/" not in value and "\\" not in value:
+    graph value must match that list exactly.
+
+    Raises if the server has a list and `value` is not in it: ComfyUI's own
+    rejection ("Value not in list: ... not in (list of length 10574)") never
+    says which setting was wrong or what is installed.
+    """
+    options = _combo_options(class_type, input_key)
+    if not options:  # server unreachable / unknown node — send it as configured
         return value
-    key = (class_type, input_key)
-    if key not in _combo_cache:
-        try:
-            info = httpx.get(f"{settings.comfy_url}/object_info/{class_type}",
-                             timeout=10).json()
-            options = info[class_type]["input"]["required"][input_key][0]
-            _combo_cache[key] = options if isinstance(options, list) else []
-        except Exception:
-            _combo_cache[key] = []
     norm = value.replace("\\", "/")
-    for opt in _combo_cache[key]:
+    for opt in options:
         if opt.replace("\\", "/") == norm:
             return opt
-    return value
+    for opt in options:  # Windows paths are case-insensitive, ComfyUI's list is not
+        if opt.replace("\\", "/").casefold() == norm.casefold():
+            return opt
+    import difflib
+
+    close = difflib.get_close_matches(norm, [o.replace("\\", "/") for o in options],
+                                      n=3, cutoff=0.5)
+    hint = f" Closest installed: {', '.join(close)}." if close else ""
+    raise ComfyError(
+        f"ComfyUI has no {input_key} '{value}' for {class_type} "
+        f"({len(options)} installed).{hint} Set LDS_{setting_attr.upper()} in .env to "
+        f"a filename ComfyUI lists, or install the model into the matching folder."
+    )
 
 
 def load_template(name: str) -> dict:
@@ -60,9 +92,13 @@ def load_template(name: str) -> dict:
         for input_key, setting_attr in _MODEL_INPUTS.items():
             if input_key in node.get("inputs", {}):
                 node["inputs"][input_key] = _server_filename(
-                    node["class_type"], input_key, getattr(settings, setting_attr))
+                    node["class_type"], input_key, getattr(settings, setting_attr),
+                    setting_attr)
         if node.get("class_type") == "UpscaleModelLoader":
-            node["inputs"]["model_name"] = getattr(settings, next(upscale_iter))
+            setting_attr = next(upscale_iter)
+            node["inputs"]["model_name"] = _server_filename(
+                "UpscaleModelLoader", "model_name", getattr(settings, setting_attr),
+                setting_attr)
     return graph
 
 
