@@ -58,6 +58,7 @@ def preprocess_sources(
     restore_backend: str = "",
     isolation_backend: str = "",
     tighten_crop: bool = False,
+    alpha_cutout: bool = False,
     progress: ProgressFn = print,
 ) -> list[PreprocessReport]:
     reports: list[PreprocessReport] = []
@@ -67,7 +68,7 @@ def preprocess_sources(
                          isolate=isolate, subject_prompt=subject_prompt,
                          exclude_prompt=exclude_prompt, restore_backend=restore_backend,
                          isolation_backend=isolation_backend, tighten_crop=tighten_crop,
-                         progress=progress)
+                         alpha_cutout=alpha_cutout, progress=progress)
         extra = ", subject isolated" if rep.isolated else ""
         progress(
             f"  {src.name}: {rep.original_size[0]}x{rep.original_size[1]} -> "

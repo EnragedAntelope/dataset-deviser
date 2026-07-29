@@ -126,6 +126,10 @@ def preprocess(
     tighten: bool = typer.Option(
         False, "--tighten/--no-tighten",
         help="Crop to the subject's bounding box after isolation (less white padding)"),
+    alpha_cutout: bool = typer.Option(
+        False, "--alpha-cutout/--no-alpha-cutout",
+        help="Export on a transparent background instead of white (builtin backend "
+             "only; for your own compositing workflows — not meant to feed 'generate')"),
 ):
     """Restore/upscale/isolate images (standalone)."""
     out = out or pipeline.new_run_dir("prepped")
@@ -133,7 +137,7 @@ def preprocess(
         _expand(inputs), out, target=target, force_restore=restore, isolate=isolate,
         subject_prompt=subject_prompt, exclude_prompt=exclude_prompt,
         restore_backend=restore_backend, isolation_backend=isolation_backend,
-        tighten_crop=tighten, progress=typer.echo)
+        tighten_crop=tighten, alpha_cutout=alpha_cutout, progress=typer.echo)
     typer.echo(f"Done: {out}")
 
 

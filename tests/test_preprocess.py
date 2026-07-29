@@ -71,3 +71,24 @@ def test_preprocess_alpha_cutout_ignored_without_isolate(tmp_path: Path) -> None
     r = preprocess(src, out, target=32, force_restore=False, isolate=False,
                   alpha_cutout=True)
     assert Image.open(r.output).mode == "RGB"
+
+
+def test_preprocess_sources_forwards_alpha_cutout(tmp_path: Path, monkeypatch) -> None:
+    """The batch wrapper must not drop the flag on the way to preprocess()."""
+    from studio import pipeline
+
+    seen = {}
+
+    def fake_preprocess(source, work_dir, **kwargs):
+        seen["alpha_cutout"] = kwargs.get("alpha_cutout")
+        from studio.preprocess import PreprocessReport
+        return PreprocessReport(source=source, output=work_dir / "x.png",
+                                original_size=(1, 1), final_size=(1, 1),
+                                restored=False, reason="test")
+
+    monkeypatch.setattr(pipeline, "preprocess", fake_preprocess)
+    src = tmp_path / "a.png"
+    _img(src)
+    pipeline.preprocess_sources([src], tmp_path / "out", alpha_cutout=True,
+                                progress=lambda _m: None)
+    assert seen["alpha_cutout"] is True
