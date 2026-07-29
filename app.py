@@ -1,4 +1,4 @@
-"""LoRA Distillery — Gradio UI.
+"""Dataset Deviser — Gradio UI.
 
 Every tab is standalone: point it at any folder (or upload files) and run just
 that stage. When you do run stages in order, each one auto-fills the next
@@ -937,9 +937,9 @@ def _check_for_update():
 
 # ---------- layout ----------
 
-with gr.Blocks(title="LoRA Distillery") as demo:
+with gr.Blocks(title="Dataset Deviser") as demo:
     gr.Markdown(
-        "# LoRA Distillery\n"
+        "# Dataset Deviser\n"
         "Character, style, or concept → ready-to-train LoRA dataset. Every tab works standalone "
         "on any folder — or run them in order and each step auto-fills the next: "
         "**① Preprocess → ② Generate & curate → ③ Caption → ④ Export → ⑤ Train config**. "

@@ -103,7 +103,7 @@ def publish_dataset(
     api.create_repo(repo_id, repo_type="dataset", private=private, exist_ok=True)
     progress(f"Uploading {ds_dir.name} to {repo_id}...")
     api.upload_folder(folder_path=str(ds_dir), repo_id=repo_id, repo_type="dataset",
-                      commit_message="Upload LoRA dataset (LoRA Distillery)")
+                      commit_message="Upload LoRA dataset (Dataset Deviser)")
     url = f"https://huggingface.co/datasets/{repo_id}"
     progress(f"Published: {url}")
     return url

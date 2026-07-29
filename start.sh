@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# LoRA Distillery - launch the UI (run ./setup.sh once first)
+# Dataset Deviser - launch the UI (run ./setup.sh once first)
 set -uo pipefail
 cd "$(dirname "$0")"
 if [ ! -x .venv/bin/python ]; then
@@ -13,7 +13,7 @@ fi
 status=$?
 if [ "$status" -ne 0 ]; then
     echo
-    echo "[ERROR] LoRA Distillery exited with an error (status $status). The cause"
+    echo "[ERROR] Dataset Deviser exited with an error (status $status). The cause"
     echo "        is in the output above."
     echo
     echo "  Most common cause: you just ran 'git pull' and the new version needs a"

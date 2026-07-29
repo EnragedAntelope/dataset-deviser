@@ -1,4 +1,4 @@
-# LoRA Distillery
+# Dataset Deviser
 
 **Turn a character, style, or concept into a ready-to-train LoRA dataset.** For a **character**,
 one reference image becomes ~24 consistent shots across camera angles, poses, emotions and

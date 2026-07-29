@@ -299,7 +299,7 @@ def render(report: Report) -> str:
 
     Deliberately ASCII-only throughout — see `Check.symbol` for why.
     """
-    out = [f"LoRA Distillery v{__version__} - environment check", ""]
+    out = [f"Dataset Deviser v{__version__} - environment check", ""]
     for check in report.checks:
         out.append(f"  {check.symbol} {check.label:<14} {check.detail}")
     out += ["", "API keys (all optional - every stage has a local path):"]

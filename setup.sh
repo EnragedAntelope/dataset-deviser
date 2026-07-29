@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# LoRA Distillery - one-time setup (Linux / macOS). Safe to re-run: use it to
+# Dataset Deviser - one-time setup (Linux / macOS). Safe to re-run: use it to
 # install dependencies added by a `git pull`, or to change an API key.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-echo "=== LoRA Distillery setup ==="
+echo "=== Dataset Deviser setup ==="
 echo
 
 # --- Python present and new enough? ---

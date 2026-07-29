@@ -161,7 +161,7 @@ def test_report_renders_without_raising(tmp_path: Path) -> None:
                             importer=lambda name: True,
                             version=(3, 12, 0), check_comfy=False)
     text = D.render(report)
-    assert "LoRA Distillery" in text
+    assert "Dataset Deviser" in text
     assert "cli.py keys" in text  # points at the fix
 
 
