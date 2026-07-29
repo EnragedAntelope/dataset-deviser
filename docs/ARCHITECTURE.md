@@ -1,6 +1,6 @@
 # Architecture
 
-Version: 0.13.1
+Version: 0.13.2
 
 ```
 app.py                  Gradio UI — thin wiring over the stage functions (5 tabs)
@@ -665,6 +665,15 @@ API keys).
   terminal artifact, not as a ②/③ input); dropped `Image.fromarray`'s deprecated `mode` arg
   before Pillow 13 removes it; `.env.example` still said "LoRA Distillery"; and a deleted
   measured-rationale comment (the 2.75% figure backing `_MERGED_PROP_OVERLAP`) was restored.
+- **Usability fixes (0.13.2)** — two small issues surfaced by a manual usability pass, fixed
+  on request: the ⑤ Train tab's Model dropdown tooltip contained the literal string
+  `<<FILL>>`, which Gradio's Markdown/HTML rendering of `info=` text silently truncated at
+  the first `<` — reworded to avoid the placeholder syntax entirely in user-facing copy
+  (the dropdown's own preset labels already say "(set path)"/"(edit … below)" for presets
+  that need one). And `shotplan._build_cloud_prompt` emitted "with a alert expression" /
+  "with a intense expression" for vowel-starting emotions — new `_indefinite_article()`
+  helper picks "a"/"an" from the emotion's first letter (a plain first-letter check is
+  enough for this small curated emotion vocabulary; no phonetic library needed).
 
 ## Future ideas & enhancements
 

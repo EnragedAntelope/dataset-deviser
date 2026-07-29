@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from studio.shotplan import Shot, apply_wardrobe, default_plan
+from studio.shotplan import Shot, _build_cloud_prompt, apply_wardrobe, default_plan
 
 
 def test_default_plan_has_24_shots() -> None:
@@ -26,6 +26,19 @@ def test_emotion_and_setting_fields_exist() -> None:
     assert emotions
     assert settings
     assert len(settings) >= 6
+
+
+def test_cloud_prompt_uses_an_before_vowel_starting_emotion() -> None:
+    """"with a alert expression" read as a grammar bug in real generated prompts —
+    default_plan() actually uses "alert" and "intense" as emotion values."""
+    prompt = _build_cloud_prompt("the character", "pose", "standing still", "", "alert")
+    assert "with an alert expression" in prompt
+    assert "with a alert expression" not in prompt
+
+
+def test_cloud_prompt_uses_a_before_consonant_starting_emotion() -> None:
+    prompt = _build_cloud_prompt("the character", "pose", "standing still", "", "confident")
+    assert "with a confident expression" in prompt
 
 
 def test_chained_shots_sort_last_in_generation() -> None:

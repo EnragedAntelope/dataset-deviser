@@ -459,6 +459,16 @@ def _subject_phrase(subject: str) -> str:
     return subject[4:] if subject[:4].lower() == "the " else subject
 
 
+def _indefinite_article(word: str) -> str:
+    """"a" or "an" for `word` — emotions are a small curated vocabulary
+
+    (neutral/confident/alert/intense/…), so a plain first-letter check is
+    enough; no need for a phonetic library. Without this, vowel-starting
+    emotions like "alert"/"intense" produced "with a alert expression".
+    """
+    return "an" if word[:1].lower() in "aeiou" else "a"
+
+
 def _build_local_prompt(
     kind: str, grammar_or_pose: str, setting: str, emotion: str,
     outfit: str = "", subject: str = "subject"
@@ -506,7 +516,7 @@ def _build_cloud_prompt(
         if setting:
             parts.append(f", {setting}")
         if emotion and emotion != "neutral":
-            parts.append(f", with a {emotion} expression")
+            parts.append(f", with {_indefinite_article(emotion)} {emotion} expression")
     if outfit:
         parts.append(f", wearing {outfit}")
     parts.append(". Keep the same overall style and realism as the reference.")

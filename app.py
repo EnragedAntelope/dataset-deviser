@@ -1345,8 +1345,9 @@ with gr.Blocks(title="Dataset Deviser") as demo:
                     tr_path_note = gr.Markdown()
                     tr_model = gr.Dropdown([(p.label, p.key) for p in _ai_presets],
                                            value=_ai_presets[0].key, label="Model",
-                                           info="Pick your target base model. <<FILL>> presets "
-                                                "need you to supply a model path.")
+                                           info="Pick your target base model. Presets whose "
+                                                "label mentions setting/editing a path need you "
+                                                "to supply your own model path or HF id.")
                     tr_name = gr.Textbox(label="LoRA name", placeholder="sysnootles-lora",
                                          info="Output name for the trained LoRA file.")
                     tr_trigger = gr.Textbox(label="Trigger word (used in the sample prompt)",
