@@ -302,7 +302,8 @@ def _gen_gallery(results: list[pipeline.GenResult]):
 
 def do_preprocess(files: list[str], folder: str, target: int, restore_mode: str,
                   restore_backend: str, isolate: bool, isolation_backend: str,
-                  subject_prompt: str, exclude_prompt: str, tighten: bool = False):
+                  subject_prompt: str, exclude_prompt: str, tighten: bool = False,
+                  alpha_cutout: bool = False):
     sources = _inputs(files, folder)
     out_dir = _stamped("prepped")
     force = {"Auto (only if needed)": None, "Always": True, "Never": False}[restore_mode]
@@ -312,7 +313,8 @@ def do_preprocess(files: list[str], folder: str, target: int, restore_mode: str,
             sources, out_dir, target=target, force_restore=force, isolate=isolate,
             subject_prompt=subject_prompt or "character",
             exclude_prompt=exclude_prompt or "", restore_backend=restore_backend,
-            isolation_backend=isolation_backend, tighten_crop=tighten, progress=log.append)
+            isolation_backend=isolation_backend, tighten_crop=tighten,
+            alpha_cutout=alpha_cutout, progress=log.append)
     except Exception as e:
         raise gr.Error(f"Preprocess failed: {e}")
     gallery = [(str(r.output), f"{r.source.name}: {r.reason}") for r in reports]
@@ -1028,6 +1030,12 @@ with gr.Blocks(title="LoRA Distillery") as demo:
                         value=False, label="Tighten crop to subject (after isolation)",
                         info="Crop out the white padding around the isolated subject so framing "
                              "is consistent and less empty background is trained. Needs isolation on.")
+                    pre_alpha_cutout = gr.Checkbox(
+                        value=False, label="Transparent cutout (alpha) instead of white",
+                        info="Exports the isolated subject on a transparent background for your "
+                             "own compositing workflows. Builtin SAM3 backend only. Leave off "
+                             "(default) if you're continuing to ② Generate — it expects a white "
+                             "background reference. Needs isolation on.")
                     btn_pre = gr.Button("① Preprocess", variant="primary")
                 with gr.Column(scale=2):
                     pre_note = gr.Markdown()
@@ -1370,7 +1378,8 @@ with gr.Blocks(title="LoRA Distillery") as demo:
     btn_pre.click(
         do_preprocess,
         [pre_files, pre_folder, target, restore_mode, restore_backend, isolate,
-         isolation_backend, subject_prompt, exclude_prompt, pre_tighten],
+         isolation_backend, subject_prompt, exclude_prompt, pre_tighten,
+         pre_alpha_cutout],
         [prep_gallery, pre_note, log_box, gen_src_folder, cap_folder]) \
            .then(lambda s, e: (s, e), [subject_prompt, exclude_prompt],
                  [gen_subject, gen_exclude])
