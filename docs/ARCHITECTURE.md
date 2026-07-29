@@ -1,6 +1,6 @@
 # Architecture
 
-Version: 0.12.2
+Version: 0.13.1
 
 ```
 app.py                  Gradio UI — thin wiring over the stage functions (5 tabs)
@@ -655,6 +655,16 @@ API keys).
   at `doctor` time instead of mid-generate); and `cli.py custom-endpoint` lets a CLI-only
   user configure the custom OpenAI-compatible captioner, closing the UI-only gap noted since
   0.7.0.
+- **Second rename + alpha cutout (0.13.0), final-review fixes (0.13.1)** — `lora-distillery`
+  renamed to `dataset-deviser` (see the rename record below); the "LoRA" was also dropped
+  from the product name since the tool covers Style/Concept, not just character LoRAs.
+  New opt-in alpha (RGBA) cutout toggle at ① Preprocess, builtin-SAM3-backend only (see the
+  matching Gotcha). A same-day final-review pass (0.13.1) fixed four issues the per-commit
+  review missed: ① no longer auto-fills ②/③'s folder fields when alpha cutout is on (that
+  output's un-masked pixels are the original background, not white — safe only as a
+  terminal artifact, not as a ②/③ input); dropped `Image.fromarray`'s deprecated `mode` arg
+  before Pillow 13 removes it; `.env.example` still said "LoRA Distillery"; and a deleted
+  measured-rationale comment (the 2.75% figure backing `_MERGED_PROP_OVERLAP`) was restored.
 
 ## Future ideas & enhancements
 
