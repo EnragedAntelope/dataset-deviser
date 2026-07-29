@@ -135,7 +135,8 @@ _MERGED_PROP_OVERLAP = 0.10
 
 
 def isolate_builtin(image_path: Path, out_path: Path, subject_prompt: str = "character",
-                    exclude_prompt: str = "", progress: Callable[[str], None] | None = None) -> Path:
+                    exclude_prompt: str = "", progress: Callable[[str], None] | None = None,
+                    alpha_cutout: bool = False) -> Path:
     image = Image.open(image_path).convert("RGB")
     subject = _segment(image, subject_prompt)
     if not subject.any():
@@ -146,11 +147,6 @@ def isolate_builtin(image_path: Path, out_path: Path, subject_prompt: str = "cha
     note = progress or (lambda _m: None)
     if exclude_prompt.strip():
         exclude = _segment_terms(image, exclude_prompt)
-        # Everything outside `subject` is whited out by the composite below, so
-        # a prop SAM3 already excluded is gone whether or not we subtract it.
-        # Subtracting then only removes subject pixels — measured at 2.75% of the
-        # character on the reference image for no gain. Only act when the prop is
-        # actually inside the subject segment.
         overlap = (subject & exclude).sum()
         share = overlap / exclude.sum() if exclude.any() else 0.0
         if not exclude.any():
@@ -164,26 +160,37 @@ def isolate_builtin(image_path: Path, out_path: Path, subject_prompt: str = "cha
                  f"the subject — subtracted)")
 
     arr = np.asarray(image)
-    white = np.full_like(arr, 255)
-    out = np.where(subject[..., None], arr, white)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(out).save(out_path, "PNG")
+    if alpha_cutout:
+        # Straight (non-premultiplied) alpha: keep the source RGB everywhere and let
+        # alpha carry the cutout, so the visible subject's colors are unaffected by
+        # what's outside the mask (unlike the white composite, nothing to bleed from).
+        rgba = np.dstack([arr, (subject * 255).astype(np.uint8)])
+        Image.fromarray(rgba, "RGBA").save(out_path, "PNG")
+    else:
+        white = np.full_like(arr, 255)
+        out = np.where(subject[..., None], arr, white)
+        Image.fromarray(out).save(out_path, "PNG")
     return out_path
 
 
 def crop_to_content(image: Image.Image, bg_tolerance: int = 8,
                     margin_frac: float = 0.02) -> Image.Image:
-    """Crop an isolated (subject-on-white) image to the subject's bounding box.
+    """Crop an isolated (subject-on-white, or subject-with-alpha) image to the
+    subject's bounding box.
 
-    Both isolation backends composite the subject onto a plain white background, so
-    the subject's bounding box is simply the extent of the non-white pixels — no
-    mask needed, which keeps this backend-agnostic and pure numpy. A small margin
-    (fraction of the long side) is left around the subject. Tightens framing across
-    a set and trains less empty white padding. If the image is effectively all
-    white (nothing found), it is returned unchanged.
+    Both isolation backends composite the subject onto a plain white background
+    (the default), so the subject's bounding box is simply the extent of the
+    non-white pixels there. An `alpha_cutout` image has no white to key off —
+    its bounding box is the extent of non-transparent (alpha > 0) pixels instead.
+    A small margin (fraction of the long side) is left around the subject.
+    If the image is effectively empty (nothing found), it is returned unchanged.
     """
-    arr = np.asarray(image.convert("RGB")).astype(np.int16)
-    nonbg = np.any(255 - arr > bg_tolerance, axis=-1)  # anything darker than white
+    if image.mode == "RGBA":
+        nonbg = np.asarray(image.getchannel("A")) > 0
+    else:
+        arr = np.asarray(image.convert("RGB")).astype(np.int16)
+        nonbg = np.any(255 - arr > bg_tolerance, axis=-1)  # anything darker than white
     if not nonbg.any():
         return image
     rows = np.where(nonbg.any(axis=1))[0]
@@ -222,10 +229,17 @@ def isolate_comfyui(image_path: Path, out_path: Path, subject_prompt: str = "cha
 def isolate_subject(image_path: Path, out_path: Path, subject_prompt: str = "character",
                     exclude_prompt: str = "", backend: str = "",
                     progress: Callable[[str], None] | None = None,
-                    front: bool = False) -> Path:
+                    front: bool = False, alpha_cutout: bool = False) -> Path:
     backend = backend or settings.isolation_backend
     if backend == "comfyui":
+        if alpha_cutout:
+            raise IsolationError(
+                "Alpha cutout needs the builtin SAM3 backend — the bundled ComfyUI "
+                "isolation workflows composite onto a solid background and haven't "
+                "been extended for transparency. Switch 'Isolation backend' to "
+                "builtin, or turn alpha cutout off."
+            )
         return isolate_comfyui(image_path, out_path, subject_prompt, exclude_prompt,
                                front=front)
     return isolate_builtin(image_path, out_path, subject_prompt, exclude_prompt,
-                           progress=progress)
+                           progress=progress, alpha_cutout=alpha_cutout)

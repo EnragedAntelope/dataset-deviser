@@ -157,3 +157,39 @@ def test_dilate_grows_when_explicitly_asked(scene: Path, fake_segment, tmp_path:
     iso.isolate_builtin(scene, out, subject_prompt="character",
                         exclude_prompt="microphone")
     assert _kept(out) < 800 - 50  # dilation removed more than the raw mask
+
+
+def test_alpha_cutout_produces_transparent_background(scene: Path, fake_segment,
+                                                       tmp_path: Path) -> None:
+    """alpha_cutout=True keeps subject alpha at 255 and zeroes it elsewhere."""
+    out = tmp_path / "out.png"
+    iso.isolate_builtin(scene, out, subject_prompt="character", alpha_cutout=True)
+    img = Image.open(out)
+    assert img.mode == "RGBA"
+    alpha = np.asarray(img.getchannel("A"))
+    assert (alpha[0:20, :] == 255).all()   # subject rows (see _masks())
+    assert (alpha[20:40, :] == 0).all()    # background rows
+
+
+def test_alpha_cutout_off_by_default_stays_rgb_white(scene: Path, fake_segment,
+                                                      tmp_path: Path) -> None:
+    out = tmp_path / "out.png"
+    iso.isolate_builtin(scene, out, subject_prompt="character")
+    assert Image.open(out).mode == "RGB"
+
+
+def test_crop_to_content_uses_alpha_channel_when_rgba() -> None:
+    """A transparent canvas has no 'non-white' pixels to crop by — must use alpha."""
+    arr = np.zeros((40, 40, 4), dtype=np.uint8)
+    arr[10:20, 5:15, :3] = 200
+    arr[10:20, 5:15, 3] = 255
+    img = Image.fromarray(arr, "RGBA")
+    cropped = iso.crop_to_content(img, margin_frac=0.0)
+    assert cropped.size == (10, 10)
+
+
+def test_alpha_cutout_rejected_for_comfyui_backend(scene: Path, tmp_path: Path) -> None:
+    """Never silently return white or ignore the flag — comfyui alpha isn't built."""
+    with pytest.raises(iso.IsolationError, match="builtin"):
+        iso.isolate_subject(scene, tmp_path / "out.png", backend="comfyui",
+                            alpha_cutout=True)
