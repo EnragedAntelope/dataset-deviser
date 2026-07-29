@@ -713,6 +713,36 @@ verified after the rename. Three things this depended on getting right:
 - **Kept the `LDS_` env prefix** unchanged. Renaming it would have silently invalidated every
   existing `.env` for no user benefit.
 
+## Repo rename: lora-distillery → dataset-deviser (0.13.0)
+
+Recorded 2026-07-29. A colleague pointed out that "distill" has a specific, different
+meaning in AI (knowledge/model distillation — training a smaller model to mimic a larger
+one), which is not what this tool does: it builds a LoRA training dataset from one
+reference image, it does not distill a model. The 0.12.2 name was well-intentioned (it
+resolved a real collision) but wrong on the merits.
+
+Landed on **Dataset Deviser** (repo slug `dataset-deviser`) after a fresh brainstorm,
+verified clean via GitHub repo search against several alliterative candidates
+(`dataset-drafter`, `reference-refinery`, `angle-architect` were also clean; Deviser was
+the maintainer's pick — originally suggested by the colleague who flagged the "distill"
+problem). This rename also **drops "lora" from the name**: the tool already covers Style
+and Concept datasets, not just character LoRAs, so a LoRA-specific name was already
+slightly too narrow.
+
+Same cheap-to-rename profile as before (minimal stars, no forks, nothing on PyPI). This is
+now a **two-hop rename** (`lora-dataset-studio` → `lora-distillery` → `dataset-deviser`);
+the redirect chain was verified to still resolve end-to-end after this hop (`git ls-remote`
+against the original `lora-dataset-studio` URL succeeded). The same three things that
+mattered for the first rename still apply:
+
+- **Never create a new repo under any of the three names** (`lora-dataset-studio`,
+  `lora-distillery`, `dataset-deviser` once it's the current one — trivially true — but
+  also never re-create either of the two old names) in this account.
+- `update_check.py`'s `GITHUB_REPO` constant was updated in the same commit as the actual
+  `gh repo rename` call.
+- **Kept the `LDS_` env prefix unchanged** — same reasoning as last time: renaming it would
+  silently invalidate every existing `.env` for no user benefit.
+
 ## Deferred (with rationale)
 
 Considered and deliberately **not** pursued, with the reason each stays out.
