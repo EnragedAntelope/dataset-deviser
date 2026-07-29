@@ -1,3 +1,3 @@
-"""LoRA Dataset Studio: single image -> ready-to-train character LoRA dataset."""
+"""LoRA Distillery: single image -> ready-to-train character LoRA dataset."""
 
-__version__ = "0.12.1"
+__version__ = "0.12.2"

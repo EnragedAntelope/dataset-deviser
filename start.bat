@@ -1,5 +1,5 @@
 @echo off
-REM LoRA Dataset Studio - launch the UI (run setup.bat once first).
+REM LoRA Distillery - launch the UI (run setup.bat once first).
 REM
 REM MAINTAINER NOTE: this script must never exit without pausing. Double-clicked, a
 REM bare `exit /b 1` closes the window instantly, so a crash looked to users like
@@ -21,7 +21,7 @@ goto :die
 
 :appfailed
 echo.
-echo [ERROR] LoRA Dataset Studio exited with an error. The cause is in the output
+echo [ERROR] LoRA Distillery exited with an error. The cause is in the output
 echo         above - scroll up to read it.
 echo.
 echo   Most common cause: you just ran "git pull" and the new version needs a

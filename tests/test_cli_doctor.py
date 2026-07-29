@@ -61,6 +61,58 @@ def test_onnxruntime_is_optional_not_a_failure() -> None:
     assert check.ok and check.warn  # advisory: only the taggers need it
 
 
+# --- ComfyUI model-filename check ------------------------------------------
+
+def test_comfyui_models_check_skipped_when_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    from studio import comfy_api
+
+    monkeypatch.setattr(comfy_api, "is_up", lambda: False)
+    assert D.check_comfyui_models() is None
+
+
+def test_comfyui_models_check_passes_when_every_template_loads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from studio import comfy_api
+
+    monkeypatch.setattr(comfy_api, "is_up", lambda: True)
+    monkeypatch.setattr(comfy_api, "load_template", lambda name: {})
+
+    check = D.check_comfyui_models()
+
+    assert check is not None
+    assert check.ok and not check.warn
+
+
+def test_comfyui_models_check_reports_a_bad_filename_without_failing_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reuses load_template()'s own validation — see the ComfyUI model-lookup
+    gotcha in ARCHITECTURE.md. A configured filename ComfyUI doesn't have is
+    advisory here (cloud/other stages still work), never a hard failure."""
+    from studio import comfy_api
+
+    monkeypatch.setattr(comfy_api, "is_up", lambda: True)
+
+    def fake_load_template(name: str) -> dict:
+        if name == "isolate_subject":
+            raise comfy_api.ComfyError(
+                "ComfyUI has no ckpt_name 'bad.safetensors' for CheckpointLoaderSimple "
+                "(3 installed). Set LDS_SAM3_CHECKPOINT in .env to a filename ComfyUI "
+                "lists, or install the model into the matching folder."
+            )
+        return {}
+
+    monkeypatch.setattr(comfy_api, "load_template", fake_load_template)
+
+    check = D.check_comfyui_models()
+
+    assert check is not None
+    assert check.ok and check.warn
+    assert "bad.safetensors" in check.detail
+    assert "LDS_SAM3_CHECKPOINT" in check.detail
+
+
 # --- key reporting ---------------------------------------------------------
 
 def test_key_report_names_what_a_missing_key_blocks(tmp_path: Path) -> None:
@@ -109,7 +161,7 @@ def test_report_renders_without_raising(tmp_path: Path) -> None:
                             importer=lambda name: True,
                             version=(3, 12, 0), check_comfy=False)
     text = D.render(report)
-    assert "LoRA Dataset Studio" in text
+    assert "LoRA Distillery" in text
     assert "cli.py keys" in text  # points at the fix
 
 

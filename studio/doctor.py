@@ -169,6 +169,37 @@ def check_comfyui() -> Check:
                  warn=True)
 
 
+def check_comfyui_models() -> Check | None:
+    """If ComfyUI is reachable, validate every bundled template's configured model
+    filename against the server's own list.
+
+    Reuses `comfy_api.load_template()` itself — the exact seam a real generate/
+    preprocess run goes through — rather than re-implementing the matching, so
+    this can never drift from what actually happens at run time. Returns None
+    (skip entirely) when ComfyUI is unreachable; `check_comfyui()` already
+    reports that case.
+    """
+    from studio import comfy_api
+
+    try:
+        if not comfy_api.is_up():
+            return None
+    except Exception:
+        return None
+
+    problems: list[str] = []
+    for path in sorted(comfy_api.WORKFLOWS_DIR.glob("*.json")):
+        try:
+            comfy_api.load_template(path.stem)
+        except comfy_api.ComfyError as e:
+            problems.append(str(e))
+        except Exception:
+            continue  # a template JSON/parse issue isn't this check's job to report
+    if not problems:
+        return Check("ComfyUI models", True, "all configured model filenames found on the server")
+    return Check("ComfyUI models", True, " | ".join(problems), warn=True)
+
+
 # --- keys ------------------------------------------------------------------
 
 def key_report(env_path: Path | str = "", *, environ: dict[str, str] | None = None
@@ -256,6 +287,9 @@ def build_report(env_path: Path | str = "", *, environ: dict[str, str] | None = 
     report.checks.append(check_onnxruntime(importer))
     if check_comfy:
         report.checks.append(check_comfyui())
+        models_check = check_comfyui_models()
+        if models_check is not None:
+            report.checks.append(models_check)
     report.key_lines = key_report(env_path, environ=environ)
     return report
 
@@ -265,7 +299,7 @@ def render(report: Report) -> str:
 
     Deliberately ASCII-only throughout — see `Check.symbol` for why.
     """
-    out = [f"LoRA Dataset Studio v{__version__} - environment check", ""]
+    out = [f"LoRA Distillery v{__version__} - environment check", ""]
     for check in report.checks:
         out.append(f"  {check.symbol} {check.label:<14} {check.detail}")
     out += ["", "API keys (all optional - every stage has a local path):"]

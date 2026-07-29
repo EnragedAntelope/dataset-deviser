@@ -1,5 +1,5 @@
 @echo off
-REM LoRA Dataset Studio - one-time setup (Windows). Safe to re-run: use it to
+REM LoRA Distillery - one-time setup (Windows). Safe to re-run: use it to
 REM switch an existing install between the CPU-only and NVIDIA-GPU PyTorch builds,
 REM to install dependencies added by a `git pull`, or to change an API key.
 REM
@@ -16,7 +16,7 @@ cd /d "%~dp0"
 
 set "EXITCODE=1"
 
-echo === LoRA Dataset Studio setup ===
+echo === LoRA Distillery setup ===
 echo.
 
 REM --- Python present? ---

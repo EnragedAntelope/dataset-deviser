@@ -18,7 +18,7 @@ from studio.config import CACHE_DIR, settings
 
 UPDATE_CACHE_FILE = CACHE_DIR / "update_check.json"
 UPDATE_CACHE_TTL_HOURS = 24
-GITHUB_REPO = "EnragedAntelope/lora-dataset-studio"
+GITHUB_REPO = "EnragedAntelope/lora-distillery"
 RELEASES_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
 
@@ -67,7 +67,7 @@ def _fetch_latest_tag() -> str | None:
     try:
         r = httpx.get(RELEASES_API_URL, timeout=5,
                       headers={"Accept": "application/vnd.github+json",
-                               "User-Agent": "lora-dataset-studio-update-check"})
+                               "User-Agent": "lora-distillery-update-check"})
         r.raise_for_status()
         tag = r.json().get("tag_name", "")
         return tag or None

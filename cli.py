@@ -522,5 +522,66 @@ def keys(
         typer.echo("Change any of these later with:  python cli.py keys")
 
 
+@app.command("custom-endpoint")
+def custom_endpoint(
+    base_url: str = typer.Option(
+        "", "--base-url", help="Base URL, e.g. https://openrouter.ai/api/v1"),
+    model: str = typer.Option("", "--model", help="Model id/name at that endpoint"),
+    key_env: str = typer.Option(
+        "", "--key-env",
+        help="Name of the environment variable holding the API key (not the key itself)"),
+    spacing: float = typer.Option(
+        0.0, "--spacing", help="Minimum seconds between requests (rate-limit spacing)"),
+) -> None:
+    """Show or set the custom OpenAI-compatible captioner (--captioner custom).
+
+    With no options, shows the currently saved config. To save one, pass at
+    least --base-url and --model; any option left blank keeps its current saved
+    value, so `python cli.py custom-endpoint --spacing 3` alone just adjusts
+    spacing. Saved to the same .cache/user_settings.json the UI's Caption tab
+    writes to, so the CLI and UI share one config either way sets it.
+
+    The API key itself is never stored here — --key-env only records which
+    environment variable (in .env or the shell) to read it from at caption time.
+    """
+    from studio import user_config
+
+    cfg = user_config.get_custom_captioner()
+
+    if not base_url and not model and not key_env and not spacing:
+        if not cfg.get("base_url"):
+            typer.echo("No custom endpoint configured yet.")
+            typer.echo(
+                "Set one:  python cli.py custom-endpoint --base-url URL --model NAME "
+                "[--key-env VAR_NAME] [--spacing SECONDS]")
+            return
+        typer.echo(f"Base URL:  {cfg.get('base_url', '')}")
+        typer.echo(f"Model:     {cfg.get('model', '')}")
+        typer.echo(f"Key env:   {cfg.get('api_key_env') or '(none set)'}")
+        typer.echo(f"Spacing:   {cfg.get('min_interval_s', 0.0)}s")
+        return
+
+    final_base_url = base_url.strip() or cfg.get("base_url", "")
+    final_model = model.strip() or cfg.get("model", "")
+    if not final_base_url or not final_model:
+        raise typer.BadParameter(
+            "Both --base-url and --model are needed the first time you set this "
+            "(nothing saved yet to fall back on).")
+
+    user_config.set_custom_captioner(
+        final_base_url, final_model,
+        key_env.strip() or cfg.get("api_key_env", ""),
+        spacing or cfg.get("min_interval_s", 0.0),
+    )
+    typer.echo("Saved.")
+    typer.echo(
+        "Use it with:  python cli.py caption ./folder --captioner custom --trigger ...")
+    key_env_final = key_env.strip() or cfg.get("api_key_env", "")
+    if key_env_final:
+        typer.echo(f"Make sure {key_env_final} is set (in .env or your shell) before captioning.")
+    else:
+        typer.echo("No --key-env set — fine only if this endpoint needs no API key.")
+
+
 if __name__ == "__main__":
     app()

@@ -1,4 +1,4 @@
-# LoRA Dataset Studio
+# LoRA Distillery
 
 **Turn a character, style, or concept into a ready-to-train LoRA dataset.** For a **character**,
 one reference image becomes ~24 consistent shots across camera angles, poses, emotions and
@@ -179,6 +179,8 @@ python cli.py build source.png --name "Sy Snootles" --trigger sysnootles  # all 
 python cli.py build ./my-style-shots --trigger mystyle --dataset-type style  # skips ② entirely
 python cli.py doctor                                                      # check this install
 python cli.py keys --set GROQ_API_KEY                                     # set/replace a key
+python cli.py custom-endpoint --base-url https://openrouter.ai/api/v1 \
+    --model qwen/qwen2.5-vl-72b-instruct --key-env OPENROUTER_API_KEY     # configure --captioner custom
 ```
 
 ## API keys (cloud options only)

@@ -1,12 +1,14 @@
 # Architecture
 
-Version: 0.12.1
+Version: 0.12.2
 
 ```
 app.py                  Gradio UI — thin wiring over the stage functions (5 tabs)
 cli.py                  Typer CLI — one subcommand per stage + `build` for all four,
-                        plus `doctor` (install self-check) and `keys` (view/set the
-                        .env API keys — what setup.bat/setup.sh call)
+                        plus `doctor` (install self-check), `keys` (view/set the .env
+                        API keys — what setup.bat/setup.sh call), and
+                        `custom-endpoint` (view/set the custom OpenAI-compatible
+                        captioner without the UI — see the CLI/UI parity gotcha)
 setup.bat / setup.sh    One-time install: Python version gate, venv, GPU-or-CPU torch,
                         requirements, ONNX Runtime, then `cli.py keys --setup` and
                         `cli.py doctor`. Deliberately thin — see the shell gotchas
@@ -19,9 +21,11 @@ studio/
                         mask(), key_status(). Replaced the per-shell versions in
                         setup.bat/setup.sh — see the shell gotchas
   doctor.py             Install self-check behind `cli.py doctor`: Python version,
-                        required imports, torch/onnxruntime, ComfyUI reachability, and
-                        masked key status naming what each missing key blocks. Every
-                        check takes its inputs as parameters, so it is unit-tested
+                        required imports, torch/onnxruntime, ComfyUI reachability,
+                        configured model filenames against ComfyUI's own list (via
+                        `comfy_api.load_template`, reachable-only), and masked key
+                        status naming what each missing key blocks. Every check
+                        takes its inputs as parameters, so it is unit-tested
   config.py             Settings (env/.env overridable), captioner registry with
                         per-model prompt templates, engine/price tables. Also the two
                         dataset-folder-convention primitives: list_images() and
@@ -381,11 +385,14 @@ disabled for it in the UI and `cli.py build --dataset-type style` skips the stag
   as insurance and `_clean()` strips any residual `<think>` tags. 429s are retried with
   backoff; `min_interval_s` spaces requests for the free tier.
 - **Custom OpenAI-compatible captioner.** The `custom` captioner carries no endpoint in
-  config; the Caption tab collects base URL / model / key-env-NAME / request spacing and
-  persists them (minus the secret) via `user_config.set_custom_captioner`. At caption
-  time `_resolve_captioner_config` loads them into `spec_overrides`, applied with
-  `CaptionerSpec.model_copy(update=...)` so the registry spec is never mutated. The API
-  key is read from the named env var.
+  config; either the Caption tab or `cli.py custom-endpoint` (0.12.2 — previously UI-only,
+  a CLI-only user had no way to set this at all) collects base URL / model / key-env-NAME /
+  request spacing and persists them (minus the secret) via `user_config.set_custom_captioner`.
+  At caption time `resolve_captioner_config` (shared by UI and CLI) loads them into
+  `spec_overrides`, applied with `CaptionerSpec.model_copy(update=...)` so the registry spec
+  is never mutated. The API key is read from the named env var. `cli.py custom-endpoint`
+  with no options shows the saved config; passing only some fields keeps the others at
+  their last-saved value rather than requiring the whole config restated every time.
 - **Caption style is prose / Danbooru tags / e621 tags, per call — not a global mode.**
   `CaptionerSpec` carries three templates (`prompt_template` prose, `tags_template`
   Danbooru, `e621_template` furry/anthro) and `prompt_for(style)` selects one; every backend
@@ -627,6 +634,14 @@ API keys).
   filename matching for the rest of the run (and an unmatched filename now raises a named,
   closest-match error instead of ComfyUI's opaque one), and `gradio` is capped `<6` after a
   reproduced stuck-loading-overlay regression on 6.20.0. See the three matching gotchas.
+- **Repo rename + usability follow-ups (0.12.2)** — `lora-dataset-studio` renamed to
+  `lora-distillery` (see the rename record below) with a matching product-name rebrand
+  everywhere it appeared. Plus two small parity/usability fixes surfaced while reviewing
+  0.12.1: `cli.py doctor` now proactively validates every configured ComfyUI model filename
+  against the live server (reuses `load_template()`'s own check, so a bad filename shows up
+  at `doctor` time instead of mid-generate); and `cli.py custom-endpoint` lets a CLI-only
+  user configure the custom OpenAI-compatible captioner, closing the UI-only gap noted since
+  0.7.0.
 
 ## Future ideas & enhancements
 
@@ -656,31 +671,34 @@ ordered by benefit-to-cost.
   clears (see the Gradio gotcha). Nobody has dug into *why* Gradio 6 does this — worth a real
   investigation before ever attempting to lift the cap, so the fix doesn't repeat.
 
-## Repo name collision (analysis, no decision yet)
+## Repo rename: lora-dataset-studio → lora-distillery (0.12.2)
 
-Recorded 2026-07-27 so the decision can be made from facts rather than re-researched.
+Recorded 2026-07-27 as an open decision, resolved 2026-07-28.
 
-`lora-dataset-studio` is a crowded name. `perfectgf/lora-dataset-studio` was created
-2026-07-05 — six days before this repo — and has ~99 stars; four other repos share the name.
-That project is a whole-lifecycle workbench (in-app/cloud training, an Image Bank, scraping, a
-Test Studio with checkpoint ranking), which is **precisely** the scope the Deferred section below
-rejects on purpose. The differentiation is real: this tool builds datasets and stops at the
-trainer boundary.
+`lora-dataset-studio` was a crowded name: `perfectgf/lora-dataset-studio` was created 2026-07-05 —
+six days before this repo — with ~99 stars, and four other repos shared the name. That project is
+a whole-lifecycle workbench (in-app/cloud training, an Image Bank, scraping, a Test Studio with
+checkpoint ranking), which is **precisely** the scope the Deferred section below rejects on
+purpose; the differentiation was real, but the name collision made it invisible in search.
 
-Renaming is cheap: 0 forks, 0 issues, 3 stars, nothing published to PyPI (`pyproject.toml` has
-no `[project]` table), and the name appears in ~19 places across 12 tracked files.
+Renaming was cheap at the time: 0 forks, 0 issues, 3 stars, nothing published to PyPI
+(`pyproject.toml` has no `[project]` table). The project (and its product display name, "LoRA
+Dataset Studio" → "**LoRA Distillery**") were renamed together across the repo, README, in-app UI
+title/header, CLI/doctor output, and generated-file provenance strings (dataset `README.txt`,
+trainer-config comments, HF commit messages) so nothing keeps saying the old name.
 
 **Existing clones keep working.** GitHub permanently redirects the old URL for the web UI,
-`git clone`, `git fetch` and `git push`, so anyone who already cloned can `git pull` as normal.
-Three things to get right if it happens:
+`git clone`, `git fetch` and `git push`, so anyone who already cloned can `git pull` as normal —
+verified after the rename. Three things this depended on getting right:
 
 - **Never create a new repo under the old name** in the same account — that is the one action
-  that breaks the redirect.
-- `update_check.py` hardcodes `GITHUB_REPO`, and `httpx` does not follow redirects by default, so
-  the update banner goes quiet for anyone until they pull the commit that changes the constant.
-  It is a single constant, so nothing needs centralising first.
-- **Keep the `LDS_` env prefix** whatever the new name is. Renaming it would silently invalidate
-  every existing `.env` for no user benefit.
+  that would have broken the redirect. (Nothing has been created there.)
+- `update_check.py`'s `GITHUB_REPO` constant was updated to `EnragedAntelope/lora-distillery` in
+  the same commit as the rename — `httpx` does not follow redirects by default, so anyone still on
+  an older version won't see an update banner until they pull the commit with this change. That is
+  expected, one-time friction, not a bug.
+- **Kept the `LDS_` env prefix** unchanged. Renaming it would have silently invalidated every
+  existing `.env` for no user benefit.
 
 ## Deferred (with rationale)
 
