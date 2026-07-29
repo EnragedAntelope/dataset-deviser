@@ -86,6 +86,7 @@ def preprocess(
     restore_backend: str = "",
     isolation_backend: str = "",
     tighten_crop: bool = False,
+    alpha_cutout: bool = False,
     progress: Callable[[str], None] | None = None,
 ) -> PreprocessReport:
     """Copy + clean one source image into `work_dir` at target resolution.
@@ -95,6 +96,10 @@ def preprocess(
     generations or the dataset.
     tighten_crop: after isolation, crop to the subject's bounding box (less white
     padding, more consistent framing). No effect unless `isolate` is on.
+    alpha_cutout: export the isolated subject on a transparent background instead
+    of white (builtin SAM3 backend only — see `isolate_subject`). No effect
+    unless `isolate` is on. This is a terminal output for the caller's own
+    compositing workflow, not a new reference format for ② Generate.
     """
     target = target or settings.target_long_side
     restore_backend = restore_backend or settings.restore_backend
@@ -132,10 +137,14 @@ def preprocess(
 
     if isolate:
         isolate_subject(stage_path, out_path, subject_prompt, exclude_prompt,
-                        backend=isolation_backend, progress=progress)
+                        backend=isolation_backend, progress=progress,
+                        alpha_cutout=alpha_cutout)
         stage_path = out_path
 
-    img = Image.open(stage_path).convert("RGB")
+    if isolate and alpha_cutout:
+        img = Image.open(stage_path)  # keep RGBA — no forced flatten
+    else:
+        img = Image.open(stage_path).convert("RGB")
     if isolate and tighten_crop:
         # Crop the subject-on-white composite to its bounding box before resizing.
         from studio.isolate import crop_to_content
