@@ -41,8 +41,10 @@ studio/
   preprocess.py         Restore (comfyui|basic|auto) + isolate + optional tighten-crop
                         + resize
   isolate.py            Subject isolation: builtin SAM3 (transformers) | comfyui.
-                        crop_to_content() tightens the isolated (subject-on-white)
-                        image to the subject's bounding box (opt-in, both backends)
+                        crop_to_content() tightens the isolated (subject-on-white, or
+                        subject-with-alpha) image to the subject's bounding box (opt-in,
+                        both backends). alpha_cutout composites onto transparency
+                        instead of white — builtin backend only, see the Gotcha
   tagger.py             ONNX booru-tagger backend: canonical tags straight from
                         image features — WD (Danbooru) and Z3D (e621) via one code
                         path, differing only in tag file + category SCHEMES. Pure
@@ -590,6 +592,16 @@ disabled for it in the UI and `cli.py build --dataset-type style` skips the stag
   here instead of re-discovering it. **Caveat for anyone changing the pin by hand:** installing
   Gradio 5 can pull `pydantic` down to a version older than `google-genai`'s floor; reinstall
   `pydantic>=2.12.5` afterward if `import google.genai` breaks.
+- **Alpha cutout is builtin-backend-only and doesn't feed ② Generate.** `isolate_builtin`'s
+  `alpha_cutout` flag composites the subject onto transparency (straight alpha = the mask)
+  instead of white; `isolate_subject` raises `IsolationError` if asked for alpha cutout on
+  the `comfyui` backend rather than silently returning white or ignoring the flag — the
+  bundled ComfyUI isolation workflows composite via core nodes onto a solid `EmptyImage`
+  and haven't been extended for transparency. `crop_to_content` dispatches on `image.mode`
+  (alpha>0 bounding box for RGBA, non-white heuristic otherwise) so tighten-crop still works
+  on a cutout. This is a terminal output for the user's own compositing workflow — ②
+  Generate is unchanged and still expects (and gets, by default) a white-background
+  reference; turning alpha cutout on and continuing to ② is not supported.
 
 ## Feature history (consolidated)
 
@@ -598,7 +610,8 @@ grouped by stage. Milestone versions are noted only where they explain a design 
 
 - **① Preprocess** — restore (ComfyUI models / basic Lanczos / auto), SAM3 subject isolation
   (built-in transformers or ComfyUI, with measured over-cut fixes), optional tighten-to-subject
-  crop, resize to target long-side.
+  crop, resize to target long-side. Optional alpha (RGBA) cutout output (builtin backend
+  only) for external compositing workflows.
 - **② Generate & curate** — curated 24-shot Character plan (angles/poses/emotions/settings) or
   18-shot Concept plan (turnaround/framing/context), Qwen-Image-Edit 2511 + Multiple-Angles LoRA
   (local) or Gemini (cloud), chained rear views, prop exclusion, wardrobe randomizer, per-shot
@@ -663,9 +676,9 @@ ordered by benefit-to-cost.
 - **Exact CLIP token count (③/④).** The 77-token warning is a tokenizer-free estimate; loading the
   real CLIP tokenizer would make it exact. Only worth it if a user needs high accuracy — the
   estimate errs safe and is fine for an advisory.
-- **Alpha (RGBA) cutout option (①).** Export the isolated subject on transparency instead of white,
-  for workflows that composite their own backgrounds. Small toggle; white stays the default (the
-  Multiple-Angles LoRA is trained on white). Left as a maybe — build only if someone needs it.
+- **ComfyUI-backend alpha cutout.** The `alpha_cutout` toggle at ① (0.13.0) is builtin-SAM3-only —
+  the bundled ComfyUI isolation workflows would need a graph change (a core alpha-join node) to
+  support it. Revisit if a ComfyUI-only user asks for it.
 - **Root-cause the Gradio 6 stuck-loading-overlay bug (0.12.1).** `requirements.txt` caps
   `gradio<6` because 6.20.0 leaves `demo.load`-fed components stuck under a spinner that never
   clears (see the Gradio gotcha). Nobody has dug into *why* Gradio 6 does this — worth a real

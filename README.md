@@ -205,6 +205,9 @@ Set or change any of them with `python cli.py keys` — they live only in a giti
   generation, built-in SAM3, local captioning and export all work without it. **No custom nodes
   required.** See [docs/comfyui-setup.md](docs/comfyui-setup.md).
 - **Sources are never modified**; every stage writes copies.
+- **Alpha cutout, on request.** ① Preprocess can export the isolated subject on a transparent
+  background instead of white (builtin SAM3 backend only) — for your own compositing workflows.
+  Leave it off (default) if you're continuing to ② Generate, which expects a white reference.
 - The UI binds to `127.0.0.1` with **no authentication** — don't expose it. So galleries can
   preview images from any folder you point a tab at, the local file server can read any file the
   app process can while it's running; that's safe only behind the localhost bind, so never forward
