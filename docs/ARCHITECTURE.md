@@ -1,6 +1,6 @@
 # Architecture
 
-Version: 0.12.0
+Version: 0.12.1
 
 ```
 app.py                  Gradio UI — thin wiring over the stage functions (5 tabs)
@@ -99,7 +99,11 @@ studio/
                         gitignored)
   update_check.py       Best-effort GitHub-release check (cached 24h) -> dismissible
                         UI banner when a newer version is published
-  comfy_api.py          Thin ComfyUI HTTP client (upload, queue, poll, fetch, free)
+  comfy_api.py          Thin ComfyUI HTTP client (upload, queue, poll, fetch, free).
+                        _combo_options()/_server_filename() validate configured model
+                        filenames against the server's own combo list (separator/case
+                        -insensitive match, raises a named-setting+closest-match error
+                        on a genuine miss) — see the ComfyUI model-lookup gotcha
   engines/
     base.py             Engine protocol + GenerationError
     gemini.py           Cloud engine (Gemini image models via google-genai) with
@@ -112,9 +116,11 @@ studio/
 ## Testing & CI
 
 `pytest` (config in `pytest.ini`) covers the pure logic — the tagger `select_*`/`format_*` seams,
-caption finalization/lint, trainer-config rendering, package/zip resolution, shot planning, etc. —
-without downloading a model or touching the network (heavy backends are lazy-imported and mocked).
-Run the suite with `pytest -q`; lint with `ruff check .` (rules in `pyproject.toml`).
+caption finalization/lint, trainer-config rendering, package/zip resolution, shot planning,
+`comfy_api`'s filename-matching/combo-cache seam, the single-device pin, etc. — without
+downloading a model or touching the network (heavy backends are lazy-imported and mocked;
+`comfy_api`'s tests monkeypatch `httpx.get`). Run the suite with `pytest -q`; lint with
+`ruff check .` (rules in `pyproject.toml`).
 
 `.github/workflows/ci.yml` runs both on every push to `main` and every PR, across Python
 3.10–3.12. It installs `requirements.txt` only (**no `torch`**): the suite is CPU-only and never
@@ -549,6 +555,34 @@ disabled for it in the UI and `cli.py build --dataset-type style` skips the stag
   different folders never collide and the stage stays stateless. `resolve_export_items()` is the
   single scan/classify seam shared by the UI and `cli.py export`; a checked image with a missing/
   empty caption is skipped and reported, never silently dropped or fatal.
+- **`device_map="auto"` shards a model across every visible GPU — never pin SAM3 or a
+  captioner to it on a multi-GPU box.** A 2-GPU machine crashed preprocess with "Expected all
+  tensors to be on the same device, but found at least two devices, cuda:0 and cuda:1" because
+  accelerate split SAM3 across both cards and the forward pass mixed them. SAM3 fits any single
+  card, so `isolate.py` now loads it via `from_pretrained(...).to(config.torch_device())` instead
+  of `device_map="auto"`. Local captioners *can* legitimately need more than one card, so
+  `captioner.py` keeps `"auto"` when `torch.cuda.device_count() <= 1` (offloads whatever doesn't
+  fit) and pins to a single device only when there are two or more — trading automatic sharding
+  for crash-safety on multi-GPU boxes. `LDS_TORCH_DEVICE` (`config.torch_device()`) overrides
+  either path (`cuda:1`, `cpu`, …) for a user who wants to pick the card themselves.
+- **A failed ComfyUI combo-list lookup must never be cached.** `comfy_api._combo_options` used to
+  cache a timed-out `/object_info` call as an empty list — `/object_info` stalls while ComfyUI is
+  busy — which permanently disabled filename matching for the rest of the process; every later
+  graph then sent the raw (unmatched) value and ComfyUI rejected it with an opaque "Value not in
+  list: ... not in (list of length 10574)". Only successful lookups are cached now (empty results
+  re-fetch on the next call), the timeout is 30s, matching falls back to a case-insensitive
+  compare (Windows paths vs. ComfyUI's exact-case list), and — new behavior — **an unmatched
+  filename now raises** `ComfyError` naming the `LDS_` setting to fix and the closest installed
+  filenames (via `difflib`), instead of silently sending a value ComfyUI will reject anyway.
+  Applies to LoRA/checkpoint/UNet inputs and `UpscaleModelLoader` alike.
+- **Gradio is capped `<6`.** On Gradio 6.20.0, components fed by `demo.load` in ②/③ (shot plan,
+  cost line, character-name box, isolation subject, wardrobe note) get stuck under a loading
+  overlay that never clears — the value arrives but the spinner keeps counting up. Reproduced by
+  A/B on the same code/`.env` (6 stuck components on 6.20.0, 0 on 5.50.0). Root cause inside
+  Gradio 6 is still unknown — logged under Future ideas so an eventual upgrade attempt starts from
+  here instead of re-discovering it. **Caveat for anyone changing the pin by hand:** installing
+  Gradio 5 can pull `pydantic` down to a version older than `google-genai`'s floor; reinstall
+  `pydantic>=2.12.5` afterward if `import google.genai` breaks.
 
 ## Feature history (consolidated)
 
@@ -587,6 +621,12 @@ API keys).
   exit (usually a dependency added by a `git pull`) instead of vanishing; `cli.py doctor` reports
   what is configured and what each missing key blocks. See the shell gotchas for why none of this
   lives in the scripts any more.
+- **Multi-GPU + ComfyUI model-lookup + Gradio pin (0.12.1)** — community PR (marduk191) from a
+  real 2-GPU Windows box: SAM3/captioners no longer crash under `device_map="auto"`
+  (`LDS_TORCH_DEVICE` to override), a timed-out ComfyUI `/object_info` call can no longer poison
+  filename matching for the rest of the run (and an unmatched filename now raises a named,
+  closest-match error instead of ComfyUI's opaque one), and `gradio` is capped `<6` after a
+  reproduced stuck-loading-overlay regression on 6.20.0. See the three matching gotchas.
 
 ## Future ideas & enhancements
 
@@ -611,6 +651,10 @@ ordered by benefit-to-cost.
 - **Alpha (RGBA) cutout option (①).** Export the isolated subject on transparency instead of white,
   for workflows that composite their own backgrounds. Small toggle; white stays the default (the
   Multiple-Angles LoRA is trained on white). Left as a maybe — build only if someone needs it.
+- **Root-cause the Gradio 6 stuck-loading-overlay bug (0.12.1).** `requirements.txt` caps
+  `gradio<6` because 6.20.0 leaves `demo.load`-fed components stuck under a spinner that never
+  clears (see the Gradio gotcha). Nobody has dug into *why* Gradio 6 does this — worth a real
+  investigation before ever attempting to lift the cap, so the fix doesn't repeat.
 
 ## Repo name collision (analysis, no decision yet)
 
