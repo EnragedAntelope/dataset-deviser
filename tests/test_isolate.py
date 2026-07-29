@@ -183,7 +183,7 @@ def test_crop_to_content_uses_alpha_channel_when_rgba() -> None:
     arr = np.zeros((40, 40, 4), dtype=np.uint8)
     arr[10:20, 5:15, :3] = 200
     arr[10:20, 5:15, 3] = 255
-    img = Image.fromarray(arr, "RGBA")
+    img = Image.fromarray(arr)
     cropped = iso.crop_to_content(img, margin_frac=0.0)
     assert cropped.size == (10, 10)
 

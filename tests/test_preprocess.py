@@ -51,7 +51,7 @@ def test_preprocess_alpha_cutout_skips_rgb_flatten(tmp_path: Path, monkeypatch) 
         w, h = Image.open(image_path).size
         rgba = np.zeros((h, w, 4), dtype=np.uint8)
         rgba[..., 3] = 128
-        Image.fromarray(rgba, "RGBA").save(out_path, "PNG")
+        Image.fromarray(rgba).save(out_path, "PNG")
         return out_path
 
     monkeypatch.setattr(pp, "isolate_subject", fake_isolate)

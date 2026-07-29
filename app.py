@@ -318,9 +318,19 @@ def do_preprocess(files: list[str], folder: str, target: int, restore_mode: str,
     except Exception as e:
         raise gr.Error(f"Preprocess failed: {e}")
     gallery = [(str(r.output), f"{r.source.name}: {r.reason}") for r in reports]
-    note = f"✅ {len(reports)} image(s) preprocessed into {out_dir}"
-    # Auto-fill downstream tabs (they can still be pointed anywhere else)
-    return gallery, note, "\n".join(log), str(out_dir), str(out_dir)
+    if alpha_cutout:
+        note = (f"✅ {len(reports)} image(s) preprocessed (transparent cutout) into "
+                f"{out_dir} — not auto-filled into ②/③, which expect a white-background "
+                f"reference.")
+        # Alpha-cutout output isn't a drop-in reference for ②/③ (see the checkbox's
+        # info text) — leave whatever those fields already had alone instead of
+        # silently pointing them at an image most consumers will read as un-isolated.
+        gen_src, cap = gr.update(), gr.update()
+    else:
+        note = f"✅ {len(reports)} image(s) preprocessed into {out_dir}"
+        # Auto-fill downstream tabs (they can still be pointed anywhere else)
+        gen_src, cap = str(out_dir), str(out_dir)
+    return gallery, note, "\n".join(log), gen_src, cap
 
 
 # ---------- ② generate & curate ----------

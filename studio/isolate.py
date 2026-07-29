@@ -152,6 +152,11 @@ def isolate_builtin(image_path: Path, out_path: Path, subject_prompt: str = "cha
         if not exclude.any():
             note(f"  (exclude '{exclude_prompt}': not found — nothing removed)")
         elif share < _MERGED_PROP_OVERLAP:
+            # Everything outside `subject` is whited out (or, with alpha_cutout, made
+            # transparent) by the composite below, so a prop SAM3 already excluded is
+            # gone whether or not we subtract it. Subtracting then only removes subject
+            # pixels — measured at 2.75% of the character on the reference image for no
+            # gain. Only act when the prop is actually inside the subject segment.
             note(f"  (exclude '{exclude_prompt}': already outside the subject mask "
                  f"— removed by isolation itself, no subtraction needed)")
         else:
@@ -166,7 +171,7 @@ def isolate_builtin(image_path: Path, out_path: Path, subject_prompt: str = "cha
         # alpha carry the cutout, so the visible subject's colors are unaffected by
         # what's outside the mask (unlike the white composite, nothing to bleed from).
         rgba = np.dstack([arr, (subject * 255).astype(np.uint8)])
-        Image.fromarray(rgba, "RGBA").save(out_path, "PNG")
+        Image.fromarray(rgba).save(out_path, "PNG")
     else:
         white = np.full_like(arr, 255)
         out = np.where(subject[..., None], arr, white)
