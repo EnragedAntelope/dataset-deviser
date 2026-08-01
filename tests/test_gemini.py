@@ -80,10 +80,19 @@ def test_save_model_cache_roundtrip(temp_cache_dir: Path, monkeypatch: pytest.Mo
     assert cached[0]["model_id"] == "roundtrip"
 
 
-def test_list_image_models_fallback_without_key(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_list_image_models_fallback_without_key(
+    temp_cache_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from studio import config as config_mod
     from studio.engines import gemini
 
+    # Point at an empty cache like the tests above. Without this the assertion is
+    # decided by whether whoever runs the suite has used the app recently: a warm
+    # .cache/gemini_image_models.json short-circuits the lookup and returns live
+    # model ids instead of the static fallback table.
+    cache_file = temp_cache_dir / "gemini_image_models.json"
+    monkeypatch.setattr(config_mod, "MODEL_CACHE_FILE", cache_file)
+    monkeypatch.setattr(gemini, "MODEL_CACHE_FILE", cache_file)
     monkeypatch.setattr(config_mod.settings, "gemini_api_key", "")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("LDS_GEMINI_API_KEY", raising=False)
