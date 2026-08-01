@@ -6,12 +6,16 @@ estimates captured at build time — always check current Google pricing.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from studio.config import (
     CLOUD_IMAGE_PRICES,
     MODEL_CACHE_FILE,
+    friendly_api_error,
+    gemini_client,
+    is_transient_api_error,
     load_caption_model_cache,
     load_cloud_model_cache,
     save_caption_model_cache,
@@ -22,6 +26,11 @@ from studio.engines.base import GenerationError
 from studio.shotplan import Shot
 
 MAX_REFERENCE_IMAGES = 14
+# 3 attempts at 2s/4s. Image generation is slow and billed per call, so this stays
+# shorter than the captioner's ladder — enough to ride out a spike, not enough to
+# quietly burn a user's budget retrying a model that is genuinely down.
+GENERATE_RETRIES = 3
+GENERATE_BACKOFF_S = 2.0
 
 # Re-exported so tests can monkeypatch a single module-level path.
 MODEL_CACHE_FILE = MODEL_CACHE_FILE
@@ -67,10 +76,8 @@ def list_image_models(force_refresh: bool = False) -> list[tuple[str, str]]:
     if not key:
         return _fallback_models()
 
-    from google import genai
-
     try:
-        client = genai.Client(api_key=key)
+        client = gemini_client(key)
         found: list[dict] = []
         for m in client.models.list():
             name = m.name.removeprefix("models/")
@@ -137,10 +144,8 @@ def list_caption_models(force_refresh: bool = False) -> list[tuple[str, str]]:
     if not key:
         return _labelled(_CAPTION_FALLBACK)
 
-    from google import genai
-
     try:
-        client = genai.Client(api_key=key)
+        client = gemini_client(key)
         found: list[dict] = []
         for m in client.models.list():
             name = m.name.removeprefix("models/")
@@ -182,9 +187,9 @@ class GeminiEngine:
                 ".env) to use the cloud engine, or switch to the local ComfyUI engine. "
                 "Get a key at https://aistudio.google.com/apikey"
             )
-        from google import genai  # deferred so local-only installs never need it configured
-
-        self._client = genai.Client(api_key=key)
+        # gemini_client defers the google-genai import, so local-only installs never
+        # need it configured.
+        self._client = gemini_client(key)
         self._model = model or settings.gemini_image_model
 
     def generate(self, sources: list[Path], shot: Shot, out_path: Path, seed: int) -> Path:
@@ -197,7 +202,7 @@ class GeminiEngine:
         parts.append(shot.cloud_prompt)
 
         last_err: Exception | None = None
-        for _ in range(2):
+        for attempt in range(GENERATE_RETRIES):
             try:
                 resp = self._client.models.generate_content(
                     model=self._model,
@@ -225,4 +230,9 @@ class GeminiEngine:
                 break  # refusals don't get better with a retry
             except Exception as e:  # transient API errors
                 last_err = e
-        raise GenerationError(f"shot {shot.id}: {last_err}")
+                if attempt == GENERATE_RETRIES - 1 or not is_transient_api_error(e):
+                    break
+                # An immediate retry against a demand spike (503) just fails again.
+                time.sleep(GENERATE_BACKOFF_S * (2 ** attempt))
+        raise GenerationError(f"shot {shot.id}: {friendly_api_error(last_err)}"
+                              if last_err else f"shot {shot.id}: failed")

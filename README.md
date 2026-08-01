@@ -20,6 +20,9 @@ ai-toolkit, kohya or musubi.
   cloud path. Mix and match: generate on the cloud, caption on your GPU, or the reverse.
 - **Every stage is standalone.** Point any tab (or CLI subcommand) at any folder — preprocess
   only, caption only, export only. Bring your own images at any step.
+- **Curate by clicking the images.** Toggle any shot straight from the gallery, with a ✅/⬜ mark
+  on each thumbnail. Your pick follows you: what you keep in ② is what ③ captions, and what ③
+  captions is what ④ preselects for export — nothing is silently re-added behind you.
 - **Trainer-ready output.** Flat `NN.png` + `NN.txt` (JPEG/WEBP sources keep their own extension),
   `metadata.json`/`metadata.jsonl`, optional `.zip` and Hugging Face publish, and a generated config
   for Flux / SDXL / Qwen-Image / Krea / Pony and more.
@@ -101,6 +104,10 @@ after a `git pull` is the usual reason a new version won't start.
   `start.bat` (or `.venv\Scripts\python.exe app.py`) from there so the error stays on screen.
 - **It won't start after a `git pull`.** Re-run `setup.bat` — the new version almost certainly needs
   a dependency you don't have yet.
+- **A cloud captioner failed part-way through a batch.** Nothing is lost — every caption written
+  before the failure is already on disk. Tick **Skip images that already have a caption** in
+  *Tag options* and click ③ again to finish the rest, or switch captioner first. Overload (503)
+  and rate-limit (429) errors are retried automatically before you ever see them.
 - **Anything else.** `python cli.py doctor` checks your Python version, dependencies, API keys and
   ComfyUI, and names what each missing piece blocks.
 
@@ -134,6 +141,14 @@ tags straight from the image rather than instructing a VLM (needs `onnxruntime`,
 setup). *Tag options* let you add a fixed **prefix/suffix** (e.g. Pony `score_9, score_8_up`),
 **drop noisy tags** (`watermark`, `signature`…), append a **rating** tag, keep raw underscores,
 tune tagger thresholds, and **skip already-captioned** images.
+
+Pick which images to caption by **clicking the thumbnails** — each carries a ✅/⬜ mark, and
+*Select all / none / only already-captioned* handle the bulk cases (tick **🔍 Zoom on click** when
+you'd rather enlarge an image than pick it). Whatever you leave selected is what gets captioned,
+stays selected afterwards, and is what **④ Export** preselects.
+
+If a cloud captioner dies mid-batch, every caption written so far is already saved — retry the
+rest with *Skip images that already have a caption*, no double billing.
 
 After captioning, a one-click **health check** flags empty, too-short, trigger-missing or
 **identical** captions (the tell-tale of a captioner that returned junk) — and, for tag

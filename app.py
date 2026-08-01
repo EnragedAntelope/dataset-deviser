@@ -9,9 +9,11 @@ Run:  python app.py   then open http://127.0.0.1:7861
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import string
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -37,6 +39,7 @@ from studio.config import (
     CAPTIONERS,
     CAPTIONERS_BY_KEY,
     CLOUD_IMAGE_PRICES,
+    friendly_api_error,
     list_images,
     load_caption_model_cache,
     read_caption,
@@ -264,6 +267,126 @@ def clear_outfits(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     return df, "Outfit column cleared — every shot keeps the reference's clothing."
 
 
+# ---------- click-to-pick galleries (②/③/④) ----------
+#
+# A Gradio Gallery is output-only, so each picker is a Gallery + CheckboxGroup pair
+# driven by one list of rows: (image path, checkbox value, base label). The gallery
+# caption carries the ✅/⬜ mark as its FIRST characters so the state is readable even
+# when a long label is truncated. Wiring is deliberately one-directional to avoid an
+# event loop: gallery.select -> checkbox value, checkbox.change -> gallery labels.
+
+_PICK_ON = "✅"
+_PICK_OFF = "⬜"
+
+
+def _goto_tab(tab_id: str):
+    """Select a tab by id — a hand-off button that leaves you staring at the tab you
+    were already on reads as 'nothing happened'."""
+    return gr.Tabs(selected=tab_id)
+
+
+def _picker_gallery(rows: list[tuple[str, str, str]], selected) -> list[tuple[str, str]]:
+    """Render (path, label) gallery items, marking each row's selection state."""
+    chosen = set(selected or [])
+    return [(path, f"{_PICK_ON if value in chosen else _PICK_OFF} {label}")
+            for path, value, label in rows]
+
+
+def _picker_order(rows: list[tuple[str, str, str]], selected) -> list[str]:
+    """Selected values in row order — a CheckboxGroup value must follow its choices."""
+    chosen = set(selected or [])
+    return [value for _, value, _ in rows if value in chosen]
+
+
+def _picker_mark(rows: list[tuple[str, str, str]], selected):
+    """Re-render the gallery marks after the CheckboxGroup changed (either source)."""
+    return _picker_gallery(rows, selected)
+
+
+# Element ids the picker script pairs up: (gallery, checkbox group, zoom checkbox).
+PICKER_IDS = [
+    ("dd-gallery-gen", "dd-picks-gen", "dd-zoom-gen"),
+    ("dd-gallery-cap", "dd-picks-cap", "dd-zoom-cap"),
+    ("dd-gallery-exp", "dd-picks-exp", "dd-zoom-exp"),
+]
+
+# Clicking a thumbnail must toggle it, and Gradio's own `Gallery.select` event cannot
+# do that: it only fires when the clicked index DIFFERS from the one the component
+# already holds, so a second click on the same image is swallowed — an image could be
+# unpicked and never re-picked. The internal index is not resettable from the server
+# either (see the Gotcha). So the click is forwarded to the CheckboxGroup entry at the
+# same position instead; the group is the single source of truth and its `.change`
+# already re-renders the gallery marks. If this script never runs, the checkbox list
+# below every gallery still works exactly as before.
+_PICKER_SCRIPT = """
+<script>
+(() => {
+  const PICKERS = %s;
+  const ON = %s, OFF = %s;
+
+  // Flip the mark straight away. The round-trip that re-renders the gallery takes
+  // ~1.5s, and a picker whose tick lands a second and a half after the click reads
+  // as unresponsive — you end up clicking twice. The server value overwrites this
+  // moments later, so a wrong guess self-corrects.
+  function flipMark(thumb) {
+    const label = thumb.querySelector(".caption-label");
+    if (!label) return;
+    const text = label.textContent;
+    if (text.startsWith(ON)) label.textContent = OFF + text.slice(ON.length);
+    else if (text.startsWith(OFF)) label.textContent = ON + text.slice(OFF.length);
+  }
+
+  document.addEventListener("click", (event) => {
+    const thumb = event.target.closest && event.target.closest(".thumbnail-item");
+    if (!thumb) return;
+    for (const [galleryId, picksId, zoomId] of PICKERS) {
+      const gallery = document.getElementById(galleryId);
+      if (!gallery || !gallery.contains(thumb)) continue;
+      const zoom = document.getElementById(zoomId);
+      const zoomOn = zoom && zoom.querySelector('input[type="checkbox"]');
+      if (zoomOn && zoomOn.checked) return;  // the click belongs to the lightbox
+      const picks = document.getElementById(picksId);
+      if (!picks) return;
+      const thumbs = Array.from(gallery.querySelectorAll(".thumbnail-item"));
+      const boxes = Array.from(picks.querySelectorAll('input[type="checkbox"]'));
+      const index = thumbs.indexOf(thumb);
+      if (index >= 0 && index < boxes.length) {
+        boxes[index].click();
+        flipMark(thumb);
+      }
+      return;
+    }
+  }, true);
+})();
+</script>
+""" % (json.dumps(PICKER_IDS), json.dumps(_PICK_ON), json.dumps(_PICK_OFF))
+
+
+def _set_zoom(on: bool):
+    """Flip a picker gallery between toggle-on-click and zoom-on-click.
+
+    Gradio's Gallery only offers the enlarge-on-click lightbox, and its fullscreen
+    icon is part of that same preview UI — with `allow_preview=False` there is no
+    way at all to see an image bigger. Picking is the common action so it stays the
+    default, but ④'s final review genuinely needs a closer look, hence the mode.
+    """
+    return gr.update(allow_preview=bool(on))
+
+
+def _pick_all(rows: list[tuple[str, str, str]]):
+    return gr.CheckboxGroup(value=[value for _, value, _ in rows])
+
+
+def _pick_none(rows: list[tuple[str, str, str]]):
+    return gr.CheckboxGroup(value=[])
+
+
+def _pick_captioned(rows: list[tuple[str, str, str]]):
+    """Keep only rows whose image has a non-empty .txt sidecar."""
+    return gr.CheckboxGroup(
+        value=[value for path, value, _ in rows if read_caption(Path(path))])
+
+
 def _df_to_shots(df: pd.DataFrame) -> list[Shot]:
     def val(row, k):
         v = row[k] if k in row else ""
@@ -276,9 +399,14 @@ def _df_to_shots(df: pd.DataFrame) -> list[Shot]:
     return [Shot(**{k: val(row, k) for k in cols})
             for _, row in df.iterrows() if val(row, "id").strip()]
 
-def _gen_gallery(results: list[pipeline.GenResult]):
+def _gen_gallery(results: list[pipeline.GenResult], selected=None):
+    """Picker rows + gallery + CheckboxGroup for ②'s kept-shot list.
+
+    `selected=None` keeps everything (a fresh generation); pass a value to carry an
+    existing pick across a re-sync instead of silently re-checking rejected shots.
+    """
     ok = [r for r in results if r.path and r.path.exists()]
-    gallery = []
+    rows: list[tuple[str, str, str]] = []
     for r in ok:
         label = r.shot.id
         try:
@@ -293,9 +421,10 @@ def _gen_gallery(results: list[pipeline.GenResult]):
                 label = f"{r.shot.id}  ⚠ {', '.join(flags)}"
         except Exception:
             pass  # quality checks are advisory — never block the gallery on them
-        gallery.append((str(r.path), label))
+        rows.append((str(r.path), r.shot.id, label))
     ids = [r.shot.id for r in ok]
-    return gallery, gr.CheckboxGroup(choices=ids, value=ids)
+    keep = ids if selected is None else _picker_order(rows, selected)
+    return rows, _picker_gallery(rows, keep), gr.CheckboxGroup(choices=ids, value=keep)
 
 
 # ---------- ① preprocess ----------
@@ -360,8 +489,8 @@ def do_generate(files: list[str], folder: str, plan_df: pd.DataFrame, engine: st
                        f"path (valid drive, no forbidden characters, writable).")
     except Exception as e:
         raise gr.Error(f"Generation failed: {e}")
-    gallery, keep = _gen_gallery(results)
-    return results, gallery, keep, "\n".join(log), str(out_dir), str(out_dir)
+    rows, gallery, keep = _gen_gallery(results)
+    return results, rows, gallery, keep, "\n".join(log), str(out_dir), str(out_dir)
 
 
 def do_regenerate(files: list[str], folder: str, plan_df: pd.DataFrame, engine: str,
@@ -383,50 +512,77 @@ def do_regenerate(files: list[str], folder: str, plan_df: pd.DataFrame, engine: 
         exclude_prompt=exclude_prompt, isolation_backend=isolation_backend,
         exclude_props=exclude_props, front=front, existing=results_state, only_ids=redo,
         progress=log.append)
-    gallery, keep = _gen_gallery(results)
-    return results, gallery, keep, "\n".join(log)
+    # Regenerated shots are brand new, so a fresh full keep is the honest default.
+    rows, gallery, keep = _gen_gallery(results)
+    return results, rows, gallery, keep, "\n".join(log)
 
 
-def do_refresh_disk(results_state, gen_dir: str):
-    """Re-sync with the output folder — files you deleted externally drop out."""
+def do_refresh_disk(results_state, gen_dir: str, keep_ids: list[str]):
+    """Re-sync with the output folder — files you deleted externally drop out.
+
+    Re-syncing must not undo curation: shots you already rejected stay rejected.
+    """
     if not results_state:
         raise gr.Error("No generation results in this session.")
     before = len(results_state)
     results = [r for r in results_state if r.path is None or r.path.exists()]
-    gallery, keep = _gen_gallery(results)
+    rows, gallery, keep = _gen_gallery(results, selected=keep_ids)
     note = f"Re-synced with {gen_dir}: {before - len(results)} externally deleted shot(s) dropped."
-    return results, gallery, keep, note
+    return results, rows, gallery, keep, note
 
 
 def send_kept_to_caption(results_state, keep_ids: list[str], gen_dir: str):
+    """Load ②'s output folder into ③ with only the kept shots preselected.
+
+    Also switches to ③ and echoes the count on ② — the note this returns lands on
+    the ③ tab, which the user cannot see from ② (that silence was the whole bug).
+    """
     if not gen_dir.strip():
         raise gr.Error("Nothing generated yet.")
     kept = {r.path.name for r in (results_state or [])
             if r.path and r.path.exists() and r.shot.id in set(keep_ids or [])}
     if not kept:
-        raise gr.Error("No kept shots selected.")
+        raise gr.Error("No kept shots selected — check at least one shot first.")
     images = list_images(Path(gen_dir.strip()))
     names = [p.name for p in images]
-    gallery = [(str(p), p.name) for p in images]
+    rows = _caption_rows(images)
     preselected = [n for n in names if n in kept]
-    note = (f"{len(names)} image(s) loaded from ② — {len(preselected)} kept shot(s) "
-            f"preselected for captioning.")
-    return gen_dir, gallery, gr.CheckboxGroup(choices=names, value=preselected), note
+    note = (f"{len(names)} image(s) loaded from ② — **{len(preselected)} kept shot(s) "
+            f"preselected** for captioning. Click a thumbnail to toggle it.")
+    sent = (f"➡ Sent **{len(preselected)} kept shot(s)** to ③ Caption "
+            f"(from {gen_dir.strip()}).")
+    return (_goto_tab("caption"), gen_dir, rows, _picker_gallery(rows, preselected),
+            gr.CheckboxGroup(choices=names, value=preselected), note, sent)
 
 
 # ---------- ③ caption ----------
 
-def load_caption_folder(folder: str):
+def _caption_rows(images: list[Path]) -> list[tuple[str, str, str]]:
+    """Picker rows for ③ — the checkbox value is the bare filename (③ is single-folder)."""
+    return [(str(p), p.name,
+             f"{p.name}{' ✓ captioned' if p.with_suffix('.txt').exists() else ''}")
+            for p in images]
+
+
+def load_caption_folder(folder: str, selected=None):
+    """Load a folder into ③'s picker.
+
+    `selected=None` selects everything (a fresh "Load folder"); pass a value to keep
+    the user's existing pick — re-checking the whole batch after a run destroys the
+    subset they deliberately chose.
+    """
     images = list_images(Path(folder.strip())) if folder.strip() else []
     if not images:
         raise gr.Error(f"No images found in folder: {folder or '(empty)'}")
     captioned = {p.name for p in images if p.with_suffix(".txt").exists()}
-    gallery = [(str(p), f"{p.name}{' ✓ captioned' if p.name in captioned else ''}")
-               for p in images]
+    rows = _caption_rows(images)
     names = [p.name for p in images]
+    picked = names if selected is None else _picker_order(rows, selected)
     note = (f"{len(images)} image(s) loaded, {len(captioned)} already have .txt "
-            f"sidecars (re-captioning overwrites them).")
-    return gallery, gr.CheckboxGroup(choices=names, value=names), note
+            f"sidecars (re-captioning overwrites them). **{len(picked)} selected** — "
+            f"click a thumbnail to toggle it.")
+    return (rows, _picker_gallery(rows, picked),
+            gr.CheckboxGroup(choices=names, value=picked), note)
 
 
 def _resolve_captioner_config(captioner_key: str, gemini_model: str):
@@ -524,13 +680,29 @@ def _merge_export_folders(existing: str, new_folder: str) -> str:
     return "\n".join(folders)
 
 
+def _merge_carry(existing, new_paths: list[str]) -> list[str]:
+    """Accumulate the set of images ③ has captioned, in first-seen order.
+
+    ④ preselects this set. It accumulates for the same reason the folder list does:
+    captioning the prepped sources and then the generated shots is the documented
+    workflow, and both halves belong in the export.
+    """
+    carried = list(existing or [])
+    seen = set(carried)
+    for p in new_paths:
+        if p not in seen:
+            carried.append(p)
+            seen.add(p)
+    return carried
+
+
 def do_caption(folder: str, selected: list[str], captioner_key: str,
                name: str, trigger: str, gemini_model: str, style: str,
                gen_thr: float, char_thr: float, prefix: str, suffix: str,
                blacklist: str, rating: bool, underscores: bool,
                skip_existing: bool, dataset_type: str, sparse: bool,
                exp_folders_prev: str, exp_name_prev: str,
-               exp_trigger_prev: str, progress=gr.Progress()):
+               exp_trigger_prev: str, carry_prev, progress=gr.Progress()):
     if not folder.strip() or not selected:
         raise gr.Error("Load a folder and select the images to caption first.")
     base = Path(folder.strip())
@@ -544,25 +716,48 @@ def do_caption(folder: str, selected: list[str], captioner_key: str,
         log.append(msg)
         progress((len(log), len(images) + 2), desc=msg)
 
-    try:
-        items = caption_images(images, captioner_key, name, trigger, progress=report,
-                               model_override=model_override, spec_overrides=spec_overrides,
-                               style=style, prefix=prefix, suffix=suffix,
-                               skip_existing=skip_existing, blacklist=blacklist,
-                               dataset_type=dataset_type, sparse=sparse)
-    except Exception as e:
-        raise gr.Error(f"Captioning failed: {e}")
-    for img, caption in items:
+    # Write each sidecar as it arrives instead of batching them to the end: a
+    # mid-batch cloud failure used to discard every caption already paid for.
+    written: list[Path] = []
+
+    def persist(img: Path, caption: str) -> None:
         img.with_suffix(".txt").write_text(caption, encoding="utf-8")
-    gallery, boxes, note = load_caption_folder(folder)
-    result = f"✅ Wrote {len(items)} caption sidecar(s) in {base}"
+        written.append(img)
+
+    failure = ""
+    try:
+        caption_images(images, captioner_key, name, trigger, progress=report,
+                       model_override=model_override, spec_overrides=spec_overrides,
+                       style=style, prefix=prefix, suffix=suffix,
+                       skip_existing=skip_existing, blacklist=blacklist,
+                       dataset_type=dataset_type, sparse=sparse, on_item=persist)
+    except Exception as e:
+        if not written:
+            raise gr.Error(f"Captioning failed: {friendly_api_error(e)}")
+        # Partial success: keep the finished sidecars, keep the user's selection, and
+        # say exactly how to resume. gr.Warning toasts without discarding the outputs
+        # below, which gr.Error would.
+        remaining = len(images) - len(written)
+        failure = (f"\n\n⚠️ **Stopped after {len(written)} of {len(images)}** — "
+                   f"{friendly_api_error(e)}\n\nThe {len(written)} caption(s) already "
+                   f"written are saved and your selection is unchanged. Tick **Skip "
+                   f"images that already have a caption** and click ③ again to do the "
+                   f"remaining {remaining}.")
+        gr.Warning(f"Captioned {len(written)} of {len(images)} before failing — "
+                   f"finished captions were saved.")
+    # Reload the folder but KEEP the user's pick; re-checking the whole batch after a
+    # run silently discarded the subset they chose.
+    rows, gallery, boxes, _ = load_caption_folder(folder, selected=selected)
+    result = f"✅ Wrote {len(written)} caption sidecar(s) in {base}{failure}"
     # Auto-fill ④ Export: ADD this folder to its list (captioning several folders
     # in turn must accumulate), and carry name/trigger without clobbering values
     # the user already typed there.
     folders = _merge_export_folders(exp_folders_prev, str(base))
     analysis = _caption_analysis(str(base), trigger)
-    return (gallery, boxes, result, "\n".join(log), folders,
-            exp_name_prev or name, exp_trigger_prev or trigger, analysis)
+    # Carry the captioned images forward so ④ preselects them instead of the folder.
+    carry = _merge_carry(carry_prev, [str(p) for p in written])
+    return (rows, gallery, boxes, result, "\n".join(log), folders,
+            exp_name_prev or name, exp_trigger_prev or trigger, analysis, carry)
 
 
 # ---------- ④ export ----------
@@ -598,7 +793,23 @@ def _export_label(img: Path, flag: str) -> tuple[str, str]:
     return f"{img.parent.name}/{img.name} — {flag}", str(img)
 
 
-def load_export_preview(folders_text: str, dup_distance: float = 5):
+def _export_preselect(images: list[Path], carry) -> tuple[list[str], str]:
+    """Which images to check, and one sentence saying why.
+
+    ③'s captioned set wins when it covers any of the listed images — exporting
+    everything in the folder was silently re-adding shots the user had rejected two
+    tabs earlier. Falls back to all so ④ still works standalone on a folder that
+    never went through ③ (Design rule 1).
+    """
+    carried = set(carry or [])
+    picked = [str(img) for img in images if str(img) in carried]
+    if picked:
+        return picked, (f"**{len(picked)} of {len(images)} preselected** — the images "
+                        f"③ Caption just captioned")
+    return [str(img) for img in images], "all checked"
+
+
+def load_export_preview(folders_text: str, dup_distance: float = 5, carry=None):
     folders = [Path(line.strip()) for line in folders_text.splitlines() if line.strip()]
     if not folders:
         raise gr.Error("Enter at least one folder of captioned images (one per line).")
@@ -608,16 +819,17 @@ def load_export_preview(folders_text: str, dup_distance: float = 5):
     # One read per image: the flag feeds the gallery caption, the checkbox label and
     # all three counters, and recomputing it five times meant five disk reads each.
     flags = {img: _export_flag(img) for img in images}
-    gallery = [(str(img), f"{img.parent.name}/{img.name} — {flags[img]}")
-               for img in images]
+    rows = [(str(img), str(img), f"{img.parent.name}/{img.name} — {flags[img]}")
+            for img in images]
     choices = [_export_label(img, flags[img]) for img in images]
-    values = [v for _, v in choices]  # all checked by default (uncheck to drop)
+    values, why = _export_preselect(images, carry)
     ready = sum(1 for f in flags.values() if f == "✓")
     empty = sum(1 for f in flags.values() if f == "⚠ empty")
     none_ = sum(1 for f in flags.values() if f == "⚠ no caption")
     note = (f"**{len(images)} image(s)** — {ready} ready · {empty} empty caption · "
-            f"{none_} no caption. All checked below; **uncheck to drop**. "
-            "Images without a usable caption are skipped even if left checked.")
+            f"{none_} no caption. Below: {why} — **click a thumbnail to toggle it**. "
+            "Only checked images are exported; a checked image without a usable "
+            "caption is skipped and called out in the result.")
     try:  # advisory near-duplicate scan — never blocks the preview
         from studio.dedupe import find_near_duplicate_groups
 
@@ -644,7 +856,8 @@ def load_export_preview(folders_text: str, dup_distance: float = 5):
             note += "\n\n" + markdown_summary(report, ubiquitous)
     except Exception:
         pass
-    return gallery, gr.CheckboxGroup(choices=choices, value=values), note
+    return (rows, _picker_gallery(rows, values),
+            gr.CheckboxGroup(choices=choices, value=values), note)
 
 
 def do_export(selected: list[str], name: str, trigger: str, output_root: str,
@@ -675,9 +888,15 @@ def do_export(selected: list[str], name: str, trigger: str, output_root: str,
     samples = [(p.name, read_caption(p)) for p in caption_files]
     first = next(((n, t) for n, t in samples if t), None)
     sample_block = f"\n\nSample caption ({first[0]}):\n{first[1]}" if first else ""
-    skipped = (f"\n⚠️ Skipped (no caption): {', '.join(res.missing)}"
+    # Say "of the N you checked" explicitly. The bare "Skipped (no caption): x.png"
+    # read as a complete skip list, so a user who had unchecked 8 images wondered why
+    # only one was named — unchecked images were never candidates and never listed.
+    checked = len(paths)
+    skipped = (f"\n⚠️ Skipped {len(res.missing)} of the {checked} image(s) you checked "
+               f"— no caption sidecar: {', '.join(res.missing)}"
                if res.missing else "")
-    empty_note = (f"\n⚠️ Skipped (empty caption): {', '.join(res.empties)}"
+    empty_note = (f"\n⚠️ Skipped {len(res.empties)} of the {checked} image(s) you checked "
+                  f"— caption file is empty: {', '.join(res.empties)}"
                   if res.empties else "")
     zip_note = ""
     if make_zip:
@@ -687,10 +906,19 @@ def do_export(selected: list[str], name: str, trigger: str, output_root: str,
             zip_note = f"\n🗜️ Zipped: {zip_dataset(ds)}"
         except OSError as e:
             zip_note = f"\n⚠️ Could not write the .zip: {e}"
-    result = (f"✅ Dataset ready: {ds}  ({len(res.items)} image/caption pairs)"
+    result = (f"✅ Dataset ready: {ds}  ({len(res.items)} image/caption pairs from the "
+              f"{checked} image(s) you checked)"
               f"{skipped}{empty_note}{zip_note}{sample_block}")
     # ds path auto-fills the ⑤ Train tab AND the HF-publish box below.
     return result, str(ds), str(ds)
+
+
+def send_captioned_to_export(folders_text: str, dup_distance: float, carry):
+    """③ → ④ hand-off: load the export preview, preselect what ③ captioned, switch tab."""
+    if not (folders_text or "").strip():
+        raise gr.Error("Caption a folder first (③) — nothing has been sent to ④ yet.")
+    rows, gallery, boxes, note = load_export_preview(folders_text, dup_distance, carry)
+    return _goto_tab("export"), rows, gallery, boxes, note
 
 
 def do_publish_hf(ds_dir: str, repo_id: str, private: bool, progress=gr.Progress()):
@@ -947,7 +1175,16 @@ def _check_for_update():
 
 # ---------- layout ----------
 
-with gr.Blocks(title="Dataset Deviser") as demo:
+# Gradio 5 warns that `head=` moves to `launch()` in Gradio 6 — but `launch()` does not
+# accept it in 5.x, and `requirements.txt` pins `gradio<6` on purpose. Suppressed
+# narrowly so a start-up console that should be empty stays empty; the move is recorded
+# against lifting the gradio<6 cap in docs/ARCHITECTURE.md.
+with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message=".*'head' parameter in the Blocks.*",
+                            category=DeprecationWarning)
+    _blocks = gr.Blocks(title="Dataset Deviser", head=_PICKER_SCRIPT)
+
+with _blocks as demo:
     gr.Markdown(
         "# Dataset Deviser\n"
         "Character, style, or concept → ready-to-train LoRA dataset. Every tab works standalone "
@@ -994,9 +1231,16 @@ with gr.Blocks(title="Dataset Deviser") as demo:
              "at ③ Caption. Tunes caption framing, the ② shot plan, the ① isolation "
              "default, and the ⑤ sample prompt.")
     results_state = gr.State([])
+    # Picker rows behind each click-to-toggle gallery: (image path, checkbox value,
+    # base label). Kept in State so a click can resolve an index to a value.
+    gen_rows = gr.State([])
+    cap_rows = gr.State([])
+    exp_rows = gr.State([])
+    # Absolute paths ③ has captioned, carried into ④'s preselection.
+    cap_carry = gr.State([])
 
-    with gr.Tabs():
-        with gr.Tab("① Preprocess (optional)"):
+    with gr.Tabs() as tabs:
+        with gr.Tab("① Preprocess (optional)", id="preprocess"):
             gr.Markdown("Restore / upscale / isolate source images. Skip this tab entirely "
                         "if your images are already clean.")
             with gr.Row():
@@ -1051,7 +1295,7 @@ with gr.Blocks(title="Dataset Deviser") as demo:
                     pre_note = gr.Markdown()
                     prep_gallery = gr.Gallery(label="Preprocessed output", columns=4, height=340)
 
-        with gr.Tab("② Generate & Curate"):
+        with gr.Tab("② Generate & Curate", id="generate"):
             gr.Markdown("Turn reference image(s) into a full shot set — 24 shots for a "
                         "**Character**, 18 for a **Concept** (turnaround + framing + "
                         "context). Each plan row becomes one generated image; `chain_from` "
@@ -1140,10 +1384,22 @@ with gr.Blocks(title="Dataset Deviser") as demo:
                 btn_disk = gr.Button("🔃 Re-sync with output folder")
                 btn_send = gr.Button("➡ Send kept shots to ③ Caption")
             gen_out_dir = gr.Textbox(label="Output folder (blank = new run folder)", value="")
-            gen_gallery = gr.Gallery(label="Generated shots", columns=6, height=420)
-            keep = gr.CheckboxGroup(label="✅ Kept shots — UNCHECK to reject", choices=[])
+            gen_send_note = gr.Markdown()
+            # allow_preview=False so a click TOGGLES the shot instead of opening a
+            # lightbox; the Zoom checkbox flips it back when you want a closer look.
+            gen_gallery = gr.Gallery(
+                label="Generated shots — click a thumbnail to keep/reject it",
+                columns=6, height=420, allow_preview=False, elem_id="dd-gallery-gen")
+            with gr.Row():
+                btn_gen_all = gr.Button("Select all", size="sm")
+                btn_gen_none = gr.Button("Select none", size="sm")
+                gen_zoom = gr.Checkbox(value=False, label="🔍 Zoom on click",
+                                       elem_id="dd-zoom-gen",
+                                       info="Clicks enlarge instead of selecting.")
+            keep = gr.CheckboxGroup(label="✅ Kept shots — UNCHECK to reject", choices=[],
+                                    elem_id="dd-picks-gen")
 
-        with gr.Tab("③ Caption"):
+        with gr.Tab("③ Caption", id="caption"):
             gr.Markdown("Tag any folder of images with caption `.txt` sidecars — the folder "
                         "does **not** need to come from ① or ②. Pick **prose**, **Danbooru "
                         "tags** or **e621 tags** to match your target base model. Each "
@@ -1254,10 +1510,22 @@ with gr.Blocks(title="Dataset Deviser") as demo:
                         cap_custom_note = gr.Markdown()
                     btn_test = gr.Button("🧪 Test caption on first selected image")
                     btn_caption = gr.Button("③ Caption selected images", variant="primary")
+                    btn_send_export = gr.Button("➡ Send captioned images to ④ Export")
                 with gr.Column(scale=2):
                     cap_note = gr.Markdown()
-                    cap_gallery = gr.Gallery(label="Folder contents", columns=6, height=340)
-                    cap_select = gr.CheckboxGroup(label="Images to caption", choices=[])
+                    cap_gallery = gr.Gallery(
+                        label="Folder contents — click a thumbnail to include/exclude it",
+                        columns=6, height=340, allow_preview=False,
+                        elem_id="dd-gallery-cap")
+                    with gr.Row():
+                        btn_cap_all = gr.Button("Select all", size="sm")
+                        btn_cap_none = gr.Button("Select none", size="sm")
+                        btn_cap_captioned = gr.Button("Only already-captioned", size="sm")
+                        cap_zoom = gr.Checkbox(value=False, label="🔍 Zoom on click",
+                                               elem_id="dd-zoom-cap",
+                                               info="Clicks enlarge instead of selecting.")
+                    cap_select = gr.CheckboxGroup(label="Images to caption", choices=[],
+                                                  elem_id="dd-picks-cap")
             test_caption = gr.Textbox(label="Test caption output", lines=4)
             gr.Markdown("**Inline editor** — tweak any caption by hand and save it back to "
                         "its `.txt` sidecar (independent of the model).")
@@ -1275,7 +1543,7 @@ with gr.Blocks(title="Dataset Deviser") as demo:
                 "Runs automatically after captioning; click to re-check any loaded folder.")
             cap_analysis = gr.Markdown()
 
-        with gr.Tab("④ Export"):
+        with gr.Tab("④ Export", id="export"):
             gr.Markdown("Package captioned images into a flat `NN.png` + `NN.txt` dataset "
                         "folder (ai-toolkit / OneTrainer ready), with `metadata.json` and "
                         "`README.txt`. List one or more folders (one per line) — e.g. the "
@@ -1289,10 +1557,19 @@ with gr.Blocks(title="Dataset Deviser") as demo:
                     label="Near-duplicate sensitivity",
                     info="Higher flags more images as near-duplicates (dHash bit distance).")
             exp_preview_note = gr.Markdown()
-            exp_gallery = gr.Gallery(label="Final review — click a thumbnail to zoom",
-                                     columns=6, height=420, allow_preview=True)
+            exp_gallery = gr.Gallery(
+                label="Final review — click a thumbnail to include/exclude it",
+                columns=6, height=420, allow_preview=False, elem_id="dd-gallery-exp")
+            with gr.Row():
+                btn_exp_all = gr.Button("Select all", size="sm")
+                btn_exp_none = gr.Button("Select none", size="sm")
+                btn_exp_captioned = gr.Button("Only images with a caption", size="sm")
+                exp_zoom = gr.Checkbox(value=False, label="🔍 Zoom on click",
+                                       elem_id="dd-zoom-exp",
+                                       info="Clicks enlarge instead of selecting.")
             exp_select = gr.CheckboxGroup(
-                label="✅ Images to export — UNCHECK to drop", choices=[])
+                label="✅ Images to export — UNCHECK to drop", choices=[],
+                elem_id="dd-picks-exp")
             with gr.Row():
                 exp_name = gr.Textbox(label="Character name", placeholder="Sy Snootles",
                                       info="Names the dataset folder and metadata.")
@@ -1322,7 +1599,7 @@ with gr.Blocks(title="Dataset Deviser") as demo:
                 btn_publish_hf = gr.Button("⬆ Publish to Hugging Face")
                 exp_hf_note = gr.Markdown()
 
-        with gr.Tab("⑤ Train (configs, optional)"):
+        with gr.Tab("⑤ Train (configs, optional)", id="train"):
             gr.Markdown(
                 "Generate a ready-to-edit LoRA training config for your dataset. "
                 "**ai-toolkit** produces a one-command `config.yaml` (`python run.py …`); "
@@ -1425,16 +1702,37 @@ with gr.Blocks(title="Dataset Deviser") as demo:
                   gen_exclude_props, gen_isolate, gen_iso_backend, gen_subject,
                   gen_exclude, gen_front]
     btn_gen.click(do_generate, gen_inputs + [gen_out_dir, results_state],
-                  [results_state, gen_gallery, keep, log_box, gen_out_dir, cap_folder]) \
+                  [results_state, gen_rows, gen_gallery, keep, log_box, gen_out_dir,
+                   cap_folder]) \
            .then(_fill_if_empty, [cap_name, gen_name], [cap_name])
     btn_regen.click(do_regenerate, gen_inputs + [gen_out_dir, results_state, keep],
-                    [results_state, gen_gallery, keep, log_box])
-    btn_disk.click(do_refresh_disk, [results_state, gen_out_dir],
-                   [results_state, gen_gallery, keep, log_box])
+                    [results_state, gen_rows, gen_gallery, keep, log_box])
+    btn_disk.click(do_refresh_disk, [results_state, gen_out_dir, keep],
+                   [results_state, gen_rows, gen_gallery, keep, log_box])
     btn_send.click(send_kept_to_caption, [results_state, keep, gen_out_dir],
-                   [cap_folder, cap_gallery, cap_select, cap_note])
+                   [tabs, cap_folder, cap_rows, cap_gallery, cap_select, cap_note,
+                    gen_send_note])
 
-    btn_load.click(load_caption_folder, [cap_folder], [cap_gallery, cap_select, cap_note]) \
+    # Click-to-toggle: the browser-side script forwards a thumbnail click to this
+    # CheckboxGroup (see _PICKER_SCRIPT for why Gallery.select can't do it), and any
+    # change to the group — from a thumbnail, the boxes themselves, a quick-select
+    # button or a reload — re-marks the gallery labels.
+    for _gallery, _rows, _boxes, _zoom in ((gen_gallery, gen_rows, keep, gen_zoom),
+                                           (cap_gallery, cap_rows, cap_select, cap_zoom),
+                                           (exp_gallery, exp_rows, exp_select, exp_zoom)):
+        _boxes.change(_picker_mark, [_rows, _boxes], [_gallery])
+        _zoom.change(_set_zoom, [_zoom], [_gallery])
+    btn_gen_all.click(_pick_all, [gen_rows], [keep])
+    btn_gen_none.click(_pick_none, [gen_rows], [keep])
+    btn_cap_all.click(_pick_all, [cap_rows], [cap_select])
+    btn_cap_none.click(_pick_none, [cap_rows], [cap_select])
+    btn_cap_captioned.click(_pick_captioned, [cap_rows], [cap_select])
+    btn_exp_all.click(_pick_all, [exp_rows], [exp_select])
+    btn_exp_none.click(_pick_none, [exp_rows], [exp_select])
+    btn_exp_captioned.click(_pick_captioned, [exp_rows], [exp_select])
+
+    btn_load.click(load_caption_folder, [cap_folder],
+                   [cap_rows, cap_gallery, cap_select, cap_note]) \
             .then(_editor_choices, [cap_folder], [cap_edit_file])
     cap_edit_file.change(load_one_caption, [cap_folder, cap_edit_file], [cap_edit_text])
     btn_edit_load.click(load_one_caption, [cap_folder, cap_edit_file], [cap_edit_text])
@@ -1468,14 +1766,17 @@ with gr.Blocks(title="Dataset Deviser") as demo:
         [cap_folder, cap_select, captioner, cap_name, cap_trigger, cap_gemini_model, cap_style,
          cap_gen_thr, cap_char_thr, cap_prefix, cap_suffix,
          cap_blacklist, cap_rating, cap_underscores, cap_skip, dataset_type, cap_sparse,
-         exp_folders, exp_name, exp_trigger],
-        [cap_gallery, cap_select, cap_result, log_box, exp_folders, exp_name, exp_trigger,
-         cap_analysis]) \
+         exp_folders, exp_name, exp_trigger, cap_carry],
+        [cap_rows, cap_gallery, cap_select, cap_result, log_box, exp_folders, exp_name,
+         exp_trigger, cap_analysis, cap_carry]) \
                .then(_editor_choices, [cap_folder], [cap_edit_file])
     btn_lint.click(do_analyze_captions, [cap_folder, cap_trigger], [cap_analysis])
+    btn_send_export.click(send_captioned_to_export,
+                          [exp_folders, exp_dup_dist, cap_carry],
+                          [tabs, exp_rows, exp_gallery, exp_select, exp_preview_note])
 
-    btn_load_preview.click(load_export_preview, [exp_folders, exp_dup_dist],
-                           [exp_gallery, exp_select, exp_preview_note])
+    btn_load_preview.click(load_export_preview, [exp_folders, exp_dup_dist, cap_carry],
+                           [exp_rows, exp_gallery, exp_select, exp_preview_note])
     btn_export.click(do_export,
                      [exp_select, exp_name, exp_trigger, output_root, exp_zip, dataset_type],
                      [exp_result, tr_dataset, exp_ds_dir]) \

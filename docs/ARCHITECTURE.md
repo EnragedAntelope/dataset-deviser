@@ -1,9 +1,13 @@
 # Architecture
 
-Version: 0.13.2
+Version: 0.14.0
 
 ```
-app.py                  Gradio UI — thin wiring over the stage functions (5 tabs)
+app.py                  Gradio UI — thin wiring over the stage functions (5 tabs).
+                        Owns the click-to-pick gallery helpers (_picker_*,
+                        _PICKER_SCRIPT/PICKER_IDS — the only browser-side code in the
+                        project) and the selection carried ②→③→④; see the
+                        selection-flow section
 cli.py                  Typer CLI — one subcommand per stage + `build` for all four,
                         plus `doctor` (install self-check), `keys` (view/set the .env
                         API keys — what setup.bat/setup.sh call), and
@@ -36,7 +40,13 @@ studio/
                         character returns the tuned per-model templates verbatim;
                         style/concept COMPOSE their instruction from a per-type
                         framing clause + the prose/tags/e621 format directive (no
-                        stored per-type templates — see the compose-not-store gotcha)
+                        stored per-type templates — see the compose-not-store gotcha).
+                        Also the cloud-error seam shared by the captioner and the
+                        Gemini engine: api_status_code() / is_transient_api_error()
+                        (which statuses are worth retrying) / friendly_api_error()
+                        (one readable sentence instead of a raw JSON error body), and
+                        gemini_client() (the ONE google-genai client factory — filters
+                        the SDK's misleading dual-key warning, see the Gotcha)
   pipeline.py           Stage orchestration: preprocess_sources(), generate_shots()
   preprocess.py         Restore (comfyui|basic|auto) + isolate + optional tighten-crop
                         + resize
@@ -73,7 +83,11 @@ studio/
                         finalize_caption(style=, dataset_type=). Also: model_override
                         (Gemini picker), spec_overrides (custom endpoint), apply_affixes
                         (prefix/suffix), drop_blacklisted_tags (drop-list),
-                        merge_tagger_overrides (③ tag controls), skip_existing
+                        merge_tagger_overrides (③ tag controls), skip_existing.
+                        caption_images(on_item=) fires per finalized caption so the
+                        caller can persist it immediately — see the partial-batch
+                        gotcha; the gemini backend retries transient statuses with
+                        backoff (GEMINI_RETRIES / GEMINI_BACKOFF_S)
   package.py            Dataset export (NN.<ext>/NN.txt + metadata.json + metadata.jsonl
                         + README.txt); records dataset_type + a detected caption_style
                         in metadata.json; zip_dataset() bundles a folder into a .zip;
@@ -114,7 +128,9 @@ studio/
     base.py             Engine protocol + GenerationError
     gemini.py           Cloud engine (Gemini image models via google-genai) with
                         cached, force-refreshable image- AND caption-model lists
-                        (list_image_models / list_caption_models)
+                        (list_image_models / list_caption_models). Retries transient
+                        statuses with backoff (GENERATE_RETRIES / GENERATE_BACKOFF_S)
+                        and reports failures through friendly_api_error()
     comfyui.py          Local engine (Qwen Image Edit 2511 + Multiple-Angles LoRA)
   comfy_workflows/*.json  API-format ComfyUI graphs (restore, isolate ×2, qwen edit)
 ```
@@ -214,7 +230,106 @@ SAM3 subject, the ⑤ sample prompt, and the ④ metadata. **Style never generat
 can't be synthesized from a reference the way an identity or an object can — so ②'s buttons are
 disabled for it in the UI and `cli.py build --dataset-type style` skips the stage outright.
 
+## Selection flow (②→③→④)
+
+Curation is the point of ② and ③, so a user's pick is data the app must not lose. Three
+pieces, all in `app.py`:
+
+**1. Click-to-pick galleries.** A Gradio `Gallery` is output-only, so each picker is a
+`Gallery` + `CheckboxGroup` pair driven by one list of rows — `(image path, checkbox
+value, base label)` — held in a `gr.State` (`gen_rows` / `cap_rows` / `exp_rows`). The
+gallery caption carries `✅`/`⬜` as its **first** characters so the state stays readable
+when a long label truncates.
+
+The **CheckboxGroup is the single source of truth**. A thumbnail click is forwarded to
+the box at the same position by `_PICKER_SCRIPT` (a ~30-line vanilla-JS listener injected
+via `gr.Blocks(head=)`), which pairs the two by `elem_id` through `PICKER_IDS`. Gradio's
+own `Gallery.select` event **cannot** drive a toggle — see the Gotcha. The only Python
+edge is:
+
+```
+CheckboxGroup.change  --_picker_mark-->  gallery labels
+```
+
+`.change` fires for programmatic updates too, so a reload, a quick-select button and a
+thumbnail click all re-mark the gallery through one path. The script also flips the
+clicked label's mark optimistically, because that round-trip is ~1.5 s and a picker that
+slow reads as broken; the server value overwrites it moments later. If the script never
+runs, the checkbox list under every gallery still works exactly as it always did.
+
+Galleries are `allow_preview=False` so a click *toggles* rather than opening a lightbox.
+Gradio's fullscreen icon is part of that same preview UI, so with preview off there is no
+way at all to see an image bigger — hence the per-gallery **🔍 Zoom on click** checkbox
+(`_set_zoom`), which flips `allow_preview` back on; the script then leaves selection alone
+so opening an image to look at it can't silently change the pick.
+
+**2. A pick is never reset behind the user.** `load_caption_folder(folder, selected=)`
+and `_gen_gallery(results, selected=)` take the current pick and keep it; `None` means
+"fresh load, select all". `do_caption` passes the user's selection straight back
+through, and `do_refresh_disk` keeps rejected shots rejected.
+
+**3. The pick carries forward.** `cap_carry` (a `gr.State` of absolute paths, merged by
+`_merge_carry`) records what ③ actually captioned; `_export_preselect` checks exactly
+those in ④ when they intersect the listed folders. It **falls back to all** when there
+is no overlap, so ④ still works standalone on a folder that never went through ③
+(Design rule 1). Both hand-off buttons (`➡ Send kept shots to ③`, `➡ Send captioned
+images to ④`) also return `gr.Tabs(selected=...)` via `_goto_tab` — every `gr.Tab` now
+carries an `id` for exactly this reason.
+
 ## Gotchas (hard-won)
+
+- **`Gallery.select` cannot implement a toggle.** It only fires when the clicked index
+  *differs* from the one the component already holds, so a second click on the same
+  thumbnail is swallowed — an image could be unpicked and never re-picked without first
+  clicking some other image. The internal index is **not** resettable from the server
+  either: `gr.update(selected_index=None)` is stripped by `utils.delete_none`
+  (`blocks.py`, "if update is passed directly (deprecated), remove Nones"), and even the
+  `gr.Gallery(selected_index=None)` constructor form — which *does* survive that step —
+  doesn't reach the component's internal index, which is only seeded at mount. All three
+  were tried against a live app before settling on forwarding the click to the
+  CheckboxGroup in the browser. Don't re-litigate this with another `select` handler.
+- **`gr.update(x=None)` silently drops the key; `gr.Component(x=None)` doesn't.** The
+  two update forms are *not* equivalent for None values — `postprocess_data` runs
+  `delete_none(..., skip_value=True)` on a raw update dict, so any `None` except `value`
+  vanishes with no error. Conversely `gr.update()` is the right form when you want to
+  change **one** prop, since the constructor form merges over the component's previous
+  constructor args. Pick deliberately.
+- **Gradio 5 warns that `head=` moves to `launch()` — but 5.x's `launch()` has no `head`
+  parameter.** Verified against 5.50. The warning is advice for Gradio 6, which
+  `requirements.txt` pins away from on purpose, so it is suppressed by an exact-message
+  filter around that one call rather than left to print on every start-up. Move the
+  argument when the `gradio<6` cap is lifted, not before.
+- **A cross-tab hand-off must move the user, not just the data.** "Send kept shots to ③"
+  wrote its confirmation into a Markdown box that lives *on the ③ tab* — invisible from
+  ②, so the button read as doing nothing at all. Any hand-off needs three things: switch
+  the tab (`_goto_tab`), leave a note on the tab you came *from*, and preselect what you
+  sent. Silence is indistinguishable from a broken button.
+- **Write per-item results as they arrive, not after the loop.** `caption_images`
+  collected every caption in memory and the caller wrote sidecars only once it returned,
+  so a single Gemini 503 on the last image of a batch discarded 15 captions the user had
+  already been billed for. The `on_item` callback exists solely so the sidecar hits disk
+  immediately. Any future batch stage over a paid API needs the same shape.
+- **`gr.Error` discards the outputs; `gr.Warning` doesn't.** Raising `gr.Error` from an
+  event handler aborts it, so partial work can't be reported *and* the UI can't be
+  refreshed. The partial-failure path calls `gr.Warning(...)` (a toast) and returns
+  normally, so the finished captions, the unchanged selection and the resume instructions
+  all survive. Reserve `gr.Error` for "nothing happened at all".
+- **Retry only what a retry can fix.** `is_transient_api_error` gates on status: 429/5xx
+  are retried with backoff, 4xx client errors are not. Retrying a bad key or a rejected
+  request just makes the user wait for the same failure — and on a billed API, pay for it
+  more than once. An immediate retry with no delay (what `GeminiEngine` used to do) is
+  also useless against a 503, which *is* a demand spike.
+- **`google-genai` warns about env keys we never use.** With both `GOOGLE_API_KEY` and
+  `GEMINI_API_KEY` set, the SDK logs "Both … are set. Using GOOGLE_API_KEY." on every
+  client construction. We always pass `api_key=` explicitly, so **neither** env var is
+  consulted — the line is not just noise, it tells the user the wrong key is in play.
+  `config.gemini_client()` is the single client factory and filters that one record;
+  construct clients through it, never `genai.Client(...)` directly.
+- **"Skipped" has to say what the denominator was.** ④'s result listed skipped-for-no-
+  caption images with no context, and a user who had unchecked 8 of 24 read it as a
+  complete skip list and asked why only one was named. Unchecked images are never
+  candidates, so they are never mentioned; the message now states "N of the M image(s)
+  you checked" everywhere so the two kinds of exclusion can't be confused.
 
 - **Never put an unescaped `(` or `)` inside a cmd `if … ( … )` block.** cmd ends the block
   at the first bare `)`, so `echo free-tier captioning (SFW, rate-limited)` inside an `if`
@@ -623,8 +738,9 @@ grouped by stage. Milestone versions are noted only where they explain a design 
   fixed prefix/suffix, tag drop-list, skip-already-captioned; inline caption editor; caption-health
   + tag-frequency + CLIP-77-token advisories.
 - **④ Export** — flat NN.png/NN.txt + metadata.json (records dataset_type + detected caption_style)
-  + metadata.jsonl (HF imagefolder) + README.txt; per-image selection gate with near-duplicate and
-  caption-health advisories; optional .zip; opt-in private-by-default Hugging Face publish.
+  + metadata.jsonl (HF imagefolder) + README.txt; click-to-pick selection gate preseeded with what
+  ③ captioned, with near-duplicate and caption-health advisories; optional .zip; opt-in
+  private-by-default Hugging Face publish.
 - **⑤ Train config** — ai-toolkit (one-command, incl. correct SDXL knobs), kohya sd-scripts SDXL,
   musubi-tuner; steps + multi-resolution buckets derived from the dataset; caption/model sanity
   check; type-aware sample prompt. Nothing is ever launched — configs + the run command are shown.
@@ -675,6 +791,21 @@ API keys).
   helper picks "a"/"an" from the emotion's first letter (a plain first-letter check is
   enough for this small curated emotion vocabulary; no phonetic library needed).
 
+- **Selection flow + caption resilience (0.14.0)** — a manual 24-shot end-to-end run
+  surfaced a cluster of related defects, all fixed together. **Selection:** thumbnails in
+  ②/③/④ are now click-to-toggle with a per-image ✅/⬜ mark (the checkbox list stays, in
+  sync, for keyboard/bulk use) plus Select all / none / captioned-only buttons; the ②→③
+  and new ③→④ hand-off buttons switch tabs and confirm on the tab you left; captioning no
+  longer re-checks the whole folder afterwards; and what ③ captioned is carried into ④'s
+  preselection instead of ④ silently re-adding shots the user rejected two tabs earlier.
+  **Resilience:** captions are written per image as they arrive (a 503 on image 16 used to
+  discard 15 paid-for captions), transient statuses are retried with backoff on both the
+  captioner and the image engine, a failed batch reports what it finished and how to
+  resume instead of dumping a traceback, and the misleading google-genai dual-key warning
+  is filtered at its single client factory. **Clarity:** ④'s result now states the
+  checked-image denominator so "skipped" can't be read as the deselected set. See the
+  Selection flow section and the six matching gotchas.
+
 ## Future ideas & enhancements
 
 Candidate to-dos that fit the project shape (standalone stages, per-stage local/cloud choice, lazy
@@ -698,10 +829,23 @@ ordered by benefit-to-cost.
 - **ComfyUI-backend alpha cutout.** The `alpha_cutout` toggle at ① (0.13.0) is builtin-SAM3-only —
   the bundled ComfyUI isolation workflows would need a graph change (a core alpha-join node) to
   support it. Revisit if a ComfyUI-only user asks for it.
+- **Auto-refresh ④'s preview after an inline caption edit in ③.** Editing a sidecar in ③'s
+  inline editor doesn't update a preview already loaded in ④ — it still shows the old
+  `⚠ empty` / `✓` flag until "Load & preview" is clicked again. Cheap to wire, but it adds
+  another cross-tab edge to the selection flow, so it wants a green light rather than being
+  slipped in.
+- **Shift-click range select in the picker galleries (②/③/④).** Would help on a 24-shot plan.
+  Now cheap-ish: `_PICKER_SCRIPT` already owns the click, so it would only need to remember the
+  last index and click the boxes in between. Still not built without a green light — the
+  quick-select buttons cover the common bulk cases.
 - **Root-cause the Gradio 6 stuck-loading-overlay bug (0.12.1).** `requirements.txt` caps
   `gradio<6` because 6.20.0 leaves `demo.load`-fed components stuck under a spinner that never
   clears (see the Gradio gotcha). Nobody has dug into *why* Gradio 6 does this — worth a real
-  investigation before ever attempting to lift the cap, so the fix doesn't repeat.
+  investigation before ever attempting to lift the cap, so the fix doesn't repeat. **When the
+  cap does lift**, two things move with it: pass `head=` to `launch()` instead of the `Blocks`
+  constructor (and drop the warning filter around it), and re-verify `_PICKER_SCRIPT` still
+  finds `.thumbnail-item` — a Gallery DOM change would break click-to-select silently, which
+  is what `tests/test_selection_flow.py`'s id-contract tests guard against on our side.
 
 ## Repo rename: lora-dataset-studio → lora-distillery (0.12.2)
 

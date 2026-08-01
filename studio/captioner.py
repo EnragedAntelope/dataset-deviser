@@ -35,6 +35,11 @@ from studio.config import (
 
 _JOYCAPTION_SYSTEM = "You are a helpful image captioner."
 
+# Cloud captioning retries: 4 attempts at 2s/4s/8s covers the seconds-long Gemini
+# demand spikes that produce a 503 without leaving a user staring at a stuck batch.
+GEMINI_RETRIES = 4
+GEMINI_BACKOFF_S = 2.0
+
 
 class CaptionerConfigError(Exception):
     """A captioner is selected but not usable yet (e.g. custom endpoint unset).
@@ -252,17 +257,25 @@ class Captioner:
                 f"{self.spec.label} needs GEMINI_API_KEY (or LDS_GEMINI_API_KEY in .env). "
                 f"Get one at https://aistudio.google.com/apikey"
             )
-        from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=key)
-        resp = client.models.generate_content(
-            model=self.model or "gemini-flash-latest",
-            contents=[
-                types.Part.from_bytes(data=image_path.read_bytes(), mime_type="image/png"),
-                instruction,
-            ],
-        )
+        client = config.gemini_client(key)
+        contents = [
+            types.Part.from_bytes(data=image_path.read_bytes(), mime_type="image/png"),
+            instruction,
+        ]
+        # Retry transient statuses with backoff, like the OpenAI backend already did.
+        # A 503 ("high demand") is the common Gemini failure and it clears in seconds
+        # — without this it aborted the whole batch on the first spike.
+        for attempt in range(GEMINI_RETRIES):
+            try:
+                resp = client.models.generate_content(
+                    model=self.model or "gemini-flash-latest", contents=contents)
+                break
+            except Exception as e:
+                if attempt == GEMINI_RETRIES - 1 or not config.is_transient_api_error(e):
+                    raise
+                time.sleep(GEMINI_BACKOFF_S * (2 ** attempt))
         if not resp.text:
             raise RuntimeError(f"{self.spec.label}: empty response (content refusal?)")
         return resp.text
@@ -475,6 +488,7 @@ def caption_images(
     blacklist: str = "",
     dataset_type: str = "character",
     sparse: bool = False,
+    on_item: Callable[[Path, str], None] | None = None,
 ) -> list[tuple[Path, str]]:
     """Caption a list of images. Standalone — no run/pipeline state needed.
 
@@ -486,6 +500,11 @@ def caption_images(
     to strip (tag styles only); `skip_existing` leaves images that already have a
     non-empty .txt untouched. Returns (image_path, finalized_caption) pairs; the
     captioner model is loaded once and freed afterwards.
+
+    `on_item(image, caption)` fires as each caption is finalized, so a caller can
+    persist it immediately. That matters for cloud captioners: a 503 on the last
+    image of a batch used to discard every caption already paid for, because
+    sidecars were only written from the returned list.
     """
     subject = character_name or "the character"
     drop = parse_blacklist(blacklist)
@@ -529,7 +548,10 @@ def caption_images(
                                         style=style, dataset_type=dataset_type)
             # Drop noisy tags before affixes so a fixed prefix/suffix survives.
             cap_text = drop_blacklisted_tags(cap_text, drop, style)
-            items.append((p, apply_affixes(cap_text, prefix, suffix, style)))
+            final = apply_affixes(cap_text, prefix, suffix, style)
+            items.append((p, final))
+            if on_item is not None:
+                on_item(p, final)
     finally:
         cap.unload()
     return items

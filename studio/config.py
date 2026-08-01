@@ -537,6 +537,80 @@ def list_images(folder: Path) -> list[Path]:
                   if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
 
 
+# HTTP statuses a cloud provider returns for "try again", mapped to plain English.
+# 503 is by far the common one — a Gemini demand spike, not anything the user did.
+_TRANSIENT_STATUS = {
+    429: "the provider is rate-limiting your key (429)",
+    500: "the provider hit an internal error (500)",
+    502: "the provider's gateway failed (502)",
+    503: "the model is temporarily overloaded (503)",
+    504: "the provider timed out (504)",
+}
+_RETRY_ADVICE = ("Wait a minute and try again, or switch captioner (Groq / a local "
+                 "captioner) in the dropdown.")
+
+
+def api_status_code(exc: BaseException) -> int | None:
+    """The HTTP status behind a cloud SDK exception, if it exposes one.
+
+    `google-genai` puts it on `.code`, `httpx.HTTPStatusError` on `.response.status_code`.
+    Anything else returns None and gets the generic message.
+    """
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if code is None:
+        response = getattr(exc, "response", None)
+        code = getattr(response, "status_code", None)
+    return code if isinstance(code, int) else None
+
+
+def friendly_api_error(exc: BaseException) -> str:
+    """One readable sentence for a cloud API failure.
+
+    The raw `google-genai` exception stringifies to its whole JSON error body, which
+    is what a user saw in the toast under a full traceback. Transient statuses get a
+    named cause and the two things actually worth doing about them; everything else
+    degrades to a trimmed message so no failure is ever swallowed.
+    """
+    reason = _TRANSIENT_STATUS.get(api_status_code(exc) or 0, "")
+    if reason:
+        return f"{reason}. {_RETRY_ADVICE}"
+    text = " ".join(str(exc).split())
+    return text[:300] + ("…" if len(text) > 300 else "") or exc.__class__.__name__
+
+
+def is_transient_api_error(exc: BaseException) -> bool:
+    """True when retrying the same call could plausibly succeed.
+
+    Deliberately status-driven: a 400/401/403/404 (bad request, bad key, no access)
+    and a content refusal never get better with a retry, so retrying them just makes
+    the user wait longer for the same failure.
+    """
+    return (api_status_code(exc) or 0) in _TRANSIENT_STATUS
+
+
+def gemini_client(api_key: str):
+    """A `google-genai` client that uses only the key we hand it.
+
+    The SDK logs "Both GOOGLE_API_KEY and GEMINI_API_KEY are set. Using
+    GOOGLE_API_KEY." whenever both env vars happen to exist. With an explicit
+    `api_key=` neither env var is consulted, so that line is not just noise — it
+    tells the user the wrong key is in play. Filtered at the source rather than
+    explained in the docs; every other genai log record still comes through.
+    """
+    import logging
+
+    from google import genai
+
+    logger = logging.getLogger("google_genai._api_client")
+    if not any(getattr(f, "_dd_dual_key", False) for f in logger.filters):
+        def _drop_dual_key_warning(record: logging.LogRecord) -> bool:
+            return "Both GOOGLE_API_KEY and GEMINI_API_KEY" not in record.getMessage()
+
+        _drop_dual_key_warning._dd_dual_key = True  # type: ignore[attr-defined]
+        logger.addFilter(_drop_dual_key_warning)
+    return genai.Client(api_key=api_key)
+
+
 def read_caption(path: Path) -> str:
     """The stripped caption sidecar for `path` ("" if absent), read forgivingly.
 
