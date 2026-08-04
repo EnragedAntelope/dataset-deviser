@@ -44,6 +44,11 @@ def test_the_picker_script_is_installed_on_the_page() -> None:
     assert A.demo.head and "thumbnail-item" in A.demo.head
 
 
+def test_the_picker_script_supports_shift_click_ranges() -> None:
+    assert "shiftKey" in A._PICKER_SCRIPT
+    assert "lastIndex" in A._PICKER_SCRIPT
+
+
 # ---------- picker primitives ----------
 
 def test_picker_gallery_marks_selection_first() -> None:
@@ -218,3 +223,40 @@ def test_load_export_preview_preselects_the_captioned_subset(tmp_path: Path) -> 
         str(folder), carry=[str(folder / "a.png")])
     assert boxes.value == [str(folder / "a.png")]
     assert "1 of 3 preselected" in note
+
+
+# ---------- refresh after a ③ inline caption edit ----------
+
+def test_refresh_export_preview_is_a_noop_before_export_ever_loaded(tmp_path: Path) -> None:
+    # ③'s editor doesn't know whether ④ has been opened this session — empty rows
+    # means "never loaded", so every output must be gr.skip(), not a real update.
+    folder = _folder_with(tmp_path, ["a.png"])
+    result = A.refresh_export_preview(str(folder), [], [])
+    assert all(r == {"__type__": "update"} for r in result)
+
+
+def test_refresh_export_preview_updates_the_flag_without_touching_selection(
+    tmp_path: Path,
+) -> None:
+    folder = _folder_with(tmp_path, ["a.png", "b.png"])
+    b = str(folder / "b.png")
+    # Load once (nothing captioned yet), user checks only b.
+    rows, _, boxes, _ = A.load_export_preview(str(folder))
+    user_pick = [b]
+    # Now ③ writes a caption for a.png and asks ④ to refresh its stale flag.
+    (folder / "a.png").with_suffix(".txt").write_text("cap", encoding="utf-8")
+    new_rows, gallery, new_boxes, note = A.refresh_export_preview(str(folder), rows, user_pick)
+    assert new_boxes.value == [b]  # untouched, even though a.png is now "ready"
+    assert any("a.png — ✓" in label for label, _ in new_boxes.choices)
+    assert "Refreshed after a ③ caption edit" in note
+    assert len(gallery) == 2
+    assert len(new_rows) == 2
+
+
+def test_refresh_export_preview_drops_a_pick_whose_file_is_gone(tmp_path: Path) -> None:
+    folder = _folder_with(tmp_path, ["a.png", "b.png"])
+    rows, _, _, _ = A.load_export_preview(str(folder))
+    (folder / "b.png").unlink()
+    _, _, boxes, _ = A.refresh_export_preview(str(folder), rows, [str(folder / "a.png"),
+                                                                   str(folder / "b.png")])
+    assert boxes.value == [str(folder / "a.png")]

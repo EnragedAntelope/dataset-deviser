@@ -323,6 +323,8 @@ _PICKER_SCRIPT = """
 (() => {
   const PICKERS = %s;
   const ON = %s, OFF = %s;
+  // Last thumbnail index clicked in each gallery, for shift-click range select.
+  const lastIndex = new Map();
 
   // Flip the mark straight away. The round-trip that re-renders the gallery takes
   // ~1.5s, and a picker whose tick lands a second and a half after the click reads
@@ -350,10 +352,26 @@ _PICKER_SCRIPT = """
       const thumbs = Array.from(gallery.querySelectorAll(".thumbnail-item"));
       const boxes = Array.from(picks.querySelectorAll('input[type="checkbox"]'));
       const index = thumbs.indexOf(thumb);
-      if (index >= 0 && index < boxes.length) {
-        boxes[index].click();
-        flipMark(thumb);
+      if (index < 0 || index >= boxes.length) return;
+      boxes[index].click();
+      flipMark(thumb);
+      // Shift-click extends the pick to match this click's new state across the
+      // range since the last click IN THIS GALLERY — the common file-manager
+      // convention. A stale last index (list reloaded shorter since) is clamped
+      // rather than trusted.
+      const prev = lastIndex.get(galleryId);
+      if (event.shiftKey && prev !== undefined) {
+        const from = Math.min(prev, boxes.length - 1);
+        const target = boxes[index].checked;
+        const [lo, hi] = from < index ? [from, index] : [index, from];
+        for (let i = lo; i <= hi; i++) {
+          if (boxes[i].checked !== target) {
+            boxes[i].click();
+            flipMark(thumbs[i]);
+          }
+        }
       }
+      lastIndex.set(galleryId, index);
       return;
     }
   }, true);
@@ -809,23 +827,61 @@ def _export_preselect(images: list[Path], carry) -> tuple[list[str], str]:
     return [str(img) for img in images], "all checked"
 
 
-def load_export_preview(folders_text: str, dup_distance: float = 5, carry=None):
+def _export_scan(folders_text: str) -> tuple[list[Path], dict[Path, str], list[tuple[str, str, str]],
+                                              list[tuple[str, str]]]:
+    """Shared folder scan behind both the initial preview and a flags-only refresh.
+
+    One read per image: the flag feeds the gallery caption, the checkbox label and
+    the ready/empty/none counters, and recomputing it separately for each meant
+    several disk reads per image.
+    """
     folders = [Path(line.strip()) for line in folders_text.splitlines() if line.strip()]
-    if not folders:
-        raise gr.Error("Enter at least one folder of captioned images (one per line).")
     images = [img for folder in folders for img in list_images(folder)]
-    if not images:
-        raise gr.Error("No images found in the listed folder(s).")
-    # One read per image: the flag feeds the gallery caption, the checkbox label and
-    # all three counters, and recomputing it five times meant five disk reads each.
     flags = {img: _export_flag(img) for img in images}
     rows = [(str(img), str(img), f"{img.parent.name}/{img.name} — {flags[img]}")
             for img in images]
     choices = [_export_label(img, flags[img]) for img in images]
-    values, why = _export_preselect(images, carry)
+    return images, flags, rows, choices
+
+
+def _export_counts(flags: dict[Path, str]) -> tuple[int, int, int]:
     ready = sum(1 for f in flags.values() if f == "✓")
     empty = sum(1 for f in flags.values() if f == "⚠ empty")
     none_ = sum(1 for f in flags.values() if f == "⚠ no caption")
+    return ready, empty, none_
+
+
+def refresh_export_preview(folders_text: str, current_rows, current_selected):
+    """Re-flag an already-loaded ④ preview after an inline caption edit in ③.
+
+    A caption edited in ③'s inline editor left ④ showing the stale ⚠/✓ flag until
+    "Load & preview" was clicked again. This keeps EXACTLY the images the user had
+    checked (unlike load_export_preview's carry-based preselect, which is only for
+    the first load) and is a no-op — via gr.skip() on every output — if ④ hasn't
+    been loaded yet (current_rows empty) or the edited folder isn't one it's showing.
+    """
+    if not current_rows:
+        return gr.skip(), gr.skip(), gr.skip(), gr.skip()
+    images, flags, rows, choices = _export_scan(folders_text)
+    if not images:
+        return gr.skip(), gr.skip(), gr.skip(), gr.skip()
+    kept = set(current_selected or [])
+    values = [v for _, v in choices if v in kept]
+    ready, empty, none_ = _export_counts(flags)
+    note = (f"**{len(images)} image(s)** — {ready} ready · {empty} empty caption · "
+            f"{none_} no caption. Refreshed after a ③ caption edit — your selection "
+            "is unchanged.")
+    return rows, _picker_gallery(rows, values), gr.CheckboxGroup(choices=choices, value=values), note
+
+
+def load_export_preview(folders_text: str, dup_distance: float = 5, carry=None):
+    if not (folders_text or "").strip():
+        raise gr.Error("Enter at least one folder of captioned images (one per line).")
+    images, flags, rows, choices = _export_scan(folders_text)
+    if not images:
+        raise gr.Error("No images found in the listed folder(s).")
+    values, why = _export_preselect(images, carry)
+    ready, empty, none_ = _export_counts(flags)
     note = (f"**{len(images)} image(s)** — {ready} ready · {empty} empty caption · "
             f"{none_} no caption. Below: {why} — **click a thumbnail to toggle it**. "
             "Only checked images are exported; a checked image without a usable "
@@ -1388,7 +1444,8 @@ with _blocks as demo:
             # allow_preview=False so a click TOGGLES the shot instead of opening a
             # lightbox; the Zoom checkbox flips it back when you want a closer look.
             gen_gallery = gr.Gallery(
-                label="Generated shots — click a thumbnail to keep/reject it",
+                label="Generated shots — click a thumbnail to keep/reject it "
+                      "(shift-click for a range)",
                 columns=6, height=420, allow_preview=False, elem_id="dd-gallery-gen")
             with gr.Row():
                 btn_gen_all = gr.Button("Select all", size="sm")
@@ -1514,7 +1571,8 @@ with _blocks as demo:
                 with gr.Column(scale=2):
                     cap_note = gr.Markdown()
                     cap_gallery = gr.Gallery(
-                        label="Folder contents — click a thumbnail to include/exclude it",
+                        label="Folder contents — click a thumbnail to include/exclude it "
+                              "(shift-click for a range)",
                         columns=6, height=340, allow_preview=False,
                         elem_id="dd-gallery-cap")
                     with gr.Row():
@@ -1558,7 +1616,8 @@ with _blocks as demo:
                     info="Higher flags more images as near-duplicates (dHash bit distance).")
             exp_preview_note = gr.Markdown()
             exp_gallery = gr.Gallery(
-                label="Final review — click a thumbnail to include/exclude it",
+                label="Final review — click a thumbnail to include/exclude it "
+                      "(shift-click for a range)",
                 columns=6, height=420, allow_preview=False, elem_id="dd-gallery-exp")
             with gr.Row():
                 btn_exp_all = gr.Button("Select all", size="sm")
@@ -1737,7 +1796,9 @@ with _blocks as demo:
     cap_edit_file.change(load_one_caption, [cap_folder, cap_edit_file], [cap_edit_text])
     btn_edit_load.click(load_one_caption, [cap_folder, cap_edit_file], [cap_edit_text])
     btn_edit_save.click(save_one_caption, [cap_folder, cap_edit_file, cap_edit_text],
-                        [cap_result])
+                        [cap_result]) \
+                 .then(refresh_export_preview, [exp_folders, exp_rows, exp_select],
+                       [exp_rows, exp_gallery, exp_select, exp_preview_note])
     def _cap_cost(key: str, model: str, selected: list[str]) -> str:
         line = estimate_caption_cost(key, model, len(selected or []))
         vram = CAPTIONERS_BY_KEY[key].vram_note

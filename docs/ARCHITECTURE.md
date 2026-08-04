@@ -1,6 +1,6 @@
 # Architecture
 
-Version: 0.14.0
+Version: 0.14.1
 
 ```
 app.py                  Gradio UI — thin wiring over the stage functions (5 tabs).
@@ -791,6 +791,17 @@ API keys).
   helper picks "a"/"an" from the emotion's first letter (a plain first-letter check is
   enough for this small curated emotion vocabulary; no phonetic library needed).
 
+- **Selection-flow follow-ups (0.14.1)** — the two items 0.14.0 logged and deliberately did
+  not build, now shipped on request. **Shift-click range select**: `_PICKER_SCRIPT` tracks
+  the last thumbnail clicked per gallery and, on a shift-click, extends every box in between
+  to match the just-clicked box's new state (the common file-manager convention) — a stale
+  last index (list reloaded shorter since) is clamped, not trusted. **Auto-refresh ④ after a
+  ③ inline edit**: `btn_edit_save` now chains `refresh_export_preview`, which re-flags an
+  *already-loaded* ④ preview without touching the user's checked set — deliberately different
+  from `load_export_preview`'s carry-based preselect, which only applies on first load. A
+  no-op (`gr.skip()` on every output) if ④ hasn't been opened yet or the edited image isn't
+  in a folder it's showing. `_export_scan`/`_export_counts` factored out of
+  `load_export_preview` so both paths read each image's flag exactly once.
 - **Selection flow + caption resilience (0.14.0)** — a manual 24-shot end-to-end run
   surfaced a cluster of related defects, all fixed together. **Selection:** thumbnails in
   ②/③/④ are now click-to-toggle with a per-image ✅/⬜ mark (the checkbox list stays, in
@@ -829,15 +840,7 @@ ordered by benefit-to-cost.
 - **ComfyUI-backend alpha cutout.** The `alpha_cutout` toggle at ① (0.13.0) is builtin-SAM3-only —
   the bundled ComfyUI isolation workflows would need a graph change (a core alpha-join node) to
   support it. Revisit if a ComfyUI-only user asks for it.
-- **Auto-refresh ④'s preview after an inline caption edit in ③.** Editing a sidecar in ③'s
-  inline editor doesn't update a preview already loaded in ④ — it still shows the old
-  `⚠ empty` / `✓` flag until "Load & preview" is clicked again. Cheap to wire, but it adds
-  another cross-tab edge to the selection flow, so it wants a green light rather than being
-  slipped in.
-- **Shift-click range select in the picker galleries (②/③/④).** Would help on a 24-shot plan.
-  Now cheap-ish: `_PICKER_SCRIPT` already owns the click, so it would only need to remember the
-  last index and click the boxes in between. Still not built without a green light — the
-  quick-select buttons cover the common bulk cases.
+Both items below shipped in 0.14.1.
 - **Root-cause the Gradio 6 stuck-loading-overlay bug (0.12.1).** `requirements.txt` caps
   `gradio<6` because 6.20.0 leaves `demo.load`-fed components stuck under a spinner that never
   clears (see the Gradio gotcha). Nobody has dug into *why* Gradio 6 does this — worth a real

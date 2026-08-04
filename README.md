@@ -142,10 +142,12 @@ setup). *Tag options* let you add a fixed **prefix/suffix** (e.g. Pony `score_9,
 **drop noisy tags** (`watermark`, `signature`…), append a **rating** tag, keep raw underscores,
 tune tagger thresholds, and **skip already-captioned** images.
 
-Pick which images to caption by **clicking the thumbnails** — each carries a ✅/⬜ mark, and
-*Select all / none / only already-captioned* handle the bulk cases (tick **🔍 Zoom on click** when
-you'd rather enlarge an image than pick it). Whatever you leave selected is what gets captioned,
-stays selected afterwards, and is what **④ Export** preselects.
+Pick which images to caption by **clicking the thumbnails** — each carries a ✅/⬜ mark,
+**shift-click extends the pick to a range**, and *Select all / none / only already-captioned*
+handle the bulk cases (tick **🔍 Zoom on click** when you'd rather enlarge an image than pick
+it). Whatever you leave selected is what gets captioned, stays selected afterwards, and is what
+**④ Export** preselects. Edit a caption inline and, if ④'s preview is already open, its
+✓/⚠ flag updates on its own.
 
 If a cloud captioner dies mid-batch, every caption written so far is already saved — retry the
 rest with *Skip images that already have a caption*, no double billing.
