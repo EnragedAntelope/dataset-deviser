@@ -15,8 +15,9 @@ from typing import Callable
 
 from studio.config import settings
 from studio.engines.base import GenerationError
+from studio.jobs import ShouldStop, should_stop_now
 from studio.package import slugify
-from studio.preprocess import PreprocessReport, preprocess
+from studio.preprocess import PreprocessReport, failed_report, preprocess
 from studio.shotplan import Shot, apply_prop_exclusion, apply_wardrobe
 
 ProgressFn = Callable[[str], None]
@@ -59,22 +60,43 @@ def preprocess_sources(
     isolation_backend: str = "",
     tighten_crop: bool = False,
     alpha_cutout: bool = False,
+    should_stop: ShouldStop | None = None,
     progress: ProgressFn = print,
 ) -> list[PreprocessReport]:
     reports: list[PreprocessReport] = []
     for src in sources:
+        # Cooperative stop, checked between images: the one in flight finishes
+        # (a half-written PNG helps nobody) and the rest are simply not started.
+        if should_stop_now(should_stop):
+            progress(f"⏹ Stopped by request — {len(reports)} of {len(sources)} done, "
+                     f"{len(sources) - len(reports)} not started.")
+            break
         progress(f"Preprocessing {src.name}...")
-        rep = preprocess(src, out_dir, target=target, force_restore=force_restore,
-                         isolate=isolate, subject_prompt=subject_prompt,
-                         exclude_prompt=exclude_prompt, restore_backend=restore_backend,
-                         isolation_backend=isolation_backend, tighten_crop=tighten_crop,
-                         alpha_cutout=alpha_cutout, progress=progress)
+        # One unusable source (SAM3 finds no subject, a truncated file, a
+        # ComfyUI hiccup) must not discard the images already done. The failure
+        # is recorded in the report list and the batch continues; the caller
+        # decides how loudly to surface it. Before this, a single IsolationError
+        # unwound the whole run and the UI's gr.Error threw the outputs away.
+        try:
+            rep = preprocess(src, out_dir, target=target, force_restore=force_restore,
+                             isolate=isolate, subject_prompt=subject_prompt,
+                             exclude_prompt=exclude_prompt, restore_backend=restore_backend,
+                             isolation_backend=isolation_backend, tighten_crop=tighten_crop,
+                             alpha_cutout=alpha_cutout, progress=progress)
+        except Exception as e:
+            progress(f"  SKIPPED {src.name}: {e}")
+            reports.append(failed_report(src, str(e)))
+            continue
         extra = ", subject isolated" if rep.isolated else ""
         progress(
             f"  {src.name}: {rep.original_size[0]}x{rep.original_size[1]} -> "
             f"{rep.final_size[0]}x{rep.final_size[1]} ({rep.reason}{extra})"
         )
         reports.append(rep)
+    failed = [r for r in reports if r.error]
+    if failed:
+        progress(f"Preprocess done: {len(reports) - len(failed)} succeeded, "
+                 f"{len(failed)} skipped.")
     return reports
 
 
@@ -92,6 +114,7 @@ def generate_shots(
     only_ids: set[str] | None = None,
     exclude_props: bool = True,
     front: bool = False,
+    should_stop: ShouldStop | None = None,
     progress: ProgressFn = print,
 ) -> list[GenResult]:
     """Generate one image per shot from `sources` (identity references).
@@ -113,7 +136,17 @@ def generate_shots(
     todo.sort(key=lambda s: bool(s.chain_from))
 
     done: dict[str, Path] = {r.shot.id: r.path for r in results if r.path}
+    stopped_at = 0
     for i, shot in enumerate(todo, 1):
+        # Between-shot stop. Shots not started are left OUT of the results
+        # entirely rather than recorded as failures — they were never attempted,
+        # and "regenerate unchecked" then picks them up as the resume path.
+        if should_stop_now(should_stop):
+            stopped_at = i - 1
+            progress(f"⏹ Stopped by request — {stopped_at} of {len(todo)} shot(s) "
+                     f"generated, {len(todo) - stopped_at} not started. Use "
+                     f"'Generate/regenerate UNCHECKED shots' to finish the rest.")
+            break
         shot = apply_wardrobe(shot)  # fold the outfit column into the prompts
         if exclude_props:
             shot = apply_prop_exclusion(shot)

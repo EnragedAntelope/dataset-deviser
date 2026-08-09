@@ -489,6 +489,7 @@ def caption_images(
     dataset_type: str = "character",
     sparse: bool = False,
     on_item: Callable[[Path, str], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[tuple[Path, str]]:
     """Caption a list of images. Standalone — no run/pipeline state needed.
 
@@ -541,6 +542,14 @@ def caption_images(
     items: list[tuple[Path, str]] = []
     try:
         for i, p in enumerate(images, 1):
+            # Between-image stop. Checked BEFORE the call so a cloud captioner is
+            # never billed for an image the user has already cancelled; sidecars
+            # written so far are on disk already (see on_item).
+            if should_stop is not None and should_stop():
+                progress(f"⏹ Stopped by request — {len(items)} of {len(images)} "
+                         f"captioned. Tick 'Skip images that already have a caption' "
+                         f"and run again to finish the rest.")
+                break
             progress(f"Captioning {i}/{len(images)}: {p.name}")
             raw = cap.caption(p, subject=subject, style=style,
                               dataset_type=dataset_type, sparse=sparse)

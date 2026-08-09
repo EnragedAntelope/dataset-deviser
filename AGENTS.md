@@ -6,11 +6,11 @@ Turn a character, style, or concept into a ready-to-train LoRA dataset. One refe
 
 ## Current state
 
-_Last verified: 2026-08-08_
+_Last verified: 2026-08-09_
 
-- **Status:** in active development, released at v0.14.1 (git tag `v0.14.1`). CI green. **Every version bump must ship a GitHub Release** or the in-app update check never fires. The project was renamed twice (lora-dataset-studio → lora-distillery → dataset-deviser); older references under the previous names are stale.
-- **Works:** all five stages end to end (preprocess → generate & curate → caption → export → train config); the three dataset types (character, style, concept) with their own shot plans and caption framing; local and cloud paths for every stage; gallery curation with selection carried forward between stages, including shift-click range select; advisory dedupe, quality flags and caption lint; trainer configs for ai-toolkit (incl. SDXL), kohya sd-scripts and musubi-tuner; opt-in private Hugging Face publish.
-- **In progress:** nothing half-built — 0.14.x closed out the selection flow and caption resilience work. `docs/ARCHITECTURE.md` carries the "Future ideas" and "Deferred" sections that hold the real backlog.
+- **Status:** in active development, released at v0.15.0 (git tag `v0.15.0`). CI green. **Every version bump must ship a GitHub Release** or the in-app update check never fires. The project was renamed twice (lora-dataset-studio → lora-distillery → dataset-deviser); older references under the previous names are stale.
+- **Works:** all five stages end to end (preprocess → generate & curate → caption → export → train config); the three dataset types (character, style, concept) with their own shot plans and caption framing; local and cloud paths for every stage; gallery curation with selection carried forward between stages, including shift-click range select; advisory dedupe, quality flags and caption lint; trainer configs for ai-toolkit (incl. SDXL), kohya sd-scripts and musubi-tuner; opt-in private Hugging Face publish. Since 0.15.0: per-image fault isolation in ① (one bad source never ends the batch), a cooperative ⏹ Stop across ①/②/③ with documented resume paths, translated ComfyUI failures (missing node, bad input, unreachable server) and an in-app 🩺 setup check.
+- **In progress:** nothing half-built — 0.15.0 closed out the resilience/stop/diagnostics work. `docs/ARCHITECTURE.md` carries the "Future ideas" and "Deferred" sections that hold the real backlog.
 - **Known gaps / next steps:** pick up from `docs/ARCHITECTURE.md` → "Future ideas" / "Deferred", and read its *Maintainer principles* before changing anything; `gradio` is pinned `<6` because of a real stuck-loading-overlay regression — unpinning needs that verified fixed upstream; training is never launched for you and is not planned to be; the default export `output_root` writes into the repo root, so a smoke-test export leaves an untracked dataset folder to delete before committing.
 - **Deep docs:** `docs/ARCHITECTURE.md` (module map, stage and backend detail, gotchas, backlog — the deep reference), `docs/comfyui-setup.md`. Worklogs under `docs/` are gitignored and local-only by design.
 
@@ -32,7 +32,7 @@ _Last verified: 2026-08-08_
 | `cli.py` | Typer CLI — one subcommand per stage + `build`, `doctor`, `keys`, `custom-endpoint` |
 | `setup.bat` / `setup.sh` | One-time install: Python gate, venv, GPU/CPU torch, requirements, ONNX, keys, doctor |
 | `start.bat` / `start.sh` | Launch the UI |
-| `studio/` | Core modules: env_keys, doctor, config, pipeline, preprocess, isolate, tagger, dedupe, quality, caption_lint, hf_publish, captioner, etc. |
+| `studio/` | Core modules: env_keys, doctor, config, pipeline, preprocess, isolate, jobs (stop token), tagger, dedupe, quality, caption_lint, hf_publish, captioner, etc. |
 | `tests/` | pytest test suite |
 | `docs/` | Architecture (deep reference), images, worklogs |
 
@@ -69,6 +69,10 @@ python cli.py keys --setup
 - Dedupe is advisory (perceptual dHash, numpy-only) — surfaced in export preview, Hamming distance is a slider.
 - Quality flags (blur, exposure, contrast) are advisory — surfaced in curate/export views.
 - Caption lint is pure string logic (no tokenizer) — estimate_clip_tokens() is a best estimate.
+- Batch stages isolate per-item failures and return them as data; only "nothing happened at all" raises `gr.Error` (it discards outputs, including the Log). Toast text is plain — no markdown.
+- ⏹ Stop is cooperative and checked *between* items; every stage calls `JOB.start()` first, and the Stop button must stay `queue=False`.
+- Bundled ComfyUI workflows are core-nodes-only, so an unknown node means an out-of-date ComfyUI — `comfy_api` preflights node classes and translates rejection bodies.
+- `tests/conftest.py` autouse fixture repoints the output roots at tmp; without it the suite writes real folders into `runs/`.
 - HF publish is opt-in, private by default, requires HF_TOKEN.
 
 ## Security

@@ -1,6 +1,6 @@
 # Architecture
 
-Version: 0.14.1
+Version: 0.15.0
 
 ```
 app.py                  Gradio UI — thin wiring over the stage functions (5 tabs).
@@ -47,9 +47,15 @@ studio/
                         (one readable sentence instead of a raw JSON error body), and
                         gemini_client() (the ONE google-genai client factory — filters
                         the SDK's misleading dual-key warning, see the Gotcha)
-  pipeline.py           Stage orchestration: preprocess_sources(), generate_shots()
+  pipeline.py           Stage orchestration: preprocess_sources(), generate_shots().
+                        Both isolate per-item failures (one bad image never ends the
+                        batch) and honour the cooperative `should_stop` token
+  jobs.py               Cooperative cancellation: JobControl (a threading.Event stop
+                        flag) + should_stop_now(). Checked BETWEEN items by the three
+                        batch loops; UI-free so the CLI and tests drive it directly
   preprocess.py         Restore (comfyui|basic|auto) + isolate + optional tighten-crop
-                        + resize
+                        + resize. Atomic: any failure deletes the partial output.
+                        failed_report() turns a failure into data, not an exception
   isolate.py            Subject isolation: builtin SAM3 (transformers) | comfyui.
                         crop_to_content() tightens the isolated (subject-on-white, or
                         subject-with-alpha) image to the subject's bounding box (opt-in,
@@ -123,7 +129,11 @@ studio/
                         _combo_options()/_server_filename() validate configured model
                         filenames against the server's own combo list (separator/case
                         -insensitive match, raises a named-setting+closest-match error
-                        on a genuine miss) — see the ComfyUI model-lookup gotcha
+                        on a genuine miss) — see the ComfyUI model-lookup gotcha.
+                        server_status() reports WHY the server is unreachable;
+                        missing_node_types() preflights the graph's node classes; and
+                        describe_rejection() translates ComfyUI's /prompt 400 body
+                        (missing_node_type | node_errors | other) into one sentence
   engines/
     base.py             Engine protocol + GenerationError
     gemini.py           Cloud engine (Gemini image models via google-genai) with
@@ -143,6 +153,14 @@ caption finalization/lint, trainer-config rendering, package/zip resolution, sho
 downloading a model or touching the network (heavy backends are lazy-imported and mocked;
 `comfy_api`'s tests monkeypatch `httpx.get`). Run the suite with `pytest -q`; lint with
 `ruff check .` (rules in `pyproject.toml`).
+
+The suite is **hermetic by fixture**: `tests/conftest.py`'s autouse `_isolate_run_dirs`
+repoints `settings.runs_dir` / `output_root` / `shot_plans_dir` at `tmp_path` for every
+test. Without it, `cli build`/`generate` called the real `pipeline.new_run_dir()` even
+with the stage functions stubbed, so each run of the suite left a fresh `runs/<stamp>/`
+in the working copy — 59 stray folders had accumulated, several holding a full 24-shot
+set. If you add a test that legitimately needs a real output root, opt out explicitly
+rather than deleting the fixture.
 
 `.github/workflows/ci.yml` runs both on every push to `main` and every PR, across Python
 3.10–3.12. It installs `requirements.txt` only (**no `torch`**): the suite is CPU-only and never
@@ -309,11 +327,75 @@ carries an `id` for exactly this reason.
   so a single Gemini 503 on the last image of a batch discarded 15 captions the user had
   already been billed for. The `on_item` callback exists solely so the sidecar hits disk
   immediately. Any future batch stage over a paid API needs the same shape.
+- **A stage that loops over user files must isolate each item.** ① was the last stage
+  without this: `preprocess_sources` let one `IsolationError` (SAM3 finding no subject in
+  image 3 of 20) unwind the whole batch, and `app.do_preprocess` turned it into a
+  `gr.Error` — which discards the outputs, so every image already preprocessed was thrown
+  away and ②/③ were never auto-filled. The failure is now *data*: `failed_report()` puts it
+  in the returned list with `output=None`, the batch continues, and the UI shows the
+  successes plus a named, actionable reason per skipped image. Any future batch stage over
+  user-supplied files needs the same shape.
+- **Even a total failure should return, not raise.** The all-fail path was written as
+  `gr.Error` first — "nothing was produced" felt like the textbook case for it. Driving it
+  in a browser proved otherwise: `gr.Error` paints an "Error" pill over *every* output
+  component **including the Log**, which is exactly where the per-image reasons live, so the
+  app reads as broken rather than as having been given bad input. ① now returns normally
+  with a ❌ note + `gr.Warning`, keeps the Log, skips the ②/③ auto-fill (pointing them at an
+  empty folder is worse than leaving them alone), and `rmdir`s the empty run folder.
+  `gr.Error` is left for "you gave me no input at all" and an unwritable output path.
+- **A stage that writes its output in more than one step must be atomic.** Restoration
+  writes `out_path` *before* isolation runs, so an isolation failure used to leave a
+  restored-but-not-isolated, **not-resized** image behind (measured: 1024x1280 in a
+  1024-target run). `list_images` then served it to ②/③ as a finished source — ③ reported
+  "3 images loaded" when only 2 had succeeded. Silent contamination of the dataset, and a
+  strong candidate for the user report that the app "stopped working" after an isolation
+  error: the run folder *looked* populated. `preprocess()` now wraps the whole stage and
+  unlinks `out_path` on any exception.
+- **An error message must name the file the USER knows.** The isolation failure named
+  `cat_prepped.png` — the restored intermediate, which the atomic cleanup then deletes — so
+  the user was sent looking for a file that does not exist. `isolate_subject(label=)`
+  carries the original source name for messages.
+- **Toasts are plain text; notes are markdown.** `gr.Warning`/`gr.Error` popups do not
+  render markdown, so `**Subject to keep**` and backticked `` `person` `` appeared with
+  their literal syntax in the popup. `app._plain()` strips both for toast copy; the
+  Markdown note keeps the emphasis.
 - **`gr.Error` discards the outputs; `gr.Warning` doesn't.** Raising `gr.Error` from an
   event handler aborts it, so partial work can't be reported *and* the UI can't be
   refreshed. The partial-failure path calls `gr.Warning(...)` (a toast) and returns
   normally, so the finished captions, the unchanged selection and the resume instructions
   all survive. Reserve `gr.Error` for "nothing happened at all".
+- **Stop is cooperative, between items, and is not a failure.** `studio/jobs.py` holds a
+  `threading.Event` (Gradio serves the Stop click on a different thread from the stage it
+  interrupts); the three batch loops check it *before* starting each item, so the one in
+  flight completes and the rest are simply never started. Two consequences worth keeping:
+  a stopped run returns partial results **normally** (never an exception), and shots that
+  were never attempted are left out of the results entirely rather than recorded as
+  failures — which is what makes "Generate/regenerate UNCHECKED shots" the resume path.
+  Every stage MUST call `JOB.start()` before its loop, or a stop left over from the
+  previous run cancels the next one instantly.
+- **The Stop button must be wired `queue=False`.** With Gradio's default queued dispatch
+  the click waits its turn *behind the very job it is meant to interrupt*, so it only runs
+  once that job has finished on its own — i.e. it does nothing, slowly.
+- **"Regenerate unchecked" derives its redo set from the PLAN, not from the results.**
+  It used to compute `{r.shot.id for r in results} - kept`, so a shot that never ran (the
+  run was stopped, or the engine failed before reaching it) was invisible to it and could
+  never be produced without regenerating everything. Reading the plan makes the same button
+  the resume path after ⏹ Stop.
+- **ComfyUI reports a broken graph in three different shapes, all as a 400 from /prompt.**
+  Captured from a live ComfyUI v0.29 rather than guessed: `error.type ==
+  "missing_node_type"` carries `extra_info.class_type`; `prompt_outputs_failed_validation`
+  carries `node_errors{id: {class_type, errors[{details, extra_info.input_name}]}}`;
+  everything else (`prompt_no_outputs`, `invalid_prompt`, …) only has `error.message`.
+  `describe_rejection()` handles all three plus a non-JSON body (a proxy's HTML error
+  page). The old code printed `r.text[:500]` — raw truncated JSON. Since the bundled
+  workflows are **core-nodes-only by policy**, an unknown node almost always means an
+  out-of-date ComfyUI, and the message says so; `missing_node_types()` preflights the graph
+  against `/object_info` so that failure arrives before the image upload, not after.
+- **"Not reachable" is not a diagnosis.** `server_status()` distinguishes connection
+  refused (nothing listening → start it, or fix `LDS_COMFY_URL`), a timeout (starting up or
+  busy loading a model), and a non-200 answer (something *else* holds that port), and names
+  the URL it tried. `is_up()` is now a thin wrapper over it, so `doctor` and the engine
+  share one implementation.
 - **Retry only what a retry can fix.** `is_transient_api_error` gates on status: 429/5xx
   are retried with backoff, 4xx client errors are not. Retrying a bad key or a rejected
   request just makes the user wait for the same failure — and on a billed API, pay for it
@@ -791,6 +873,18 @@ API keys).
   helper picks "a"/"an" from the emotion's first letter (a plain first-letter check is
   enough for this small curated emotion vocabulary; no phonetic library needed).
 
+- **Resilience, Stop and ComfyUI diagnostics (0.15.0)** — driven by a user report whose
+  traceback showed one SAM3 miss killing a whole ① batch. Fixing it properly meant four
+  related changes plus three defects the live reproduction turned up: ① now isolates
+  per-image failures and reports each with an actionable hint; `preprocess()` is atomic so
+  a failed image can no longer leave a half-processed file in the run folder; the all-fail
+  path returns instead of raising (keeping the Log); and errors name the user's own file.
+  A cooperative **⏹ Stop** covers ①/②/③ — it finishes the item in flight, keeps everything
+  done, and resumes through the existing controls ("Generate/regenerate UNCHECKED shots",
+  now plan-derived so never-generated shots are included; ③'s skip-already-captioned).
+  ComfyUI failures are translated from raw JSON into one sentence, with a preflight
+  node-class check and a **🩺 Check my setup** accordion running `doctor` in the UI.
+  See the matching gotchas.
 - **Selection-flow follow-ups (0.14.1)** — the two items 0.14.0 logged and deliberately did
   not build, now shipped on request. **Shift-click range select**: `_PICKER_SCRIPT` tracks
   the last thumbnail clicked per gallery and, on a shift-click, extends every box in between
@@ -917,6 +1011,18 @@ Considered and deliberately **not** pursued, with the reason each stays out.
   *subject* from a reference; a style is the property you'd have to already have in order to copy it,
   so the honest workflow is to collect images that share the look and start at ③. ② is disabled for
   Style rather than quietly producing character shots.
+
+- **Krea2 Identity Edit and Flux-2 Klein 9B as ② generation engines.** Both were built and
+  tested against a live ComfyUI (2026-08-01) and both failed the actual task. Krea2's
+  identity-edit LoRA preserves identity by anchoring to the source image's *structure*, so
+  it re-stages a scene (new background/clothing/lighting) but will not rotate the subject —
+  "change camera angle" prompts returned near-duplicates of the source, and a reference-
+  sheet prompt returned a grotesque mashup. Klein 9B img2img with core nodes reached
+  "recognisable but not dataset-quality"; closing the gap needs third-party identity
+  packs (IdentityFeatureTransferFinal / Multi ReferenceLatent), which the core-nodes-only
+  rule for bundled workflows rules out. **Qwen Image Edit 2511 + the Multiple-Angles LoRA
+  remains the only proven approach**; don't re-evaluate these two without a new capability
+  to test. (Full test log kept locally, not in the repo — it is machine-specific.)
 
 - **In-app / cloud training launch, Test Studio / checkpoint ranking, Merge Lab.** These cross the
   "never launch training" line this tool holds on purpose — launching is fragile across trainer

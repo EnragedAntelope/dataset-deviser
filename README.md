@@ -26,6 +26,9 @@ ai-toolkit, kohya or musubi.
 - **Trainer-ready output.** Flat `NN.png` + `NN.txt` (JPEG/WEBP sources keep their own extension),
   `metadata.json`/`metadata.jsonl`, optional `.zip` and Hugging Face publish, and a generated config
   for Flux / SDXL / Qwen-Image / Krea / Pony and more.
+- **Interruptible, and hard to derail.** **⏹ Stop** ends a long run after the current image and
+  keeps everything finished so far. One unusable source never costs you the batch — it's skipped,
+  named, and told you how to fix it, while the rest go through.
 - **Honest by design.** No telemetry, no upsell. Configs are generated and shown — **training is
   never launched for you**. Cloud calls bill *your* key; this tool takes no cut.
 
@@ -100,16 +103,30 @@ after a `git pull` is the usual reason a new version won't start.
 
 ### Troubleshooting
 
+**Start here: open 🩺 Check my setup in the app** (or run `python cli.py doctor`). It reports your
+Python version, dependencies, whether ComfyUI is reachable *and whether every model filename you've
+configured actually exists on it*, plus which API keys are set (masked) and what each missing one
+blocks.
+
 - **The window closed instantly / nothing happened.** Open a terminal in the project folder and run
   `start.bat` (or `.venv\Scripts\python.exe app.py`) from there so the error stays on screen.
 - **It won't start after a `git pull`.** Re-run `setup.bat` — the new version almost certainly needs
   a dependency you don't have yet.
+- **One image failed in ① Preprocess.** The rest still went through. The result note names each
+  skipped image and what to change — usually the **Subject to keep** prompt (SAM3 found no
+  `character`; try `person`, or the object's own noun), or just untick **Isolate subject** for that
+  one. Nothing half-processed is left in the output folder.
 - **A cloud captioner failed part-way through a batch.** Nothing is lost — every caption written
   before the failure is already on disk. Tick **Skip images that already have a caption** in
   *Tag options* and click ③ again to finish the rest, or switch captioner first. Overload (503)
   and rate-limit (429) errors are retried automatically before you ever see them.
-- **Anything else.** `python cli.py doctor` checks your Python version, dependencies, API keys and
-  ComfyUI, and names what each missing piece blocks.
+- **ComfyUI says a node is missing.** The bundled workflows use **only core ComfyUI nodes**, so this
+  means your ComfyUI is older than the workflow: update it (Manager → Update ComfyUI, or `git pull`
+  in your ComfyUI folder) and restart it. The app names the node and checks before it uploads
+  anything.
+- **A job is taking too long.** Hit **⏹ Stop the running job**. It finishes the current image or
+  shot, then keeps everything already done — the result note tells you how to resume (② via
+  *Generate/regenerate UNCHECKED shots*, ③ via *Skip images that already have a caption*).
 
 > ### ⚠️ Costs & responsibility
 >

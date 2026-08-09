@@ -13,10 +13,11 @@ class ComfyUIEngine:
     name = "comfyui"
 
     def __init__(self) -> None:
-        if not comfy_api.is_up():
+        up, reason = comfy_api.server_status()
+        if not up:
             raise GenerationError(
-                "ComfyUI is not reachable — start it and retry (the local engine needs "
-                "it; see docs/comfyui-setup.md), or switch to the cloud engine."
+                f"ComfyUI is not reachable — {reason}. The local engine needs it "
+                f"(see docs/comfyui-setup.md), or switch the engine to Cloud (Gemini)."
             )
         self._uploaded: dict[Path, str] = {}
 

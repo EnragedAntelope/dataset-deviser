@@ -30,6 +30,27 @@ def _expand(paths: list[Path]) -> list[Path]:
     return out
 
 
+def _report_outputs(reports: list) -> list[Path]:
+    """The images preprocess actually wrote.
+
+    `preprocess_sources` records a per-image failure instead of raising (one bad
+    source must not cost the batch), so `output` is None for those — every
+    consumer has to filter rather than assume.
+    """
+    return [r.output for r in reports if r.output]
+
+
+def _echo_preprocess_failures(reports: list) -> int:
+    """Print the skipped sources; return how many there were."""
+    failed = [r for r in reports if r.error]
+    for r in failed:
+        typer.echo(f"  SKIPPED {r.source.name}: {r.error}")
+    if failed:
+        typer.echo(f"{len(reports) - len(failed)} of {len(reports)} image(s) "
+                   f"preprocessed; {len(failed)} skipped.")
+    return len(failed)
+
+
 def _echo_cloud_estimate(engine: str, cloud_model: str, n_shots: int) -> None:
     """Warn what a cloud run will cost before it starts billing the user."""
     if engine != "gemini":
@@ -133,11 +154,17 @@ def preprocess(
 ):
     """Restore/upscale/isolate images (standalone)."""
     out = out or pipeline.new_run_dir("prepped")
-    pipeline.preprocess_sources(
+    reports = pipeline.preprocess_sources(
         _expand(inputs), out, target=target, force_restore=restore, isolate=isolate,
         subject_prompt=subject_prompt, exclude_prompt=exclude_prompt,
         restore_backend=restore_backend, isolation_backend=isolation_backend,
         tighten_crop=tighten, alpha_cutout=alpha_cutout, progress=typer.echo)
+    _echo_preprocess_failures(reports)
+    # Exit non-zero only when nothing was written: a partial run still produced
+    # a usable folder, and failing the whole command would hide that.
+    if not _report_outputs(reports):
+        typer.echo("No image could be preprocessed.")
+        raise typer.Exit(1)
     typer.echo(f"Done: {out}")
 
 
@@ -376,6 +403,13 @@ def build(
         _expand(images), run_dir / "prepped", target=target, force_restore=restore,
         isolate=do_isolate, subject_prompt=subject_prompt, exclude_prompt=exclude_prompt,
         tighten_crop=tighten, progress=typer.echo)
+    _echo_preprocess_failures(reports)
+    # A per-image failure is reported, not raised, so `output` can be None —
+    # everything downstream must run on the images that actually exist.
+    prepped = _report_outputs(reports)
+    if not prepped:
+        typer.echo("No source image could be preprocessed; aborting.")
+        raise typer.Exit(1)
 
     # Style has no synthetic generation — go straight from the preprocessed
     # sources to captioning instead of running (and billing) a character
@@ -393,7 +427,7 @@ def build(
         _echo_cloud_estimate(engine, cloud_model, len(shots))
 
         results = pipeline.generate_shots(
-            [r.output for r in reports], shots, engine, run_dir / "generated",
+            prepped, shots, engine, run_dir / "generated",
             cloud_model=cloud_model, isolate_angles=do_isolate, subject_prompt=subject_prompt,
             exclude_prompt=exclude_prompt,
             exclude_props=_props_default(exclude_props, dtype), progress=typer.echo)
@@ -402,7 +436,7 @@ def build(
             typer.echo("No shots succeeded; aborting before captioning.")
             raise typer.Exit(1)
 
-    all_images = [r.output for r in reports] + kept
+    all_images = prepped + kept
     items = caption_images(all_images, captioner, name, trigger, progress=typer.echo,
                            style=style, prefix=prefix, suffix=suffix, blacklist=drop_tags,
                            dataset_type=dtype, sparse=sparse)

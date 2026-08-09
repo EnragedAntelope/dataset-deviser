@@ -136,13 +136,17 @@ _MERGED_PROP_OVERLAP = 0.10
 
 def isolate_builtin(image_path: Path, out_path: Path, subject_prompt: str = "character",
                     exclude_prompt: str = "", progress: Callable[[str], None] | None = None,
-                    alpha_cutout: bool = False) -> Path:
+                    alpha_cutout: bool = False, label: str = "") -> Path:
     image = Image.open(image_path).convert("RGB")
     subject = _segment(image, subject_prompt)
     if not subject.any():
+        # `label` names the file the USER recognises. By the time preprocess calls
+        # this, `image_path` can be a restored intermediate ("cat_prepped.png")
+        # that is deleted when the stage fails — naming it sent people looking for
+        # a file that does not exist.
         raise IsolationError(
-            f"SAM3 found no '{subject_prompt}' in {image_path.name} — adjust the "
-            f"subject prompt or turn isolation off for this image."
+            f"SAM3 found no '{subject_prompt}' in {label or image_path.name} — adjust "
+            f"the subject prompt or turn isolation off for this image."
         )
     note = progress or (lambda _m: None)
     if exclude_prompt.strip():
@@ -234,7 +238,10 @@ def isolate_comfyui(image_path: Path, out_path: Path, subject_prompt: str = "cha
 def isolate_subject(image_path: Path, out_path: Path, subject_prompt: str = "character",
                     exclude_prompt: str = "", backend: str = "",
                     progress: Callable[[str], None] | None = None,
-                    front: bool = False, alpha_cutout: bool = False) -> Path:
+                    front: bool = False, alpha_cutout: bool = False,
+                    label: str = "") -> Path:
+    """`label` is the filename to name in error messages — pass the user's own
+    source name when `image_path` is an intermediate the user never saw."""
     backend = backend or settings.isolation_backend
     if backend == "comfyui":
         if alpha_cutout:
@@ -247,4 +254,4 @@ def isolate_subject(image_path: Path, out_path: Path, subject_prompt: str = "cha
         return isolate_comfyui(image_path, out_path, subject_prompt, exclude_prompt,
                                front=front)
     return isolate_builtin(image_path, out_path, subject_prompt, exclude_prompt,
-                           progress=progress, alpha_cutout=alpha_cutout)
+                           progress=progress, alpha_cutout=alpha_cutout, label=label)

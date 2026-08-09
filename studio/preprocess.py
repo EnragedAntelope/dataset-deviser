@@ -24,12 +24,27 @@ BLUR_THRESHOLD = 120.0  # Laplacian variance below this = soft/degraded image
 @dataclass
 class PreprocessReport:
     source: Path
-    output: Path
+    # None when this source failed — see `error`. Every consumer must check.
+    output: Path | None
     original_size: tuple[int, int]
     final_size: tuple[int, int]
     restored: bool
     reason: str
     isolated: bool = False
+    # Empty on success. When set, this source was skipped and nothing was
+    # written for it; the batch carried on with the remaining images.
+    error: str = ""
+
+
+def failed_report(source: Path, error: str) -> PreprocessReport:
+    """A report standing in for a source that could not be preprocessed.
+
+    One unusable image must never cost the user the rest of the batch, so the
+    failure is *data* the caller can show, not an exception that unwinds the run.
+    """
+    return PreprocessReport(source=source, output=None, original_size=(0, 0),
+                            final_size=(0, 0), restored=False,
+                            reason="skipped", error=error)
 
 
 def _laplacian_variance(img: Image.Image) -> float:
@@ -121,37 +136,46 @@ def preprocess(
     while out_path.exists():
         out_path = work_dir / f"{source.stem}_prepped_{n}.png"
         n += 1
-    stage_path = source
-    if restore:
-        if restore_backend == "auto":
-            from studio import comfy_api
+    # Every write below lands on `out_path`, and restoration writes it BEFORE
+    # isolation runs. A failure after that point used to leave the restored (not
+    # isolated, not resized) image behind, where `list_images` happily served it
+    # to ②/③ as a finished source — a silent half-processed file in the dataset.
+    # The stage is therefore atomic: complete output, or none at all.
+    try:
+        stage_path = source
+        if restore:
+            if restore_backend == "auto":
+                from studio import comfy_api
 
-            restore_backend = "comfyui" if comfy_api.is_up() else "basic"
-        if restore_backend == "comfyui":
-            _restore_comfyui(stage_path, out_path)
+                restore_backend = "comfyui" if comfy_api.is_up() else "basic"
+            if restore_backend == "comfyui":
+                _restore_comfyui(stage_path, out_path)
+                stage_path = out_path
+            else:
+                # Basic path: Lanczos handles resolution; sharpness/compression
+                # damage stays (note it so the user knows what they're getting).
+                reason += " (basic Lanczos only — ComfyUI restore not used)"
+
+        if isolate:
+            isolate_subject(stage_path, out_path, subject_prompt, exclude_prompt,
+                            backend=isolation_backend, progress=progress,
+                            alpha_cutout=alpha_cutout, label=source.name)
             stage_path = out_path
+
+        if isolate and alpha_cutout:
+            img = Image.open(stage_path)  # keep RGBA — no forced flatten
         else:
-            # Basic path: Lanczos handles resolution; sharpness/compression
-            # damage stays (note it so the user knows what they're getting).
-            reason += " (basic Lanczos only — ComfyUI restore not used)"
+            img = Image.open(stage_path).convert("RGB")
+        if isolate and tighten_crop:
+            # Crop the subject-on-white composite to its bounding box before resizing.
+            from studio.isolate import crop_to_content
 
-    if isolate:
-        isolate_subject(stage_path, out_path, subject_prompt, exclude_prompt,
-                        backend=isolation_backend, progress=progress,
-                        alpha_cutout=alpha_cutout)
-        stage_path = out_path
-
-    if isolate and alpha_cutout:
-        img = Image.open(stage_path)  # keep RGBA — no forced flatten
-    else:
-        img = Image.open(stage_path).convert("RGB")
-    if isolate and tighten_crop:
-        # Crop the subject-on-white composite to its bounding box before resizing.
-        from studio.isolate import crop_to_content
-
-        img = crop_to_content(img)
-    img = _resize_to_target(img, target)
-    img.save(out_path, "PNG")
+            img = crop_to_content(img)
+        img = _resize_to_target(img, target)
+        img.save(out_path, "PNG")
+    except BaseException:
+        out_path.unlink(missing_ok=True)
+        raise
     return PreprocessReport(
         source=source,
         output=out_path,

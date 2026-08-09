@@ -9,6 +9,7 @@ Run:  python app.py   then open http://127.0.0.1:7861
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -22,6 +23,7 @@ import pandas as pd
 
 from studio import pipeline
 from studio import user_config as _uc_boot
+from studio.jobs import JobControl
 from studio.captioner import (
     SUBJECT_ALIASES,
     Captioner,
@@ -164,6 +166,28 @@ def on_dataset_type_change(dataset_type: str, gen_name: str = ""):
 
 
 # ---------- helpers ----------
+
+# One shared stop flag. The app is single-user on localhost and Gradio runs one
+# queued event at a time, so exactly one heavy stage can be in flight; a token
+# per stage would suggest a concurrency this app doesn't have. Every stage arms
+# it with JOB.start() before its loop, so a stop left over from a previous run
+# can never cancel the next one.
+JOB = JobControl()
+
+
+def request_stop() -> str:
+    """Wired with queue=False so the click is served while a stage is running —
+    a queued Stop button would wait for the job it is meant to interrupt."""
+    JOB.request_stop()
+    return ("⏹ Stop requested — finishing the current image/shot, then returning "
+            "everything completed so far.")
+
+
+def _stopped_note(kind: str, done: int, total: int, resume: str) -> str:
+    """Consistent 'you stopped this' line: what finished, and how to resume."""
+    return (f"\n\n⏹ **Stopped after {done} of {total} {kind}.** The {done} already "
+            f"finished are saved. {resume}")
+
 
 def _stamped(kind: str) -> Path:
     d = settings.runs_dir / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{kind}"
@@ -447,34 +471,118 @@ def _gen_gallery(results: list[pipeline.GenResult], selected=None):
 
 # ---------- ① preprocess ----------
 
+def _failure_hint(error: str) -> str:
+    """One actionable sentence for a per-image preprocess failure.
+
+    A skipped image is only useful information if it says what to *do*. The
+    mapping is on the error text because the exception types cross three
+    backends (SAM3, ComfyUI, Pillow) and the message is what the user sees.
+    """
+    low = error.lower()
+    if "found no" in low:
+        return ("adjust **Subject to keep** (try `person`, `object`, or the thing's own "
+                "noun), or untick **Isolate subject** and re-run just this image.")
+    if "gated" in low or "authenticate" in low:
+        return ("accept the SAM3 licence on its Hugging Face model page and set "
+                "`HF_TOKEN` in `.env`, or switch **Isolation backend** to ComfyUI.")
+    if "comfyui" in low:
+        return ("start ComfyUI (or fix the setting the message names), or switch "
+                "**Restoration backend** to Basic / **Isolation backend** to Built-in.")
+    if "cannot identify" in low or "truncated" in low or "decoder" in low:
+        return "the file looks corrupt or isn't a real image — re-export or drop it."
+    return "see the Log below for the full message."
+
+
+def _plain(markdown: str) -> str:
+    """Strip the light markdown a note uses, for contexts that render plain text.
+
+    `gr.Warning`/`gr.Error` toasts are NOT markdown — emphasis and backticks show
+    up as literal `**` and `` ` `` characters in the popup.
+    """
+    return markdown.replace("**", "").replace("`", "")
+
+
+def _preprocess_note(reports, out_dir: Path, alpha_cutout: bool) -> str:
+    """Result markdown for ①, naming every skipped image and what to do about it."""
+    ok = [r for r in reports if r.output]
+    failed = [r for r in reports if r.error]
+    if not ok:
+        head = (f"❌ **No image could be preprocessed** — nothing was written to "
+                f"{out_dir}.")
+    elif alpha_cutout:
+        head = (f"✅ {len(ok)} image(s) preprocessed (transparent cutout) into "
+                f"{out_dir} — not auto-filled into ②/③, which expect a "
+                f"white-background reference.")
+    else:
+        head = f"✅ {len(ok)} image(s) preprocessed into {out_dir}"
+    if not failed:
+        return head
+    lines = "\n".join(f"- `{r.source.name}` — {r.error}  \n  → {_failure_hint(r.error)}"
+                      for r in failed)
+    if not ok:
+        return f"{head}\n\nAll {len(reports)} failed:\n\n{lines}"
+    return (f"{head}\n\n⚠️ **Skipped {len(failed)} of {len(reports)}** — the "
+            f"{len(ok)} image(s) above were still written:\n\n{lines}")
+
+
 def do_preprocess(files: list[str], folder: str, target: int, restore_mode: str,
                   restore_backend: str, isolate: bool, isolation_backend: str,
                   subject_prompt: str, exclude_prompt: str, tighten: bool = False,
-                  alpha_cutout: bool = False):
+                  alpha_cutout: bool = False, progress=gr.Progress()):
     sources = _inputs(files, folder)
     out_dir = _stamped("prepped")
     force = {"Auto (only if needed)": None, "Always": True, "Never": False}[restore_mode]
     log: list[str] = []
+    JOB.start()
+
+    def report(msg: str):
+        log.append(msg)
+        progress((len(log), len(sources) * 2 + 1), desc=msg)
+
     try:
         reports = pipeline.preprocess_sources(
             sources, out_dir, target=target, force_restore=force, isolate=isolate,
             subject_prompt=subject_prompt or "character",
             exclude_prompt=exclude_prompt or "", restore_backend=restore_backend,
             isolation_backend=isolation_backend, tighten_crop=tighten,
-            alpha_cutout=alpha_cutout, progress=log.append)
-    except Exception as e:
+            alpha_cutout=alpha_cutout, should_stop=JOB, progress=report)
+    except OSError as e:
+        raise gr.Error(f"Couldn't write to '{out_dir}': {e}. Check the output folder "
+                       f"(valid drive, writable, enough space).")
+    except Exception as e:  # whole-batch failure only — per-image ones are reported
         raise gr.Error(f"Preprocess failed: {e}")
-    gallery = [(str(r.output), f"{r.source.name}: {r.reason}") for r in reports]
+    ok = [r for r in reports if r.output]
+    failed = [r for r in reports if r.error]
+    gallery = [(str(r.output), f"{r.source.name}: {r.reason}") for r in ok]
+    note = _preprocess_note(reports, out_dir, alpha_cutout)
+    if JOB.stopped:
+        note += _stopped_note("image(s)", len(reports), len(sources),
+                              "Re-run ① on the remaining sources to finish them.")
+        gr.Warning(f"Stopped after {len(reports)} of {len(sources)} image(s).")
+    if not ok:
+        # Even a total failure returns normally. gr.Error would discard the
+        # outputs — including the Log, which holds the per-image reasons that
+        # are the whole point here — and paint every output component with an
+        # "Error" placeholder, which reads as a broken app rather than a bad
+        # input. The note says what happened; the toast points at it.
+        with contextlib.suppress(OSError):
+            out_dir.rmdir()  # don't litter an empty run folder
+        gr.Warning(_plain(f"No image could be preprocessed — {len(failed)} failed. "
+                          f"See the result note."))
+        # No auto-fill: pointing ②/③ at an empty folder is worse than leaving
+        # whatever the user already had in those fields.
+        return gallery, note, "\n".join(log), gr.update(), gr.update()
+    if failed:
+        # A toast, not gr.Error: the finished images, the gallery and the
+        # auto-filled folders all have to survive a partial failure.
+        gr.Warning(f"Preprocessed {len(ok)} of {len(reports)} — "
+                   f"{len(failed)} skipped, see the result note.")
     if alpha_cutout:
-        note = (f"✅ {len(reports)} image(s) preprocessed (transparent cutout) into "
-                f"{out_dir} — not auto-filled into ②/③, which expect a white-background "
-                f"reference.")
         # Alpha-cutout output isn't a drop-in reference for ②/③ (see the checkbox's
         # info text) — leave whatever those fields already had alone instead of
         # silently pointing them at an image most consumers will read as un-isolated.
         gen_src, cap = gr.update(), gr.update()
     else:
-        note = f"✅ {len(reports)} image(s) preprocessed into {out_dir}"
         # Auto-fill downstream tabs (they can still be pointed anywhere else)
         gen_src, cap = str(out_dir), str(out_dir)
     return gallery, note, "\n".join(log), gen_src, cap
@@ -491,6 +599,7 @@ def do_generate(files: list[str], folder: str, plan_df: pd.DataFrame, engine: st
     out_dir = _validate_out_dir(gen_dir_prev) if gen_dir_prev.strip() else _stamped("generated")
     shots = _df_to_shots(plan_df)
     log: list[str] = []
+    JOB.start()
 
     def report(msg: str):
         log.append(msg)
@@ -501,13 +610,16 @@ def do_generate(files: list[str], folder: str, plan_df: pd.DataFrame, engine: st
             sources, shots, engine, out_dir, cloud_model=cloud_model,
             isolate_angles=isolate_angles, subject_prompt=subject_prompt or "character",
             exclude_prompt=exclude_prompt, isolation_backend=isolation_backend,
-            exclude_props=exclude_props, front=front, progress=report)
+            exclude_props=exclude_props, front=front, should_stop=JOB, progress=report)
     except OSError as e:
         raise gr.Error(f"Couldn't write to '{out_dir}': {e}. Check the output folder "
                        f"path (valid drive, no forbidden characters, writable).")
     except Exception as e:
         raise gr.Error(f"Generation failed: {e}")
     rows, gallery, keep = _gen_gallery(results)
+    if JOB.stopped:
+        gr.Warning(f"Stopped after {len(results)} of {len(shots)} shot(s) — click "
+                   f"'Generate/regenerate UNCHECKED shots' to finish the rest.")
     return results, rows, gallery, keep, "\n".join(log), str(out_dir), str(out_dir)
 
 
@@ -518,18 +630,29 @@ def do_regenerate(files: list[str], folder: str, plan_df: pd.DataFrame, engine: 
                   progress=gr.Progress()):
     if not results_state:
         raise gr.Error("Nothing generated yet.")
-    all_ids = {r.shot.id for r in results_state}
-    redo = all_ids - set(keep_ids or [])
+    # The redo set comes from the PLAN, not from the previous results, so a shot
+    # that was never generated (the run was stopped, or it failed) is included.
+    # That makes this button the resume path after ⏹ Stop, not just a re-roll.
+    plan_ids = [s.id for s in _df_to_shots(plan_df)]
+    redo = {sid for sid in plan_ids if sid not in set(keep_ids or [])}
     if not redo:
-        raise gr.Error("Uncheck the shots you want regenerated, then click again.")
+        raise gr.Error("Every shot in the plan is checked — uncheck the ones you "
+                       "want regenerated (or that never finished), then click again.")
     sources = _inputs(files, folder)
     log: list[str] = []
-    results = pipeline.generate_shots(
-        sources, _df_to_shots(plan_df), engine, Path(gen_dir), cloud_model=cloud_model,
-        isolate_angles=isolate_angles, subject_prompt=subject_prompt or "character",
-        exclude_prompt=exclude_prompt, isolation_backend=isolation_backend,
-        exclude_props=exclude_props, front=front, existing=results_state, only_ids=redo,
-        progress=log.append)
+    JOB.start()
+    try:
+        results = pipeline.generate_shots(
+            sources, _df_to_shots(plan_df), engine, Path(gen_dir), cloud_model=cloud_model,
+            isolate_angles=isolate_angles, subject_prompt=subject_prompt or "character",
+            exclude_prompt=exclude_prompt, isolation_backend=isolation_backend,
+            exclude_props=exclude_props, front=front, existing=results_state,
+            only_ids=redo, should_stop=JOB, progress=log.append)
+    except OSError as e:
+        raise gr.Error(f"Couldn't write to '{gen_dir}': {e}. Check the output folder "
+                       f"path (valid drive, no forbidden characters, writable).")
+    except Exception as e:
+        raise gr.Error(f"Regeneration failed: {e}")
     # Regenerated shots are brand new, so a fresh full keep is the honest default.
     rows, gallery, keep = _gen_gallery(results)
     return results, rows, gallery, keep, "\n".join(log)
@@ -676,7 +799,11 @@ def save_one_caption(folder: str, filename: str, text: str) -> str:
     if not folder.strip() or not filename:
         raise gr.Error("Load a folder and pick an image first.")
     txt = (Path(folder.strip()) / filename).with_suffix(".txt")
-    txt.write_text(text.strip(), encoding="utf-8")
+    try:
+        txt.write_text(text.strip(), encoding="utf-8")
+    except OSError as e:
+        raise gr.Error(f"Couldn't write {txt}: {e}. Check the file isn't read-only "
+                       f"and the folder is still available.")
     return f"✅ Saved caption for {filename}"
 
 
@@ -743,12 +870,14 @@ def do_caption(folder: str, selected: list[str], captioner_key: str,
         written.append(img)
 
     failure = ""
+    JOB.start()
     try:
         caption_images(images, captioner_key, name, trigger, progress=report,
                        model_override=model_override, spec_overrides=spec_overrides,
                        style=style, prefix=prefix, suffix=suffix,
                        skip_existing=skip_existing, blacklist=blacklist,
-                       dataset_type=dataset_type, sparse=sparse, on_item=persist)
+                       dataset_type=dataset_type, sparse=sparse, on_item=persist,
+                       should_stop=JOB)
     except Exception as e:
         if not written:
             raise gr.Error(f"Captioning failed: {friendly_api_error(e)}")
@@ -766,6 +895,13 @@ def do_caption(folder: str, selected: list[str], captioner_key: str,
     # Reload the folder but KEEP the user's pick; re-checking the whole batch after a
     # run silently discarded the subset they chose.
     rows, gallery, boxes, _ = load_caption_folder(folder, selected=selected)
+    if JOB.stopped and not failure:
+        failure = _stopped_note(
+            "image(s)", len(written), len(images),
+            "Tick **Skip images that already have a caption** and click ③ again "
+            "to finish the rest.")
+        gr.Warning(f"Stopped after {len(written)} of {len(images)} caption(s) — "
+                   f"those are saved.")
     result = f"✅ Wrote {len(written)} caption sidecar(s) in {base}{failure}"
     # Auto-fill ④ Export: ADD this folder to its list (captioning several folders
     # in turn must accumulate), and carry name/trigger without clobbering values
@@ -1017,7 +1153,10 @@ def do_save_plan(plan_df: pd.DataFrame, plan_name: str) -> str:
     if not shots:
         raise gr.Error("The plan is empty — nothing to save.")
     path = settings.shot_plans_dir / (plan_name.strip() or "my-plan")
-    saved = save_plan(shots, path)
+    try:
+        saved = save_plan(shots, path)
+    except OSError as e:
+        raise gr.Error(f"Couldn't save the plan to {path}: {e}")
     return f"✅ Saved {len(shots)} shots to {saved}"
 
 
@@ -1032,7 +1171,14 @@ def do_load_plan(plan_name: str):
         path = path.with_suffix(".yaml")
     if not path.exists():
         raise gr.Error(f"No plan file at {path}")
-    shots = load_plan(path)
+    try:
+        shots = load_plan(path)
+    except Exception as e:
+        # A hand-edited YAML plan is a user file: a bad key or bad indentation
+        # must name the file, not dump a pydantic/yaml traceback into the UI.
+        raise gr.Error(f"Couldn't read the plan at {path}: {e}. Check the YAML — "
+                       f"each shot needs at least an `id`, `kind`, `local_prompt` "
+                       f"and `cloud_prompt`.")
     return _shots_to_df(shots), f"✅ Loaded {len(shots)} shots from {path}"
 
 
@@ -1128,7 +1274,10 @@ def inspect_dataset(dataset_dir: str, dataset_type: str = "character") -> tuple[
     ds = Path(dataset_dir.strip())
     if not ds.is_dir():
         return f"⚠️ Folder not found: {ds}", gr.Number()
-    stats = inspect(ds)
+    try:
+        stats = inspect(ds)
+    except Exception as e:  # unreadable/corrupt image headers — report, never crash
+        return f"⚠️ Couldn't inspect {ds}: {e}", gr.Number()
     if not stats.n_images:
         return f"⚠️ No images in {ds}", gr.Number()
     return stats.summary() + dataset_type_note(ds, dataset_type), \
@@ -1149,7 +1298,10 @@ def do_generate_train_config(trainer: str, model_key: str, dataset_dir: str,
     from studio.dataset_stats import inspect
     from studio.trainer_configs import TrainConfig, write_configs
 
-    stats = inspect(ds)
+    try:
+        stats = inspect(ds)
+    except Exception as e:
+        raise gr.Error(f"Couldn't read the dataset at {ds}: {e}")
     if not stats.n_images:
         raise gr.Error(f"No images found in {ds} — export a dataset first (④).")
     preset = _preset(trainer, model_key)
@@ -1161,8 +1313,12 @@ def do_generate_train_config(trainer: str, model_key: str, dataset_dir: str,
         resolution=int(resolution), rank=int(rank), alpha=int(alpha),
         steps=int(steps), lr=float(lr), batch_size=int(batch_size),
         buckets=buckets)
-    written, command = write_configs(cfg, install_path.strip(),
-                                     num_repeats=max(1, round(400 / stats.n_images)))
+    try:
+        written, command = write_configs(cfg, install_path.strip(),
+                                         num_repeats=max(1, round(400 / stats.n_images)))
+    except OSError as e:
+        raise gr.Error(f"Couldn't write the config into {ds}: {e}. Check the dataset "
+                       f"folder is writable.")
     user_config.set_last_train_settings({
         "trainer": trainer, "model": model_key, "resolution": int(resolution),
         "rank": int(rank), "alpha": int(alpha), "steps": int(steps),
@@ -1218,6 +1374,24 @@ def refresh_caption_models():
     return gr.Dropdown(choices=models, value=value)
 
 
+def run_doctor() -> str:
+    """The `cli.py doctor` self-check, surfaced in the UI.
+
+    Renders the CLI report verbatim inside a code fence rather than re-formatting
+    it: one implementation, so the UI can never drift from what `doctor` says, and
+    its deliberately ASCII output needs no escaping. `render()` masks every key.
+    """
+    from studio.doctor import build_report, render
+
+    try:
+        report = build_report()
+    except Exception as e:  # a self-check that crashes is worse than none
+        return f"⚠️ The setup check itself failed: {e}"
+    verdict = ("✅ **Ready.**" if report.ok else
+               "❌ **Something needs fixing** — see the FAIL line below.")
+    return f"{verdict}\n\n```\n{render(report)}\n```"
+
+
 def _check_for_update():
     """Best-effort GitHub release check on UI load; silently shows nothing on
     any failure (offline, rate-limited, disabled) so it can never block launch."""
@@ -1258,6 +1432,17 @@ with _blocks as demo:
         "comply with each provider's policies and the law. See **Costs & your responsibility** below."
     )
     update_notice = gr.Markdown(visible=False)
+    with gr.Accordion("🩺 Check my setup (Python, ComfyUI, models, API keys)",
+                      open=False):
+        gr.Markdown(
+            "Runs the same check as `python cli.py doctor`: Python version, "
+            "required packages, torch/onnxruntime, whether ComfyUI is reachable "
+            "(and whether every configured model filename actually exists on it), "
+            "and which API keys are set — **masked**, never shown in full — with "
+            "what each missing one blocks. Nothing is sent anywhere; the only "
+            "network call is to your own ComfyUI.")
+        btn_doctor = gr.Button("🩺 Run setup check", size="sm")
+        doctor_out = gr.Markdown()
     with gr.Accordion("💲 Costs & your responsibility (read me)", open=False):
         gr.Markdown(
             "**Costs**\n"
@@ -1286,6 +1471,14 @@ with _blocks as demo:
              "Concept generate a shot set in ②; Style brings its own images and starts "
              "at ③ Caption. Tunes caption framing, the ② shot plan, the ① isolation "
              "default, and the ⑤ sample prompt.")
+    with gr.Row():
+        btn_stop = gr.Button("⏹ Stop the running job", size="sm", scale=0,
+                             variant="stop")
+        stop_note = gr.Markdown()
+    gr.Markdown(
+        "<sub>Stop applies to ① Preprocess, ② Generate and ③ Caption. It finishes "
+        "the image or shot in flight, then keeps everything already completed — "
+        "the result note tells you how to resume.</sub>")
     results_state = gr.State([])
     # Picker rows behind each click-to-toggle gallery: (image path, checkbox value,
     # base label). Kept in State so a click can resolve an index to a value.
@@ -1730,6 +1923,12 @@ with _blocks as demo:
         [prep_gallery, pre_note, log_box, gen_src_folder, cap_folder]) \
            .then(lambda s, e: (s, e), [subject_prompt, exclude_prompt],
                  [gen_subject, gen_exclude])
+
+    # queue=False is load-bearing: with the default queued dispatch this click
+    # would sit BEHIND the very job it is meant to interrupt and only run once
+    # that job had finished on its own.
+    btn_stop.click(request_stop, [], [stop_note], queue=False)
+    btn_doctor.click(run_doctor, [], [doctor_out])
 
     # Header dataset-type selector retunes type-dependent controls across tabs
     # (and persists the choice). demo.load applies the same handler on launch so

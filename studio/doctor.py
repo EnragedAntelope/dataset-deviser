@@ -156,16 +156,17 @@ def check_comfyui() -> Check:
     try:
         from studio import comfy_api
 
-        up = comfy_api.is_up()
-    except Exception:
-        up = False
-    from studio.config import settings
+        up, reason = comfy_api.server_status()
+    except Exception as e:
+        up, reason = False, f"could not be checked: {e}"
 
     if up:
-        return Check("ComfyUI", True, f"reachable at {settings.comfy_url}")
+        return Check("ComfyUI", True, reason)
+    # Say WHICH failure it was (refused / timeout / wrong app on the port) —
+    # "not reachable" alone sends people to restart a running server.
     return Check("ComfyUI", True,
-                 f"not reachable at {settings.comfy_url} - optional. Cloud generation and "
-                 "built-in SAM3 isolation work without it (see docs/comfyui-setup.md).",
+                 f"{reason} - optional. Cloud generation and built-in SAM3 isolation "
+                 "work without it (see docs/comfyui-setup.md).",
                  warn=True)
 
 
