@@ -4,6 +4,16 @@ Turn a character, style, or concept into a ready-to-train LoRA dataset. One refe
 
 **Deep reference: `docs/ARCHITECTURE.md` (read it before pipeline/stage/backend changes)**
 
+## Current state
+
+_Last verified: 2026-08-08_
+
+- **Status:** in active development, released at v0.14.1 (git tag `v0.14.1`). CI green. **Every version bump must ship a GitHub Release** or the in-app update check never fires. The project was renamed twice (lora-dataset-studio → lora-distillery → dataset-deviser); older references under the previous names are stale.
+- **Works:** all five stages end to end (preprocess → generate & curate → caption → export → train config); the three dataset types (character, style, concept) with their own shot plans and caption framing; local and cloud paths for every stage; gallery curation with selection carried forward between stages, including shift-click range select; advisory dedupe, quality flags and caption lint; trainer configs for ai-toolkit (incl. SDXL), kohya sd-scripts and musubi-tuner; opt-in private Hugging Face publish.
+- **In progress:** nothing half-built — 0.14.x closed out the selection flow and caption resilience work. `docs/ARCHITECTURE.md` carries the "Future ideas" and "Deferred" sections that hold the real backlog.
+- **Known gaps / next steps:** pick up from `docs/ARCHITECTURE.md` → "Future ideas" / "Deferred", and read its *Maintainer principles* before changing anything; `gradio` is pinned `<6` because of a real stuck-loading-overlay regression — unpinning needs that verified fixed upstream; training is never launched for you and is not planned to be; the default export `output_root` writes into the repo root, so a smoke-test export leaves an untracked dataset folder to delete before committing.
+- **Deep docs:** `docs/ARCHITECTURE.md` (module map, stage and backend detail, gotchas, backlog — the deep reference), `docs/comfyui-setup.md`. Worklogs under `docs/` are gitignored and local-only by design.
+
 ## Architecture in 60 seconds
 
 - **Five-stage pipeline:** ① Preprocess → ② Generate & curate → ③ Caption → ④ Export → ⑤ Train config. Each stage is standalone — run them in order or jump to any one.
