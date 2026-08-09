@@ -1,6 +1,6 @@
 # Architecture
 
-Version: 0.15.0
+Version: 0.15.1
 
 ```
 app.py                  Gradio UI — thin wiring over the stage functions (5 tabs).
@@ -99,6 +99,13 @@ studio/
                         in metadata.json; zip_dataset() bundles a folder into a .zip;
                         resolve_export_items() classifies candidates by caption sidecar
                         state (ready/empty/missing) — shared by the UI gate and the CLI
+  shot_style.py         The medium ②'s prompts ask for: SHOT_STYLES (match |
+                        photographic | anime | comic | illustration | painting |
+                        render3d | lineart | custom) + resolve(). Pure data +
+                        one resolver; each style carries a terse `local` clause
+                        (Qwen-Edit), a full `cloud` sentence (Gemini) and a
+                        `sample_lead` for ⑤. Default `match` PRESERVES the
+                        reference's own medium — see the three gotchas
   shotplan.py           Shot plans + Shot model. default_plan() = Character (curated 24:
                         angles, poses, emotions, settings + outfit); concept_plan() =
                         Concept (18: 10-angle turnaround, framing/scale, context — no
@@ -306,6 +313,18 @@ carries an `id` for exactly this reason.
   doesn't reach the component's internal index, which is only seeded at mount. All three
   were tried against a live app before settling on forwarding the click to the
   CheckboxGroup in the browser. Don't re-litigate this with another `select` handler.
+- **A dropdown built with `choices=[]` can only be re-valued with `gr.update()`.** ③'s
+  Prev/Next returned `gr.Dropdown(value=names[idx])`. The constructor form merges over the
+  component's **original** constructor args — where `choices` was `[]` — so the new value
+  failed validation ("not in the list of choices"), warned, and could be dropped, leaving
+  the buttons silently doing nothing. `gr.update(value=…)` sets the one prop without
+  re-running that validation. Where both change together (`_editor_relabel`) the
+  constructor form is correct, because it supplies `choices` in the same update; splitting
+  them into two updates briefly left the dropdown holding a value not in its choices.
+- **Gradio renders its own selection tick as each option's first child.** ③'s picker marked
+  captioned files with a leading `✓`, which made the selected-and-captioned row read
+  "✓ ✓ img01.png" (the first tick is Gradio's, `visibility:hidden` on unselected rows).
+  The mark trails the filename instead — leading tick = selection, trailing = captioned.
 - **`gr.update(x=None)` silently drops the key; `gr.Component(x=None)` doesn't.** The
   two update forms are *not* equivalent for None values — `postprocess_data` runs
   `delete_none(..., skip_value=True)` on a raw update dict, so any `None` except `value`
@@ -327,6 +346,25 @@ carries an `id` for exactly this reason.
   so a single Gemini 503 on the last image of a batch discarded 15 captions the user had
   already been billed for. The `on_item` callback exists solely so the sidecar hits disk
   immediately. Any future batch stage over a paid API needs the same shape.
+- **The generated shots' medium was hard-coded, so an illustrated reference came back
+  photographic.** A user reported it and it was a real defect, not a missing feature:
+  `_build_local_prompt` appended `"photorealistic, consistent identity"` to every non-angle
+  shot and `_build_cloud_prompt` opened with `"Generate a photorealistic image of …"` on
+  **all** of them. `studio/shot_style.py` replaces both. Three rules make the fix correct:
+  (1) **`match` instructs, it does not merely stay silent** — deleting the medium word lets
+  the model drift to its own prior, so the clause actively says "keep the reference's
+  medium, not a photograph"; (2) **the style is introduced, not appended** (`Rendered as
+  …`) — a style written as a trailing noun phrase gets drawn as scene *content* (ask for
+  "a View-Master slide" and one appears in the picture); (3) **never "photorealistic" for
+  photographic output** — that word names an idealized, CG-adjacent render, so the
+  `photographic` preset is built from camera vocabulary (lens, depth of field, sensor,
+  texture) instead. A test sweeps every style × both plans × both prompt fields to keep
+  the banned wording out.
+- **Angle shots get no style clause.** `kind="angle"` local prompts stay pure `<sks>`
+  grammar for the same measured reason `apply_prop_exclusion` skips them (the
+  Multiple-Angles LoRA is trained on clean splat renders and degrades when prose is
+  appended). They carried no medium claim before either, so nothing is lost — Qwen-Edit
+  follows the reference image's medium on its own.
 - **A stage that loops over user files must isolate each item.** ① was the last stage
   without this: `preprocess_sources` let one `IsolationError` (SAM3 finding no subject in
   image 3 of 20) unwind the whole batch, and `app.do_preprocess` turned it into a
@@ -812,12 +850,15 @@ grouped by stage. Milestone versions are noted only where they explain a design 
 - **② Generate & curate** — curated 24-shot Character plan (angles/poses/emotions/settings) or
   18-shot Concept plan (turnaround/framing/context), Qwen-Image-Edit 2511 + Multiple-Angles LoRA
   (local) or Gemini (cloud), chained rear views, prop exclusion, wardrobe randomizer, per-shot
-  outfit column, save/load YAML plans, sharpness + exposure/contrast advisories, per-model cost
-  estimate. Character + Concept; Style never generates (buttons disabled, with guidance).
+  outfit column, **shot style** (match the reference's medium by default, or convert the set to
+  one of eight presets / your own description), final-prompt preview, save/load YAML plans,
+  sharpness + exposure/contrast advisories, per-model cost estimate. Character + Concept;
+  Style never generates (buttons disabled, with guidance).
 - **③ Caption** — prose / Danbooru-tag / e621-tag styles per call; local VLMs (Qwen3-VL, JoyCaption,
   NSFW), dedicated WD + Z3D ONNX taggers, Gemini/Groq/any-OpenAI-endpoint; dataset-type framing
   (character/style/concept + Style sparse mode); tagger thresholds, rating tag, keep-underscores;
-  fixed prefix/suffix, tag drop-list, skip-already-captioned; inline caption editor; caption-health
+  fixed prefix/suffix, tag drop-list, skip-already-captioned; inline caption editor with
+  prev/next, save-and-next, the image on screen and a done marker; caption-health
   + tag-frequency + CLIP-77-token advisories.
 - **④ Export** — flat NN.png/NN.txt + metadata.json (records dataset_type + detected caption_style)
   + metadata.jsonl (HF imagefolder) + README.txt; click-to-pick selection gate preseeded with what
@@ -873,6 +914,19 @@ API keys).
   helper picks "a"/"an" from the emotion's first letter (a plain first-letter check is
   enough for this small curated emotion vocabulary; no phonetic library needed).
 
+- **Shot style + caption-review UX (0.15.1)** — a user fed in an illustrated reference and
+  got photographic shots; the medium turned out to be hard-coded in both prompt builders
+  (see the gotcha). ② gains a **Shot style** control — default **match the reference's own
+  medium**, eight presets, plus free-text custom — threaded through `plan_for_type` into
+  both prompt fields, the CLI (`--shot-style`/`--shot-style-text`), ④'s `metadata.json`
+  and ⑤'s sample prompt (`a photo of` → `an anime illustration of`). Changing it rebuilds
+  the ② table and says so, because the prompts are baked in at build time. New **👁 Preview
+  final prompt** shows the exact text a row will send, since outfit, prop exclusion and
+  style are all folded in at generation time and the table cell alone is not the truth.
+  ③'s inline editor becomes a review pass: **◀ Prev / Next ▶ / 💾 Save & next**, the image
+  being captioned shown next to the box, an `n / N` counter and a ✓ on files already done.
+  Plus tooltips for 11 controls that had none. Verified end to end in a browser: style →
+  plan rebuild → export metadata → generated training config.
 - **Resilience, Stop and ComfyUI diagnostics (0.15.0)** — driven by a user report whose
   traceback showed one SAM3 miss killing a whole ① batch. Fixing it properly meant four
   related changes plus three defects the live reproduction turned up: ① now isolates

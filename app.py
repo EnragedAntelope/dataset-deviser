@@ -47,7 +47,8 @@ from studio.config import (
     read_caption,
     settings,
 )
-from studio.shotplan import Shot, plan_for_type
+from studio import shot_style
+from studio.shotplan import Shot, apply_prop_exclusion, apply_wardrobe, plan_for_type
 from studio.trainer_configs import TRAINER_MODELS, TRAINERS
 
 TRAINER_CHOICES = [(label, key) for key, label in TRAINERS.items()]
@@ -122,7 +123,8 @@ _NAME_INFO = {
 _ISOLATE_SUBJECT = {"character": "character", "style": "character", "concept": "object"}
 
 
-def on_dataset_type_change(dataset_type: str, gen_name: str = ""):
+def on_dataset_type_change(dataset_type: str, gen_name: str = "",
+                           style_key: str = shot_style.MATCH, style_text: str = ""):
     """Retune every type-dependent control across the tabs, and remember the
     choice for the next launch.
 
@@ -147,7 +149,7 @@ def on_dataset_type_change(dataset_type: str, gen_name: str = ""):
         gr.Textbox(label=f"{label} (used in prompts)"),        # gen_name
         gr.Button(value=f"Rebuild default plan with {label.lower()}",
                   interactive=not is_style),                   # refresh plan
-        _plan_table(dataset_type, gen_name),                   # shot plan table
+        _plan_table(dataset_type, gen_name, style_key, style_text),  # shot plan table
         gr.Button(interactive=not is_style),                   # generate
         gr.Button(interactive=not is_style),                   # regenerate
         gr.Button(visible=not (is_style or is_concept)),       # randomize outfits
@@ -252,9 +254,60 @@ PLAN_COLUMN_WIDTHS = ["110px", "70px", "110px", "200px", "220px",
                       "260px", "260px", "100px"]
 
 
-def _plan_table(dataset_type: str, name: str = "") -> pd.DataFrame:
+def _plan_table(dataset_type: str, name: str = "", style_key: str = shot_style.MATCH,
+                style_text: str = "") -> pd.DataFrame:
     """The ② table for a dataset type (empty for Style, which never generates)."""
-    return _shots_to_df(plan_for_type(dataset_type, name))
+    return _shots_to_df(plan_for_type(dataset_type, name, style_key, style_text))
+
+
+def rebuild_plan_for_style(dataset_type: str, name: str, style_key: str,
+                           style_text: str):
+    """Rebuild the ② table when the shot style changes, and remember the choice.
+
+    The style is baked into the prompt cells at build time (so the table shows
+    what will actually be sent), which means changing it has to regenerate them
+    — and that discards hand edits. Say so rather than letting the user discover
+    it: silence here looks like the edits vanished for no reason.
+    """
+    from studio import user_config
+
+    user_config.set_shot_style(style_key, style_text)
+    style = shot_style.resolve(style_key, style_text)
+    if dataset_type == "style":
+        # Style never generates; there is no table to rebuild.
+        return gr.skip(), gr.skip()
+    note = (f"Shot plan rebuilt for **{style.label}** — any hand-edited prompt "
+            f"cells were replaced.")
+    if style_key == shot_style.CUSTOM and not (style_text or "").strip():
+        note = ("⚠️ Custom style selected but no description typed — falling back to "
+                "**matching the reference image**. Type a style below and the plan "
+                "rebuilds.")
+    return _plan_table(dataset_type, name, style_key, style_text), note
+
+
+def _toggle_style_text(style_key: str):
+    return gr.Textbox(visible=style_key == shot_style.CUSTOM)
+
+
+def preview_final_prompt(plan_df: pd.DataFrame, engine: str, exclude_props: bool):
+    """Show the prompt the FIRST plan row will actually send.
+
+    Wardrobe, prop exclusion and (via the rebuild) the shot style are folded in
+    at generation time, so the table's own cell is not the final text. Without
+    this there is no way to check what the style control actually did short of
+    spending a generation.
+    """
+    shots = _df_to_shots(plan_df)
+    if not shots:
+        raise gr.Error("The plan is empty — nothing to preview.")
+    shot = apply_wardrobe(shots[0])
+    if exclude_props:
+        shot = apply_prop_exclusion(shot)
+    field = "local_prompt" if engine == "comfyui" else "cloud_prompt"
+    which = "Local (ComfyUI / Qwen-Edit)" if engine == "comfyui" else "Cloud (Gemini)"
+    return (f"**{which} prompt for `{shot.id}`** — exactly what the engine receives, "
+            f"after outfit and prop-exclusion are folded in:\n\n```\n"
+            f"{getattr(shot, field)}\n```")
 
 
 def _shots_to_df(shots: list[Shot]) -> pd.DataFrame:
@@ -786,9 +839,14 @@ def do_test_caption(folder: str, selected: list[str], captioner_key: str,
 
 
 def load_one_caption(folder: str, filename: str) -> str:
-    """Read the .txt sidecar for a single image into the inline editor."""
+    """Read the .txt sidecar for a single image into the inline editor.
+
+    Empty selection returns empty rather than raising: this also runs on the
+    dropdown's `.change`, which fires with `None` whenever the folder is
+    repopulated — an error toast there would be noise, not information.
+    """
     if not folder.strip() or not filename:
-        raise gr.Error("Load a folder and pick an image first.")
+        return ""
     # Forgiving read: the editor must be able to open (and so fix) a sidecar written
     # by another tool in cp1252, not raise at the user.
     return read_caption(Path(folder.strip()) / filename)
@@ -807,9 +865,95 @@ def save_one_caption(folder: str, filename: str, text: str) -> str:
     return f"✅ Saved caption for {filename}"
 
 
+def _editor_labels(folder: Path, names: list[str]) -> list[tuple[str, str]]:
+    """(label, value) pairs — a trailing ✓ marks a file that already has a
+    caption, so review progress is visible in the picker itself.
+
+    The mark TRAILS on purpose: Gradio renders its own selection tick as the
+    first child of each option (hidden on unselected rows), so a leading ✓ made
+    the selected-and-captioned row read "✓ ✓ img01.png". The value stays the
+    bare filename, so everything downstream is unchanged.
+    """
+    return [(f"{n} ✓" if read_caption(folder / n) else n, n) for n in names]
+
+
 def _editor_choices(folder: str):
-    names = [p.name for p in list_images(Path(folder.strip()))] if folder.strip() else []
-    return gr.Dropdown(choices=names, value=names[0] if names else None)
+    """Repopulate the inline editor's picker. Returns the dropdown update and the
+    ordered filename list, which Prev/Next use to resolve an index without
+    re-scanning the folder on every click."""
+    base = Path(folder.strip()) if folder.strip() else None
+    names = [p.name for p in list_images(base)] if base else []
+    value = names[0] if names else None
+    return gr.Dropdown(choices=_editor_labels(base, names) if base else [],
+                       value=value), names
+
+
+def _editor_context(folder: str, filename: str, names: list[str]):
+    """Preview image + 'n / N' position for the file being edited.
+
+    Editing a caption with no sight of the image was the real gap — the dropdown
+    told you a filename and nothing else.
+    """
+    if not folder.strip() or not filename or filename not in (names or []):
+        return None, ""
+    idx = names.index(filename)
+    return (str(Path(folder.strip()) / filename),
+            f"**{idx + 1} / {len(names)}** · `{filename}`")
+
+
+def _editor_step(folder: str, filename: str, names: list[str], delta: int):
+    """Move to the previous/next image. Clamps at the ends rather than wrapping —
+    silently looping back to image 1 during a review pass loses your place."""
+    if not names:
+        raise gr.Error("Load a folder first (📂 Load folder).")
+    # gr.update(), NOT gr.Dropdown(value=...): the constructor form merges over
+    # the component's ORIGINAL constructor args, where `choices` was [] — so the
+    # new value validates against an empty list, warns, and can be dropped,
+    # leaving Prev/Next silently doing nothing.
+    if filename not in names:
+        return gr.update(value=names[0])
+    idx = names.index(filename) + delta
+    if idx < 0:
+        gr.Info("Already at the first image.")
+        return gr.skip()
+    if idx >= len(names):
+        gr.Info("That was the last image.")
+        return gr.skip()
+    return gr.update(value=names[idx])
+
+
+def _editor_relabel(folder: str, filename: str, names: list[str], move: int = 0):
+    """Refresh the picker's ✓ marks (a just-saved caption should show as done),
+    optionally moving to another image at the same time.
+
+    Choices and value are set together: doing them as two updates made the
+    dropdown briefly hold a value that was not in its choices.
+    """
+    if not folder.strip() or not names:
+        return gr.skip()
+    base = Path(folder.strip())
+    idx = names.index(filename) if filename in names else 0
+    target = idx + move
+    if not 0 <= target < len(names):
+        if move:
+            gr.Info("That was the last image." if move > 0
+                    else "Already at the first image.")
+        target = idx
+    return gr.Dropdown(choices=_editor_labels(base, names), value=names[target])
+
+
+def editor_prev(folder: str, filename: str, names: list[str]):
+    return _editor_step(folder, filename, names, -1)
+
+
+def editor_next(folder: str, filename: str, names: list[str]):
+    return _editor_step(folder, filename, names, 1)
+
+
+def save_and_next(folder: str, filename: str, text: str, names: list[str]):
+    """The review-pass action: write this caption, then advance."""
+    note = save_one_caption(folder, filename, text)
+    return note, _editor_relabel(folder, filename, names, move=1)
 
 
 def _merge_export_folders(existing: str, new_folder: str) -> str:
@@ -1053,7 +1197,8 @@ def load_export_preview(folders_text: str, dup_distance: float = 5, carry=None):
 
 
 def do_export(selected: list[str], name: str, trigger: str, output_root: str,
-              make_zip: bool = False, dataset_type: str = "character"):
+              make_zip: bool = False, dataset_type: str = "character",
+              style_key: str = shot_style.MATCH, style_text: str = ""):
     if not selected:
         raise gr.Error("Click '📂 Load & preview', then keep at least one image checked.")
     from studio.package import package_dataset, resolve_export_items
@@ -1064,8 +1209,13 @@ def do_export(selected: list[str], name: str, trigger: str, output_root: str,
         raise gr.Error("None of the checked images have a usable caption — "
                        "run ③ Caption first (each export needs a non-empty .txt).")
     source_folders = sorted({str(p.parent) for p in paths})
+    style = shot_style.resolve(style_key, style_text)
     metadata = {"character_name": name, "trigger": trigger,
                 "dataset_type": dataset_type,
+                # Recorded so ⑤ can name the right medium in its sample prompt
+                # even when pointed at this folder in a later session.
+                "shot_style": style.key,
+                "shot_style_text": style_text if style.key == shot_style.CUSTOM else "",
                 "source_folders": source_folders,
                 "skipped_uncaptioned": res.missing,
                 "skipped_empty_caption": res.empties}
@@ -1142,8 +1292,10 @@ def _fill_if_empty(current: str, incoming: str) -> str:
     return current.strip() or incoming
 
 
-def refresh_plan(name: str, dataset_type: str = "character") -> pd.DataFrame:
-    return _plan_table(dataset_type, name)
+def refresh_plan(name: str, dataset_type: str = "character",
+                 style_key: str = shot_style.MATCH,
+                 style_text: str = "") -> pd.DataFrame:
+    return _plan_table(dataset_type, name, style_key, style_text)
 
 
 def do_save_plan(plan_df: pd.DataFrame, plan_name: str) -> str:
@@ -1287,7 +1439,9 @@ def inspect_dataset(dataset_dir: str, dataset_type: str = "character") -> tuple[
 def do_generate_train_config(trainer: str, model_key: str, dataset_dir: str,
                              install_path: str, name: str, trigger: str,
                              resolution, rank, alpha, steps, lr, batch_size,
-                             multi_res: bool, dataset_type: str = "character") -> str:
+                             multi_res: bool, dataset_type: str = "character",
+                             style_key: str = shot_style.MATCH,
+                             style_text: str = "") -> str:
     if not dataset_dir.strip():
         raise gr.Error("Enter the dataset folder to write the config into "
                        "(④ Export produces one and auto-fills this).")
@@ -1312,7 +1466,7 @@ def do_generate_train_config(trainer: str, model_key: str, dataset_dir: str,
         dataset_type=dataset_type,
         resolution=int(resolution), rank=int(rank), alpha=int(alpha),
         steps=int(steps), lr=float(lr), batch_size=int(batch_size),
-        buckets=buckets)
+        buckets=buckets, shot_style=style_key, shot_style_text=style_text)
     try:
         written, command = write_configs(cfg, install_path.strip(),
                                          num_repeats=max(1, round(400 / stats.n_images)))
@@ -1487,6 +1641,9 @@ with _blocks as demo:
     exp_rows = gr.State([])
     # Absolute paths ③ has captioned, carried into ④'s preselection.
     cap_carry = gr.State([])
+    # Ordered filenames behind the ③ inline editor, so ◀/▶ can resolve an index
+    # without re-reading the folder on every click.
+    cap_edit_names = gr.State([])
 
     with gr.Tabs() as tabs:
         with gr.Tab("① Preprocess (optional)", id="preprocess"):
@@ -1495,9 +1652,13 @@ with _blocks as demo:
             with gr.Row():
                 with gr.Column(scale=1):
                     pre_files = gr.File(label="Source image(s)", file_count="multiple",
-                                        file_types=["image"])
-                    pre_folder = gr.Textbox(label="…or input folder",
-                                            placeholder="path/to/images (used if no upload)")
+                                        file_types=["image"],
+                                        height=160)
+                    pre_folder = gr.Textbox(
+                        label="…or input folder",
+                        placeholder="path/to/images (used if no upload)",
+                        info="Used only when nothing is uploaded above — an upload "
+                             "always wins. Any folder on any drive.")
                     target = gr.Slider(512, 2048, value=settings.target_long_side, step=64,
                                        label="Dataset resolution (long side, px)",
                                        info="1024 suits Flux/Krea/SDXL. Match your base model.")
@@ -1556,12 +1717,32 @@ with _blocks as demo:
             with gr.Row():
                 with gr.Column(scale=1):
                     gen_files = gr.File(label="Reference image(s)", file_count="multiple",
-                                        file_types=["image"])
-                    gen_src_folder = gr.Textbox(label="…or reference folder (auto-filled by ①)")
+                                        file_types=["image"], height=160)
+                    gen_src_folder = gr.Textbox(
+                        label="…or reference folder (auto-filled by ①)",
+                        info="Used only when nothing is uploaded above. A clean, "
+                             "isolated reference gives much better shots.")
                     gen_name = gr.Textbox(label="Character name (used in prompts)",
                                           placeholder="Sy Snootles",
                                           info="Woven into each shot prompt. Leave blank for "
                                                "a generic subject.")
+                    _style_key0, _style_text0 = _uc_boot.get_shot_style()
+                    gen_style = gr.Dropdown(
+                        shot_style.STYLE_CHOICES, value=_style_key0,
+                        label="Shot style (medium the shots are drawn in)",
+                        info="Default keeps your reference's own medium — pick this if "
+                             "your source is a drawing, painting or render and you want "
+                             "the shots to stay that way. Choose another to convert the "
+                             "whole set to that medium. Changing this rebuilds the shot "
+                             "plan below, replacing hand-edited prompt cells.")
+                    gen_style_text = gr.Textbox(
+                        label="Describe the custom style", value=_style_text0,
+                        visible=_style_key0 == shot_style.CUSTOM,
+                        placeholder="a 1970s screen-printed poster, halftone dots, "
+                                    "limited ink palette",
+                        info="A noun phrase describing the medium — it is introduced as "
+                             "'Rendered as …' so the model treats it as the style, not "
+                             "as something to put in the picture. Press Enter to apply.")
                     refresh = gr.Button("Rebuild default plan with character name")
                     engine = gr.Radio(ENGINE_CHOICES, value=settings.default_engine,
                                       label="Generation engine",
@@ -1612,6 +1793,13 @@ with _blocks as demo:
                     plan = gr.Dataframe(value=_plan_table("character"), label="Shot plan",
                                         interactive=True, wrap=False,
                                         column_widths=PLAN_COLUMN_WIDTHS, max_height=520)
+                    gr.Markdown(
+                        "<sub>One row = one generated image. Every cell is editable — "
+                        "delete rows you don't want, or rewrite a prompt. `chain_from` "
+                        "builds a shot from an earlier generated one (rear views). "
+                        "Outfit, prop-exclusion and the shot style are folded in when "
+                        "you generate, so use **👁 Preview final prompt** to see the "
+                        "exact text a row will send.</sub>")
                     wardrobe_note = gr.Markdown(
                         "The **outfit** column varies wardrobe without breaking identity — "
                         "leave blank to keep the reference's clothing. If your source images "
@@ -1623,16 +1811,23 @@ with _blocks as demo:
                         btn_outfits_clear = gr.Button("Clear outfits", scale=1)
                     with gr.Row():
                         plan_name = gr.Textbox(label="Plan name", placeholder="my-plan",
-                                               scale=2)
+                                               scale=2,
+                                               info="Saved as YAML under shot_plans/ — "
+                                                    "a reusable prompt library.")
                         btn_save_plan = gr.Button("💾 Save plan", scale=1)
                         btn_load_plan = gr.Button("📂 Load plan", scale=1)
+                        btn_preview_prompt = gr.Button("👁 Preview final prompt", scale=1)
                     plan_note = gr.Markdown()
             with gr.Row():
                 btn_gen = gr.Button("② Generate all shots", variant="primary")
                 btn_regen = gr.Button("♻️ Regenerate UNCHECKED shots (new seeds)")
                 btn_disk = gr.Button("🔃 Re-sync with output folder")
                 btn_send = gr.Button("➡ Send kept shots to ③ Caption")
-            gen_out_dir = gr.Textbox(label="Output folder (blank = new run folder)", value="")
+            gen_out_dir = gr.Textbox(
+                label="Output folder (blank = new run folder)", value="",
+                info="Filled in after a run. Keep it to write more shots into the "
+                     "same folder — that is how ♻️ finishes a stopped or partly "
+                     "failed set.")
             gen_send_note = gr.Markdown()
             # allow_preview=False so a click TOGGLES the shot instead of opening a
             # lightbox; the Zoom checkbox flips it back when you want a closer look.
@@ -1656,7 +1851,11 @@ with _blocks as demo:
                         "captioner uses a prompt tuned to that model.")
             with gr.Row():
                 with gr.Column(scale=1):
-                    cap_folder = gr.Textbox(label="Image folder (auto-filled by ①/②)")
+                    cap_folder = gr.Textbox(
+                        label="Image folder (auto-filled by ①/②)",
+                        info="Any folder of images — it does not have to come from "
+                             "① or ②. Captions are written as .txt sidecars beside "
+                             "each image.")
                     btn_load = gr.Button("📂 Load folder")
                     cap_name = gr.Textbox(label="Character name (optional)",
                                           placeholder="Sy Snootles",
@@ -1752,7 +1951,10 @@ with _blocks as demo:
                         cap_custom_keyenv = gr.Textbox(
                             label="API key env var name (blank if none; set the key itself in .env)",
                             value=_custom_cfg.get("api_key_env", ""),
-                            placeholder="OPENROUTER_API_KEY")
+                            placeholder="OPENROUTER_API_KEY",
+                            info="The NAME of the variable, not the key. Only the name "
+                                 "is saved; the secret stays in .env and is never "
+                                 "written to this app's settings file.")
                         cap_custom_interval = gr.Number(
                             label="Min seconds between requests (0 = no spacing)",
                             value=_custom_cfg.get("min_interval_s", 0.0), precision=1)
@@ -1777,14 +1979,36 @@ with _blocks as demo:
                                                info="Clicks enlarge instead of selecting.")
                     cap_select = gr.CheckboxGroup(label="Images to caption", choices=[],
                                                   elem_id="dd-picks-cap")
-            test_caption = gr.Textbox(label="Test caption output", lines=4)
-            gr.Markdown("**Inline editor** — tweak any caption by hand and save it back to "
-                        "its `.txt` sidecar (independent of the model).")
+            test_caption = gr.Textbox(label="Test caption output", lines=4,
+                                      info="Result of 🧪 Test — a dry run on one image "
+                                           "that writes no sidecar.")
+            gr.Markdown("**Inline editor** — review captions one by one and save them back "
+                        "to their `.txt` sidecars (independent of the model). "
+                        "**◀ / ▶** step through the folder; a trailing **✓** in the "
+                        "picker marks an image that already has a caption.")
             with gr.Row():
-                cap_edit_file = gr.Dropdown(label="Image", choices=[], scale=2)
-                btn_edit_load = gr.Button("Load its caption", scale=1)
-                btn_edit_save = gr.Button("💾 Save caption", variant="primary", scale=1)
-            cap_edit_text = gr.Textbox(label="Caption editor", lines=4)
+                btn_edit_prev = gr.Button("◀ Prev", scale=0, min_width=90)
+                cap_edit_file = gr.Dropdown(label="Image", choices=[], scale=3,
+                                            info="A trailing ✓ means that image "
+                                                 "already has a caption.")
+                btn_edit_next = gr.Button("Next ▶", scale=0, min_width=90)
+            with gr.Row():
+                with gr.Column(scale=1):
+                    # Editing a caption you cannot see is guesswork — this is the
+                    # image the text below describes.
+                    # No show_download_button= — it is deprecated in Gradio 5 and
+                    # prints a warning on every start; the default is fine here.
+                    cap_edit_image = gr.Image(label="Image being captioned", height=260,
+                                              interactive=False)
+                    cap_edit_pos = gr.Markdown()
+                with gr.Column(scale=2):
+                    cap_edit_text = gr.Textbox(
+                        label="Caption editor", lines=8,
+                        info="Saved verbatim to the image's .txt sidecar.")
+                    with gr.Row():
+                        btn_edit_save = gr.Button("💾 Save caption", variant="primary")
+                        btn_edit_save_next = gr.Button("💾 Save & next ▶", variant="primary")
+                        btn_edit_load = gr.Button("↺ Reload from disk")
             cap_result = gr.Markdown()
             btn_lint = gr.Button("🔎 Analyze captions (health & tag frequency)")
             gr.Markdown(
@@ -1800,7 +2024,11 @@ with _blocks as demo:
                         "`README.txt`. List one or more folders (one per line) — e.g. the "
                         "preprocessed sources **and** the generated shots — then **Load & "
                         "preview** to make your final pick before exporting.")
-            exp_folders = gr.Textbox(label="Folders of captioned images (one per line)", lines=3)
+            exp_folders = gr.Textbox(
+                label="Folders of captioned images (one per line)", lines=3,
+                info="All listed folders are merged into ONE dataset — e.g. your "
+                     "preprocessed sources plus the generated shots. ③ adds to this "
+                     "list as you caption.")
             with gr.Row():
                 btn_load_preview = gr.Button("📂 Load & preview", scale=2)
                 exp_dup_dist = gr.Slider(
@@ -1847,7 +2075,11 @@ with _blocks as demo:
                 with gr.Row():
                     exp_hf_repo = gr.Textbox(label="Dataset name (or owner/name)",
                                              placeholder="my-character-lora")
-                    exp_hf_private = gr.Checkbox(value=True, label="Private (recommended)")
+                    exp_hf_private = gr.Checkbox(
+                        value=True, label="Private (recommended)",
+                        info="Unchecking publishes every image PUBLICLY. Note an "
+                             "existing repo keeps its current visibility — this cannot "
+                             "make an already-public dataset private.")
                 btn_publish_hf = gr.Button("⬆ Publish to Hugging Face")
                 exp_hf_note = gr.Markdown()
 
@@ -1905,13 +2137,20 @@ with _blocks as demo:
                         info="Bucket by the dataset's real aspect ratios instead of "
                              "forcing one square resolution.")
                 with gr.Column(scale=2):
-                    tr_dataset = gr.Textbox(label="Dataset folder (auto-filled by ④ Export)")
+                    tr_dataset = gr.Textbox(
+                        label="Dataset folder (auto-filled by ④ Export)",
+                        info="The config file is written INTO this folder, and the "
+                             "step count and buckets are derived from the images in "
+                             "it. Works on any dataset folder, not just ④'s.")
                     btn_inspect = gr.Button("🔍 Inspect dataset & suggest steps")
                     tr_stats = gr.Markdown()
                     tr_gen = gr.Button("⑤ Generate training config", variant="primary")
                     tr_result = gr.Textbox(label="Result / run command", lines=14)
 
-    log_box = gr.Textbox(label="Log", lines=8)
+    log_box = gr.Textbox(
+        label="Log", lines=8,
+        info="Per-item progress from the last ①/②/③ run, including anything that "
+             "was skipped and why. Shared by every tab.")
 
     # ---------- wiring ----------
 
@@ -1938,10 +2177,23 @@ with _blocks as demo:
                     btn_outfits, btn_outfits_clear, wardrobe_note,
                     gen_exclude_props, gen_subject,
                     cap_name, cap_trigger, cap_sparse, exp_name]
-    dataset_type.change(on_dataset_type_change, [dataset_type, gen_name], type_outputs)
-    demo.load(on_dataset_type_change, [dataset_type, gen_name], type_outputs)
+    # The style controls are INPUTS only — adding them to type_outputs would
+    # change the handler's return arity, which a test pins on purpose.
+    type_inputs = [dataset_type, gen_name, gen_style, gen_style_text]
+    dataset_type.change(on_dataset_type_change, type_inputs, type_outputs)
+    demo.load(on_dataset_type_change, type_inputs, type_outputs)
 
-    refresh.click(refresh_plan, [gen_name, dataset_type], [plan])
+    refresh.click(refresh_plan, [gen_name, dataset_type, gen_style, gen_style_text],
+                  [plan])
+    # Rebuild on pick. The custom textbox applies on Enter/blur rather than per
+    # keystroke — rebuilding 24 prompts on every character typed is pure churn.
+    _style_inputs = [dataset_type, gen_name, gen_style, gen_style_text]
+    gen_style.change(_toggle_style_text, [gen_style], [gen_style_text])
+    gen_style.change(rebuild_plan_for_style, _style_inputs, [plan, plan_note])
+    gen_style_text.submit(rebuild_plan_for_style, _style_inputs, [plan, plan_note])
+    gen_style_text.blur(rebuild_plan_for_style, _style_inputs, [plan, plan_note])
+    btn_preview_prompt.click(preview_final_prompt,
+                             [plan, engine, gen_exclude_props], [plan_note])
     btn_outfits.click(randomize_outfits, [plan], [plan, plan_note])
     btn_outfits_clear.click(clear_outfits, [plan], [plan, plan_note])
     btn_save_plan.click(do_save_plan, [plan, plan_name], [plan_note])
@@ -1991,13 +2243,33 @@ with _blocks as demo:
 
     btn_load.click(load_caption_folder, [cap_folder],
                    [cap_rows, cap_gallery, cap_select, cap_note]) \
-            .then(_editor_choices, [cap_folder], [cap_edit_file])
-    cap_edit_file.change(load_one_caption, [cap_folder, cap_edit_file], [cap_edit_text])
+            .then(_editor_choices, [cap_folder], [cap_edit_file, cap_edit_names])
+    # Picking an image (by dropdown, ◀/▶, or Save & next) loads its caption and
+    # shows the image + position. One path, so every route stays in sync.
+    cap_edit_file.change(load_one_caption, [cap_folder, cap_edit_file], [cap_edit_text]) \
+                 .then(_editor_context, [cap_folder, cap_edit_file, cap_edit_names],
+                       [cap_edit_image, cap_edit_pos])
+    # Named handlers, not lambdas: a wiring test can then assert *which* function
+    # each button reaches, which a lambda makes impossible to check.
+    btn_edit_prev.click(editor_prev, [cap_folder, cap_edit_file, cap_edit_names],
+                        [cap_edit_file])
+    btn_edit_next.click(editor_next, [cap_folder, cap_edit_file, cap_edit_names],
+                        [cap_edit_file])
     btn_edit_load.click(load_one_caption, [cap_folder, cap_edit_file], [cap_edit_text])
+
+    # Saving re-marks the picker (✓) and re-flags ④ if its preview is open.
+    _after_save = [exp_rows, exp_gallery, exp_select, exp_preview_note]
     btn_edit_save.click(save_one_caption, [cap_folder, cap_edit_file, cap_edit_text],
                         [cap_result]) \
+                 .then(_editor_relabel, [cap_folder, cap_edit_file, cap_edit_names],
+                       [cap_edit_file]) \
                  .then(refresh_export_preview, [exp_folders, exp_rows, exp_select],
-                       [exp_rows, exp_gallery, exp_select, exp_preview_note])
+                       _after_save)
+    btn_edit_save_next.click(save_and_next,
+                             [cap_folder, cap_edit_file, cap_edit_text, cap_edit_names],
+                             [cap_result, cap_edit_file]) \
+                      .then(refresh_export_preview, [exp_folders, exp_rows, exp_select],
+                            _after_save)
     def _cap_cost(key: str, model: str, selected: list[str]) -> str:
         line = estimate_caption_cost(key, model, len(selected or []))
         vram = CAPTIONERS_BY_KEY[key].vram_note
@@ -2029,7 +2301,7 @@ with _blocks as demo:
          exp_folders, exp_name, exp_trigger, cap_carry],
         [cap_rows, cap_gallery, cap_select, cap_result, log_box, exp_folders, exp_name,
          exp_trigger, cap_analysis, cap_carry]) \
-               .then(_editor_choices, [cap_folder], [cap_edit_file])
+               .then(_editor_choices, [cap_folder], [cap_edit_file, cap_edit_names])
     btn_lint.click(do_analyze_captions, [cap_folder, cap_trigger], [cap_analysis])
     btn_send_export.click(send_captioned_to_export,
                           [exp_folders, exp_dup_dist, cap_carry],
@@ -2038,7 +2310,8 @@ with _blocks as demo:
     btn_load_preview.click(load_export_preview, [exp_folders, exp_dup_dist, cap_carry],
                            [exp_rows, exp_gallery, exp_select, exp_preview_note])
     btn_export.click(do_export,
-                     [exp_select, exp_name, exp_trigger, output_root, exp_zip, dataset_type],
+                     [exp_select, exp_name, exp_trigger, output_root, exp_zip,
+                      dataset_type, gen_style, gen_style_text],
                      [exp_result, tr_dataset, exp_ds_dir]) \
               .then(inspect_dataset, [tr_dataset, dataset_type], [tr_stats, tr_steps]) \
               .then(_fill_if_empty, [tr_name, exp_name], [tr_name]) \
@@ -2054,7 +2327,7 @@ with _blocks as demo:
     btn_inspect.click(inspect_dataset, [tr_dataset, dataset_type], [tr_stats, tr_steps])
     tr_gen.click(do_generate_train_config,
                  [tr_trainer, tr_model, tr_dataset, tr_path, tr_name, tr_trigger]
-                 + tr_hparams + [tr_multi_res, dataset_type],
+                 + tr_hparams + [tr_multi_res, dataset_type, gen_style, gen_style_text],
                  [tr_result])
 
     demo.load(_check_for_update, None, update_notice)

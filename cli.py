@@ -87,7 +87,19 @@ def _check_dataset_type(dataset_type: str) -> str:
     return dt
 
 
-def _plan_for(dataset_type: str, name: str) -> list:
+def _check_shot_style(key: str) -> str:
+    """Validate --shot-style so a typo fails fast instead of silently defaulting."""
+    from studio.shot_style import STYLE_KEYS
+
+    k = (key or "").strip().lower()
+    if k not in STYLE_KEYS:
+        raise typer.BadParameter(
+            f"--shot-style must be one of {', '.join(STYLE_KEYS)}.")
+    return k
+
+
+def _plan_for(dataset_type: str, name: str, shot_style: str = "match",
+              shot_style_text: str = "") -> list:
     """The shot plan for this dataset type — the same choice the ② tab makes.
 
     Style never generates: an aesthetic can't be synthesized from a reference,
@@ -98,7 +110,7 @@ def _plan_for(dataset_type: str, name: str) -> list:
         raise typer.BadParameter(
             "Style datasets have no synthetic generation — collect your own images "
             "that share the look, then run `caption` and `export` on that folder.")
-    return plan_for_type(dataset_type, name)
+    return plan_for_type(dataset_type, name, shot_style, shot_style_text)
 
 
 def _props_default(exclude_props: bool | None, dataset_type: str) -> bool:
@@ -179,6 +191,14 @@ def generate(
         help="character (24-shot set) | concept (18-shot object set); style does not generate"),
     engine: str = typer.Option(settings.default_engine, help="gemini (cloud) or comfyui (local)"),
     cloud_model: str = typer.Option("", help=f"Cloud image model (default {settings.gemini_image_model})"),
+    shot_style: str = typer.Option(
+        "match", "--shot-style",
+        help="Medium of the generated shots: match (keep the reference's own — "
+             "default) | photographic | anime | comic | illustration | painting | "
+             "render3d | lineart | custom (with --shot-style-text)"),
+    shot_style_text: str = typer.Option(
+        "", "--shot-style-text",
+        help="Describe the medium for --shot-style custom (e.g. 'a 1970s screen-printed poster')"),
     max_shots: int = typer.Option(0, help="Limit number of shots (0 = full plan)"),
     isolate_angles: bool = typer.Option(False, help="Isolate generated angle shots onto white"),
     subject_prompt: str = typer.Option(
@@ -195,7 +215,7 @@ def generate(
     """Generate the shot set from reference image(s) (standalone)."""
     dtype = _check_dataset_type(dataset_type)
     out = out or pipeline.new_run_dir("generated")
-    shots = _plan_for(dtype, name)
+    shots = _plan_for(dtype, name, _check_shot_style(shot_style), shot_style_text)
     if max_shots:
         shots = shots[:max_shots]
     if randomize_outfits:
@@ -356,6 +376,14 @@ def build(
         "character", "--dataset-type",
         help="character | style | concept — picks the shot plan (style skips generation), "
              "frames captions, and is recorded in metadata"),
+    shot_style: str = typer.Option(
+        "match", "--shot-style",
+        help="Medium of the generated shots: match (keep the reference's own — "
+             "default) | photographic | anime | comic | illustration | painting | "
+             "render3d | lineart | custom (with --shot-style-text)"),
+    shot_style_text: str = typer.Option(
+        "", "--shot-style-text",
+        help="Describe the medium for --shot-style custom"),
     sparse: bool = typer.Option(
         False, "--sparse", help="Style datasets only: trigger + a few words of content"),
     target: int = typer.Option(settings.target_long_side, help="Long-side resolution"),
@@ -419,7 +447,7 @@ def build(
     if dtype == "style":
         typer.echo("Style dataset: skipping ② generation — captioning your own images.")
     else:
-        shots = _plan_for(dtype, name)
+        shots = _plan_for(dtype, name, _check_shot_style(shot_style), shot_style_text)
         if max_shots:
             shots = shots[:max_shots]
         if randomize_outfits:
@@ -444,6 +472,8 @@ def build(
         "character_name": name,
         "trigger": trigger,
         "dataset_type": dtype,
+        "shot_style": shot_style,
+        "shot_style_text": shot_style_text,
         "captioner": captioner,
         "caption_style": style,
         "sources": [str(s) for s in images],

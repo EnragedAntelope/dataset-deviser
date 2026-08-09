@@ -165,7 +165,10 @@ def test_character_pose_shots_keep_their_mood_and_identity_clause() -> None:
     pose = next(s for s in default_plan() if s.kind == "pose")
     assert pose.emotion
     assert f"{pose.emotion} mood" in pose.local_prompt
-    assert pose.local_prompt.endswith("photorealistic, consistent identity")
+    # The medium clause used to be a hard-coded "photorealistic"; it now comes
+    # from the shot style, whose default preserves the reference's own medium.
+    assert "same art style and medium as the reference" in pose.local_prompt
+    assert pose.local_prompt.endswith("consistent identity")
 
 
 def test_character_closeups_do_not_repeat_the_expression() -> None:

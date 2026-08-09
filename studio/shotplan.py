@@ -23,6 +23,9 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from studio import shot_style
+from studio.shot_style import ShotStyle
+
 
 class Shot(BaseModel):
     id: str
@@ -137,7 +140,7 @@ _SHOTS = [
         "low",
         "angle",
         "front view low-angle shot medium shot",
-        "photographed from a low camera angle looking up",
+        "seen from a low camera angle looking up",
         "",
         "confident",
         "outdoors at night under cool moonlight",
@@ -368,7 +371,7 @@ _CONCEPT_SHOTS = [
         "low",
         "angle",
         "front view low-angle shot medium shot",
-        "photographed from a low camera angle looking up at it",
+        "seen from a low camera angle looking up at it",
         "",
         "outdoors in daylight on flat open ground",
     ),
@@ -376,7 +379,7 @@ _CONCEPT_SHOTS = [
         "high",
         "angle",
         "front view high-angle shot medium shot",
-        "photographed from a high camera angle looking down on it",
+        "seen from a high camera angle looking down on it",
         "",
         "on a concrete surface under overcast daylight",
     ),
@@ -471,7 +474,7 @@ def _indefinite_article(word: str) -> str:
 
 def _build_local_prompt(
     kind: str, grammar_or_pose: str, setting: str, emotion: str,
-    outfit: str = "", subject: str = "subject"
+    outfit: str = "", subject: str = "subject", style: ShotStyle | None = None
 ) -> str:
     """Build the ComfyUI/Qwen-Edit prompt.
 
@@ -485,6 +488,12 @@ def _build_local_prompt(
     nothing downstream formats the local prompt, so a placeholder went to
     ComfyUI verbatim. Shots with no emotion (the Concept plan) drop the mood
     clause instead of emitting a dangling "  mood".
+
+    **Angle shots get no style clause.** Their prompt is the <sks> grammar the
+    Multiple-Angles LoRA was trained on (clean splat renders); appending prose
+    degrades it, which is the same reason `apply_prop_exclusion` skips them.
+    They carry no medium claim today either, so nothing is lost — Qwen-Edit
+    follows the reference image's medium on its own.
     """
     wardrobe = f", wearing {outfit}" if outfit else ""
     if kind == "angle":
@@ -494,18 +503,27 @@ def _build_local_prompt(
         return prompt + wardrobe
     # Settings are complete phrases ("in a warmly lit interior room", "outdoors
     # at golden hour") — they carry their own preposition.
-    tail = (f"{emotion} mood, photorealistic, consistent identity" if emotion
-            else "photorealistic, unchanged form")
+    medium = (style or shot_style.SHOT_STYLES[shot_style.MATCH]).local
+    tail = f"{emotion} mood, " if emotion else ""
+    tail += f"{medium}, " if medium else ""
+    tail += "consistent identity" if emotion else "unchanged form"
     return (f"the same {_subject_phrase(subject)}, {grammar_or_pose}{wardrobe}, "
             f"{setting}, {tail}")
 
 
 def _build_cloud_prompt(
-    subject: str, kind: str, description: str, setting: str, emotion: str, outfit: str = ""
+    subject: str, kind: str, description: str, setting: str, emotion: str,
+    outfit: str = "", style: ShotStyle | None = None
 ) -> str:
-    """Build the plain-English Nano Banana instruction."""
+    """Build the plain-English Nano Banana instruction.
+
+    The medium is stated once, at the END, as its own sentence — never as an
+    adjective on "image" (that used to read "Generate a photorealistic image
+    of …", which turned every illustrated reference into a photograph).
+    """
+    style = style or shot_style.SHOT_STYLES[shot_style.MATCH]
     parts = [
-        f"Generate a photorealistic image of exactly the same {_subject_phrase(subject)} "
+        f"Generate an image of exactly the same {_subject_phrase(subject)} "
         "from the reference image(s), identical in every physical detail",
         f", {description}",
     ]
@@ -519,7 +537,7 @@ def _build_cloud_prompt(
             parts.append(f", with {_indefinite_article(emotion)} {emotion} expression")
     if outfit:
         parts.append(f", wearing {outfit}")
-    parts.append(". Keep the same overall style and realism as the reference.")
+    parts.append(f". {style.cloud}")
     return "".join(parts)
 
 
@@ -582,7 +600,8 @@ def apply_prop_exclusion(shot: Shot) -> Shot:
     return shot.model_copy(update={"local_prompt": local, "cloud_prompt": cloud})
 
 
-def default_plan(subject: str = "the character") -> list[Shot]:
+def default_plan(subject: str = "the character",
+                 style: ShotStyle | None = None) -> list[Shot]:
     """Return the curated 24-shot Character plan."""
     shots: list[Shot] = []
     for suffix, kind, grammar_or_pose, description, chain, emotion, setting in _SHOTS:
@@ -591,8 +610,9 @@ def default_plan(subject: str = "the character") -> list[Shot]:
                 id=f"{kind}-{suffix}",
                 kind=kind,
                 local_prompt=_build_local_prompt(kind, grammar_or_pose, setting, emotion,
-                                                 subject=subject),
-                cloud_prompt=_build_cloud_prompt(subject, kind, description, setting, emotion),
+                                                 subject=subject, style=style),
+                cloud_prompt=_build_cloud_prompt(subject, kind, description, setting,
+                                                 emotion, style=style),
                 chain_from=chain,
                 emotion=emotion,
                 setting=setting,
@@ -615,23 +635,30 @@ def plan_subject(name: str, dataset_type: str = "character") -> str:
     return f"character {name}" if name else "the character"
 
 
-def plan_for_type(dataset_type: str, name: str = "") -> list[Shot]:
+def plan_for_type(dataset_type: str, name: str = "",
+                  shot_style_key: str = shot_style.MATCH,
+                  shot_style_text: str = "") -> list[Shot]:
     """The shot plan for a dataset type — the single plan-selection seam.
 
     Style returns an empty plan: an aesthetic can't be synthesized from a
     reference, so there is nothing honest to put in the table. Callers that can
     act on a plan (the CLI) refuse Style explicitly before getting here; the UI
     disables ②'s buttons and shows the guidance note instead.
+
+    `shot_style_key`/`shot_style_text` pick the visual style baked into the
+    prompts (default: match the reference image's own medium).
     """
     subject = plan_subject(name, dataset_type)
+    style = shot_style.resolve(shot_style_key, shot_style_text)
     if dataset_type == "style":
         return []
     if dataset_type == "concept":
-        return concept_plan(subject=subject)
-    return default_plan(subject=subject)
+        return concept_plan(subject=subject, style=style)
+    return default_plan(subject=subject, style=style)
 
 
-def concept_plan(subject: str = "the object") -> list[Shot]:
+def concept_plan(subject: str = "the object",
+                 style: ShotStyle | None = None) -> list[Shot]:
     """Return the curated 18-shot Concept plan (objects / actions / ideas).
 
     Same `Shot` model as the Character plan, so the ② table, YAML plans and the
@@ -645,8 +672,9 @@ def concept_plan(subject: str = "the object") -> list[Shot]:
                 id=f"{kind}-{suffix}",
                 kind=kind,
                 local_prompt=_build_local_prompt(kind, grammar_or_pose, setting, "",
-                                                 subject=subject),
-                cloud_prompt=_build_cloud_prompt(subject, kind, description, setting, ""),
+                                                 subject=subject, style=style),
+                cloud_prompt=_build_cloud_prompt(subject, kind, description, setting,
+                                                 "", style=style),
                 chain_from=chain,
                 emotion="",
                 setting=setting,

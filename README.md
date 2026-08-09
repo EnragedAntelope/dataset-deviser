@@ -20,6 +20,9 @@ ai-toolkit, kohya or musubi.
   cloud path. Mix and match: generate on the cloud, caption on your GPU, or the reverse.
 - **Every stage is standalone.** Point any tab (or CLI subcommand) at any folder — preprocess
   only, caption only, export only. Bring your own images at any step.
+- **Your reference's art style is kept, not "corrected".** An illustrated, painted or rendered
+  source stays that way by default — or convert the whole set to another medium (anime, comic,
+  3D render, ink, …) or one you describe yourself.
 - **Curate by clicking the images.** Toggle any shot straight from the gallery, with a ✅/⬜ mark
   on each thumbnail. Your pick follows you: what you keep in ② is what ③ captions, and what ③
   captions is what ④ preselects for export — nothing is silently re-added behind you.
@@ -159,6 +162,10 @@ setup). *Tag options* let you add a fixed **prefix/suffix** (e.g. Pony `score_9,
 **drop noisy tags** (`watermark`, `signature`…), append a **rating** tag, keep raw underscores,
 tune tagger thresholds, and **skip already-captioned** images.
 
+The **inline editor** is a review pass, not a lookup: **◀ / ▶** step through the folder,
+the image you're captioning sits next to the text box, a `3 / 24` counter shows where you
+are, **💾 Save & next** moves you on in one click, and a ✓ marks every file already done.
+
 Pick which images to caption by **clicking the thumbnails** — each carries a ✅/⬜ mark,
 **shift-click extends the pick to a range**, and *Select all / none / only already-captioned*
 handle the bulk cases (tick **🔍 Zoom on click** when you'd rather enlarge an image than pick
@@ -185,6 +192,22 @@ drop-list. It's advisory: nothing is blocked or rewritten.
 | Groq Qwen3.6 27B | Groq API | SFW, free tier, rate-limited |
 | LM Studio / Ollama / custom | your choice | any OpenAI-compatible endpoint |
 
+## Shot style
+
+**② Generate** has a **Shot style** control. The default, **Match the reference image**, keeps
+whatever medium your source is in — feed it a drawing and you get drawings, not photographs.
+Pick any other option to convert the whole set instead: photographic, anime/manga, Western
+comic, digital illustration, traditional painting, 3D render, ink line art, or **Custom**,
+where you describe the medium yourself (*"a 1970s screen-printed poster, halftone dots"*).
+
+Changing it rebuilds the shot plan, so hand-edited prompt cells are replaced — edit prompts
+after you've settled on a style. Camera-angle shots deliberately keep their bare
+turnaround grammar, which is what the angles LoRA was trained on. Use **👁 Preview final
+prompt** to see exactly what a row will send, including outfit and prop-exclusion. The style
+is recorded in the exported `metadata.json` and picked up by ⑤'s sample prompt.
+
+CLI: `--shot-style anime`, or `--shot-style custom --shot-style-text "a woodcut print"`.
+
 ## Two things that ruin a character LoRA
 
 Both have a switch in ②, because both bit us:
@@ -202,6 +225,7 @@ Every stage is a standalone subcommand; `--help` shows all options.
 ```bash
 python cli.py preprocess ./sources --out ./prepped
 python cli.py generate ./prepped --name "Sy Snootles" --engine comfyui --randomize-outfits
+python cli.py generate ./prepped --name "Sy Snootles" --shot-style anime  # keep an illustrated look
 python cli.py generate ./prepped --name "brass compass" --dataset-type concept  # 18-shot object set
 python cli.py caption ./folder --trigger sysnootles                       # prose sidecars
 python cli.py caption ./folder --trigger sysnootles --caption-style tags  # Danbooru tags

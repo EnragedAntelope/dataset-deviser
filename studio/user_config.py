@@ -70,6 +70,32 @@ def set_dataset_type(dataset_type: str) -> None:
         save_user_config({"dataset_type": dataset_type})
 
 
+def get_shot_style() -> tuple[str, str]:
+    """The ② shot style (key, custom text) from the last session.
+
+    Remembered for the same reason the dataset type is: a user building several
+    anime datasets in a row should not re-pick it every launch. Validated on
+    read so a hand-edited file can't put the dropdown in an unknown state.
+    """
+    from studio.shot_style import MATCH, SHOT_STYLES
+
+    cfg = load_user_config()
+    key = cfg.get("shot_style", "")
+    text = cfg.get("shot_style_text", "")
+    return (key if key in SHOT_STYLES else MATCH,
+            text if isinstance(text, str) else "")
+
+
+def set_shot_style(key: str, custom_text: str = "") -> None:
+    """Persist the ② shot style. Unknown keys are ignored, not stored."""
+    from studio.shot_style import SHOT_STYLES
+
+    if key not in SHOT_STYLES:
+        return
+    if (key, custom_text) != get_shot_style():
+        save_user_config({"shot_style": key, "shot_style_text": custom_text or ""})
+
+
 def get_last_train_settings() -> dict[str, Any]:
     return load_user_config().get("last_train", {})
 

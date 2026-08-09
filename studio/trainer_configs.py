@@ -156,16 +156,32 @@ class TrainConfig(BaseModel):
     # Multi-resolution buckets. Empty = single-bucket at `resolution` (the old
     # behaviour); populated from the dataset's real dimensions by the caller.
     buckets: list[int] = []
+    # ② shot style, so the sample prompt names the right medium. Defaults keep
+    # every pre-0.15.1 config byte-identical.
+    shot_style: str = "match"
+    shot_style_text: str = ""
 
 
 def _sample_prompt(cfg: TrainConfig) -> str:
+    """The sample prompt written into the trainer config.
+
+    The medium follows the ② shot style: "a photo of <trigger>" is wrong for a
+    dataset of anime shots, and the sample images are how a user judges the run.
+    `match` keeps the historical "a photo of" wording — with an unknown source
+    medium there is nothing better to say, and changing it would alter every
+    existing character config for no gain.
+    """
+    from studio.shot_style import resolve
+
     who = cfg.trigger or cfg.name or "the subject"
     if cfg.dataset_type == "style":
         # The trigger is an aesthetic; the prompt names content it renders.
         return f"{who}, a mountain landscape at sunset"
+    lead = resolve(cfg.shot_style, cfg.shot_style_text).sample_lead
+    subject = f"{lead} {who}" if lead.endswith(" of") else f"{lead}{who}"
     if cfg.dataset_type == "concept":
-        return f"a photo of {who}"
-    return f"a photo of {who}, standing outdoors in daylight"
+        return subject
+    return f"{subject}, standing outdoors in daylight"
 
 
 def caption_mismatch_warning(preset: ModelPreset, caption_kind: str) -> str:
