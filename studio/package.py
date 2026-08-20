@@ -107,7 +107,13 @@ def package_dataset(
         if captions:
             metadata = {**metadata, "caption_style": "tags" if looks_like_tags(captions)
                         else "prose"}
-    metadata = {"created": datetime.now().isoformat(timespec="seconds"), **metadata}
+    # Name ourselves in the file so a downstream tool can recognise the folder
+    # instead of guessing from its shape. Idiot LoRa Builder reads this to offer
+    # the trigger word on open; extra keys are ignored by every other reader.
+    from studio import __version__
+
+    metadata = {"generator": "dataset-deviser", "generator_version": __version__,
+                "created": datetime.now().isoformat(timespec="seconds"), **metadata}
     (ds_dir / "metadata.json").write_text(json.dumps(metadata, indent=2, default=str), encoding="utf-8")
 
     readme = [
