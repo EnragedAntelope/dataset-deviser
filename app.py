@@ -1198,7 +1198,8 @@ def load_export_preview(folders_text: str, dup_distance: float = 5, carry=None):
 
 def do_export(selected: list[str], name: str, trigger: str, output_root: str,
               make_zip: bool = False, dataset_type: str = "character",
-              style_key: str = shot_style.MATCH, style_text: str = ""):
+              style_key: str = shot_style.MATCH, style_text: str = "",
+              ilb_handoff: bool = False):
     if not selected:
         raise gr.Error("Click '📂 Load & preview', then keep at least one image checked.")
     from studio.package import package_dataset, resolve_export_items
@@ -1248,9 +1249,16 @@ def do_export(selected: list[str], name: str, trigger: str, output_root: str,
             zip_note = f"\n🗜️ Zipped: {zip_dataset(ds)}"
         except OSError as e:
             zip_note = f"\n⚠️ Could not write the .zip: {e}"
+    ilb_note = ""
+    if ilb_handoff:
+        from studio.handoff import prepare_handoff
+
+        # prepare_handoff never raises: the dataset is already written by now,
+        # so a sidecar problem is a note, not a failed export.
+        ilb_note = f"\n{prepare_handoff(ds)}"
     result = (f"✅ Dataset ready: {ds}  ({len(res.items)} image/caption pairs from the "
               f"{checked} image(s) you checked)"
-              f"{skipped}{empty_note}{zip_note}{sample_block}")
+              f"{skipped}{empty_note}{zip_note}{ilb_note}{sample_block}")
     # ds path auto-fills the ⑤ Train tab AND the HF-publish box below.
     return result, str(ds), str(ds)
 
@@ -2060,6 +2068,11 @@ with _blocks as demo:
             exp_zip = gr.Checkbox(
                 value=False, label="Also save a .zip of the dataset",
                 info="A single archive next to the folder — handy for uploading to a cloud trainer.")
+            exp_ilb = gr.Checkbox(
+                value=False, label="Prepare for Idiot LoRa Builder",
+                info="Writes a ratings sidecar into the dataset folder so Idiot LoRa "
+                     "Builder's grid opens pre-triaged — blurry, over/under-exposed and "
+                     "near-duplicate shots marked 'needs edit'. Nothing is launched.")
             btn_export = gr.Button("④ Export dataset", variant="primary")
             exp_result = gr.Textbox(label="Result", lines=8)
             with gr.Accordion("Publish to Hugging Face (optional)", open=False):
@@ -2311,7 +2324,7 @@ with _blocks as demo:
                            [exp_rows, exp_gallery, exp_select, exp_preview_note])
     btn_export.click(do_export,
                      [exp_select, exp_name, exp_trigger, output_root, exp_zip,
-                      dataset_type, gen_style, gen_style_text],
+                      dataset_type, gen_style, gen_style_text, exp_ilb],
                      [exp_result, tr_dataset, exp_ds_dir]) \
               .then(inspect_dataset, [tr_dataset, dataset_type], [tr_stats, tr_steps]) \
               .then(_fill_if_empty, [tr_name, exp_name], [tr_name]) \
