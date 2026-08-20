@@ -6,11 +6,11 @@ Turn a character, style, or concept into a ready-to-train LoRA dataset. One refe
 
 ## Current state
 
-_Last verified: 2026-08-09_
+_Last verified: 2026-08-20_
 
-- **Status:** in active development, released at v0.15.1 (git tag `v0.15.1`). CI green. **Every version bump must ship a GitHub Release** or the in-app update check never fires. The project was renamed twice (lora-dataset-studio → lora-distillery → dataset-deviser); older references under the previous names are stale.
-- **Works:** all five stages end to end (preprocess → generate & curate → caption → export → train config); the three dataset types (character, style, concept) with their own shot plans and caption framing; local and cloud paths for every stage; gallery curation with selection carried forward between stages, including shift-click range select; advisory dedupe, quality flags and caption lint; trainer configs for ai-toolkit (incl. SDXL), kohya sd-scripts and musubi-tuner; opt-in private Hugging Face publish. Since 0.15.0: per-image fault isolation in ① (one bad source never ends the batch), a cooperative ⏹ Stop across ①/②/③ with documented resume paths, translated ComfyUI failures (missing node, bad input, unreachable server) and an in-app 🩺 setup check. Since 0.15.1: a ② **shot style** (default = keep the reference's own medium; eight presets + custom text) threaded into both prompt builders, the CLI, ④ metadata and ⑤'s sample prompt, a final-prompt preview, and a prev/next/save-and-next caption editor with the image on screen.
-- **In progress:** nothing half-built — 0.15.1 closed out the style/UX work. `docs/ARCHITECTURE.md` carries the "Future ideas" and "Deferred" sections that hold the real backlog.
+- **Status:** in active development, released at v0.16.0 (git tag `v0.16.0`). CI green. **Every version bump must ship a GitHub Release** or the in-app update check never fires. The project was renamed twice (lora-dataset-studio → lora-distillery → dataset-deviser); older references under the previous names are stale.
+- **Works:** all five stages end to end (preprocess → generate & curate → caption → export → train config); the three dataset types (character, style, concept) with their own shot plans and caption framing; local and cloud paths for every stage; gallery curation with selection carried forward between stages, including shift-click range select; advisory dedupe, quality flags and caption lint; trainer configs for ai-toolkit (incl. SDXL), kohya sd-scripts and musubi-tuner; opt-in private Hugging Face publish. Since 0.15.0: per-image fault isolation in ① (one bad source never ends the batch), a cooperative ⏹ Stop across ①/②/③ with documented resume paths, translated ComfyUI failures (missing node, bad input, unreachable server) and an in-app 🩺 setup check. Since 0.15.1: a ② **shot style** (default = keep the reference's own medium; eight presets + custom text) threaded into both prompt builders, the CLI, ④ metadata and ⑤'s sample prompt, a final-prompt preview, and a prev/next/save-and-next caption editor with the image on screen. Since 0.16.0: an opt-in ④ **hand-off to [Idiot LoRa Builder](https://github.com/Fablestarexpanse/Idiot-Lora-Builder)** (writes its `.lora-studio/ratings.json` so its grid opens pre-triaged — nothing is launched), and a ⑤ advisory when the dataset can't fill the training resolution.
+- **In progress:** nothing half-built — 0.16.0 closed out the hand-off work. `docs/ARCHITECTURE.md` carries the "Future ideas" and "Deferred" sections that hold the real backlog.
 - **Known gaps / next steps:** pick up from `docs/ARCHITECTURE.md` → "Future ideas" / "Deferred", and read its *Maintainer principles* before changing anything; `gradio` is pinned `<6` because of a real stuck-loading-overlay regression — unpinning needs that verified fixed upstream; training is never launched for you and is not planned to be; the default export `output_root` writes into the repo root, so a smoke-test export leaves an untracked dataset folder to delete before committing.
 - **Deep docs:** `docs/ARCHITECTURE.md` (module map, stage and backend detail, gotchas, backlog — the deep reference), `docs/comfyui-setup.md`. Worklogs under `docs/` are gitignored and local-only by design.
 
@@ -32,7 +32,7 @@ _Last verified: 2026-08-09_
 | `cli.py` | Typer CLI — one subcommand per stage + `build`, `doctor`, `keys`, `custom-endpoint` |
 | `setup.bat` / `setup.sh` | One-time install: Python gate, venv, GPU/CPU torch, requirements, ONNX, keys, doctor |
 | `start.bat` / `start.sh` | Launch the UI |
-| `studio/` | Core modules: env_keys, doctor, config, pipeline, preprocess, isolate, jobs (stop token), shot_style, tagger, dedupe, quality, caption_lint, hf_publish, captioner, etc. |
+| `studio/` | Core modules: env_keys, doctor, config, pipeline, preprocess, isolate, jobs (stop token), shot_style, tagger, dedupe, quality, caption_lint, handoff, hf_publish, captioner, etc. |
 | `tests/` | pytest test suite |
 | `docs/` | Architecture (deep reference), images, worklogs |
 
@@ -76,6 +76,7 @@ python cli.py keys --setup
 - ② prompts never hard-code a medium — it comes from `studio/shot_style.py` (default: keep the reference's). Never write "photorealistic"/"hyperrealistic"; a test bans them from every generated prompt. Angle shots stay pure `<sks>` grammar.
 - Re-value a Gradio dropdown with `gr.update(value=…)`, not `gr.Dropdown(value=…)` — the constructor form re-validates against the ORIGINAL `choices` and can silently drop the value.
 - HF publish is opt-in, private by default, requires HF_TOKEN.
+- The ④ Idiot LoRa Builder hand-off writes *their* schema — keys relative/forward-slashed, values only `good`/`needs_edit` (anything else silently degrades to "none" on their side). Never overwrite an existing `ratings.json`, and never launch another program.
 
 ## Security
 

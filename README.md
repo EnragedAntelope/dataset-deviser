@@ -68,6 +68,12 @@ reference the way an identity or an object can, so collect images that share it 
 **③ Caption**. Concept generation suits a solid object you have a clean reference of; for an
 action or an abstract idea, bring your own images too.
 
+> 🤝 **Want a curation UI on top?** [**Idiot LoRa Builder**](https://github.com/Fablestarexpanse/Idiot-Lora-Builder)
+> by [Fablestarexpanse](https://github.com/Fablestarexpanse) is a separate desktop app that picks up
+> where ④ leaves off — a fast grid for hundreds of images, ratings, a bucket-aware crop tool, batch
+> rename/resize. Tick **Prepare for Idiot LoRa Builder** at ④ and the export folder opens there with
+> your shots already triaged. Nothing is launched for you; it's one extra file in the folder.
+
 > 💡 **Need source images?** My separate **[YouTube Screenshot Extractor](https://github.com/EnragedAntelope/youtube-screenshot-extractor)**
 > pulls high-quality frames from YouTube **and 1000+ other sites (and local video files)** — with
 > automatic quality/blur filtering, scene detection and black-bar removal. It's a great way to
