@@ -1488,6 +1488,7 @@ def do_generate_train_config(trainer: str, model_key: str, dataset_dir: str,
     files = "\n".join(str(p) for p in written)
     bucket_note = (f"\nBuckets: {buckets} (from the dataset's actual sizes)"
                    if buckets else f"\nSingle bucket at {int(resolution)}px")
+    bucket_note += stats.upscale_note(int(resolution))
     caveat = ""
     if trainer == "musubi":
         caveat = ("\n\n⚠️ musubi needs your local DiT / VAE / text-encoder paths — "

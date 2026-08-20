@@ -57,6 +57,38 @@ class DatasetStats:
             ladder.append(resolution)
         return sorted(set(ladder)) or [resolution]
 
+    def undersized(self, resolution: int) -> list[tuple[int, int]]:
+        """Sizes whose long side is below `resolution` — the images a trainer
+        would have to upscale (or bucket down) to reach the training size."""
+        return [s for s in self.sizes if max(s) < resolution]
+
+    def max_upscale(self, resolution: int) -> float:
+        """Worst upscale factor the training resolution would demand, 1.0 when
+        nothing is undersized. Sizes of 0 are ignored rather than dividing."""
+        long_sides = [max(s) for s in self.sizes if max(s) > 0]
+        smallest = min(long_sides, default=0)
+        if not smallest or smallest >= resolution:
+            return 1.0
+        return resolution / smallest
+
+    def upscale_note(self, resolution: int) -> str:
+        """Advisory line when the dataset can't fill the training resolution.
+
+        A LoRA trained on upscaled sources learns the upscaler's softness along
+        with the subject, and nothing in the pipeline can tell you that from the
+        config alone — the images have to be measured. Empty string when every
+        image already clears the bar, so a clean dataset says nothing.
+        """
+        small = self.undersized(resolution)
+        if not small:
+            return ""
+        factor = self.max_upscale(resolution)
+        return (f"\n⚠️ {len(small)} of {self.n_images} image(s) are below "
+                f"{resolution}px on the long side — up to {factor:.1f}× upscale to "
+                f"fill it. The kohya/musubi configs set `bucket_no_upscale`, so "
+                f"those land in a smaller bucket instead; for ai-toolkit, either "
+                f"lower the resolution or restore them at ① first.")
+
     def summary(self) -> str:
         if not self.n_images:
             return "No images found in that folder."
