@@ -242,6 +242,7 @@ prepped ─② generate→ runs/<stamp>-generated/<shot-id>.png   (one per plan 
 any folder ─③ caption→ *.txt sidecars (trigger-first; framing per dataset type; per-model template)
 folders(s) ─④ export→ datasets/<name>-dataset/NN.png + NN.txt + metadata.json (+ dataset_type,
                      caption_style) + metadata.jsonl
+dataset ──④ hand-off (opt-in) → <dataset>/.lora-studio/ratings.json (Idiot LoRa Builder schema)
 dataset ──⑤ train  → writes ai-toolkit config.yaml OR kohya/musubi dataset.toml into the
                      dataset folder + prints the run command (optional; nothing launched)
 ```
@@ -838,6 +839,39 @@ carries an `id` for exactly this reason.
   Generate is unchanged and still expects (and gets, by default) a white-background
   reference; turning alpha cutout on and continuing to ② is not supported.
 
+## Idiot LoRa Builder hand-off (④, 0.16.0)
+
+[Idiot LoRa Builder](https://github.com/Fablestarexpanse/Idiot-Lora-Builder) (MIT, Tauri/Rust) opens
+a folder of images and does the curation work this project has no UI for — virtualized grid, ratings,
+bucket-aware crop, batch rename/resize. Its input *is* ④'s output, so no conversion is needed: a flat
+folder of images with sidecar `.txt` captions is already a valid project over there.
+
+`studio/handoff.py` writes the one thing the folder can't carry on its own — our judgement:
+
+```json
+{ "ratings": { "01.png": "good", "05.png": "needs_edit" } }
+```
+
+at `<dataset>/.lora-studio/ratings.json`. Every exported image is `good`; anything the existing
+`studio/quality.py` (blur, exposure, contrast) or `studio/dedupe.py` (perceptual near-duplicate)
+checks flagged is `needs_edit`, so its grid opens with the questionable shots already picked out.
+
+Rules this has to keep:
+
+- **The schema belongs to the other project.** `RatingsData { ratings: map<String, String> }`
+  (`src-tauri/src/commands/ratings.rs`), keys relative + forward-slashed like its own
+  `normalize_rel_key`. Its `ImageRating::from_str` maps anything it doesn't recognise to `none`, so
+  a typo'd value would silently drop the whole triage rather than erroring — `tests/test_handoff.py`
+  pins the vocabulary, and the sidecar was checked against a copy of those real Rust types.
+- **Never overwrite an existing `ratings.json`.** That app treats a present-but-unparseable ratings
+  file as an error precisely so a user's triage is never replaced; `write_ilb_ratings` raises
+  `FileExistsError` rather than being the tool that defeats it.
+- **Nothing is launched.** No stored executable path, no subprocess — one JSON file and the folder
+  name. See *Deferred* for why.
+- **A hand-off failure is never an export failure.** By the time it runs the dataset is on disk;
+  `prepare_handoff()` returns its problem as a line of text and both front ends print it.
+- Advisory means advisory: a check that raises costs its own findings, not the hand-off.
+
 ## Feature history (consolidated)
 
 Rather than a per-release changelog (the git history has that), here is what the tool does today,
@@ -979,9 +1013,11 @@ ordered by benefit-to-cost.
   reference's identity. Genuinely useful for character LoRAs but needs a face-recognition
   dependency (InsightFace + onnxruntime); could be an optional extra like the gated SAM3 download.
   Revisit if identity drift bites users.
-- **Resolution normalization at export (④).** Optional pad-to-square / center-crop to a target size
-  for trainers that want uniform square inputs. The bucket ladder covers most cases and a real
-  transform mutates pixels, so it wants its own design pass rather than being rushed in.
+- **Resolution normalization at export (④).** *Partly answered in 0.16.0.* The measuring half —
+  "would the trainer have to upscale these?" — now ships as `DatasetStats.upscale_note()`, shown in
+  ⑤'s bucket line (idea borrowed from Idiot LoRa Builder's crop tool, which shows the same verdict
+  per crop). The *transforming* half (pad-to-square / center-crop) is still open and still wants its
+  own design pass: it mutates pixels, and the advisory covers the case where knowing is enough.
 - **Exact CLIP token count (③/④).** The 77-token warning is a tokenizer-free estimate; loading the
   real CLIP tokenizer would make it exact. Only worth it if a user needs high accuracy — the
   estimate errs safe and is fine for an advisory.
@@ -1060,6 +1096,23 @@ mattered for the first rename still apply:
 ## Deferred (with rationale)
 
 Considered and deliberately **not** pursued, with the reason each stays out.
+
+- **Launching Idiot LoRa Builder (or any app) from ④.** Its own *Send to Fizgig* does exactly this,
+  and it was the obvious way to make the 0.16.0 hand-off feel finished. Out anyway: it means storing
+  a user-configured executable path and spawning it, which is the only real security surface in the
+  whole feature, and this tool does not run other programs for you. Writing the sidecar and naming
+  the folder gets the same workflow with none of it.
+- **Porting Idiot LoRa Builder's crop tool / face-anchored framing (①/④).** The crop UI is the best
+  thing in that project and Gradio cannot host it — no canvas, no drag handles, no virtualized grid.
+  Face anchoring additionally wants a YuNet ONNX model and its download plumbing. If a face model
+  ever lands here it should arrive for the identity-drift guard above and pay for both at once.
+- **Three-state ratings (good / bad / needs edit) in our own ②→③→④ selection.** Selection here is
+  binary on purpose and carries between three tabs; a third state would have to mean something at
+  every carry point. The hand-off already speaks that vocabulary at the boundary, which is where it
+  is actually useful.
+- **Bulk caption find & replace (③).** Genuinely useful and cheap to write (pure string logic), but
+  it bulk-writes `.txt` sidecars, so it needs an undo and a dry-run preview to be safe. Its own
+  change, its own QA — not a rider on the hand-off.
 
 - **Synthetic generation for Style datasets (②).** Permanently out, not deferred. Generation copies a
   *subject* from a reference; a style is the property you'd have to already have in order to copy it,

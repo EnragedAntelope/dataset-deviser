@@ -322,6 +322,9 @@ def export(
         "character", "--dataset-type", help="character | style | concept (recorded in metadata)"),
     output_root: Path = typer.Option(settings.output_root),
     zip_: bool = typer.Option(False, "--zip", help="Also write a .zip of the dataset"),
+    ilb_handoff: bool = typer.Option(
+        False, "--ilb-handoff",
+        help="Write an Idiot LoRa Builder ratings sidecar into the dataset folder"),
     publish_hf: str = typer.Option(
         "", "--publish-hf",
         help="Publish to the HF Hub as this dataset id (needs a write HF_TOKEN)"),
@@ -350,6 +353,10 @@ def export(
         from studio.package import zip_dataset
 
         typer.echo(f"Zipped: {zip_dataset(ds)}")
+    if ilb_handoff:
+        from studio.handoff import prepare_handoff
+
+        typer.echo(prepare_handoff(ds))
     if publish_hf.strip():
         from studio.hf_publish import HFPublishError, publish_dataset
 

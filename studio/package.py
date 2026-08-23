@@ -107,7 +107,14 @@ def package_dataset(
         if captions:
             metadata = {**metadata, "caption_style": "tags" if looks_like_tags(captions)
                         else "prose"}
-    metadata = {"created": datetime.now().isoformat(timespec="seconds"), **metadata}
+    # Name ourselves in the file so a downstream tool (or a human, months later)
+    # can tell where the folder came from instead of guessing from its shape —
+    # and so a bug report can name the version that wrote it. No reader is known
+    # to require these; extra keys are ignored by every trainer we generate for.
+    from studio import __version__
+
+    metadata = {"generator": "dataset-deviser", "generator_version": __version__,
+                "created": datetime.now().isoformat(timespec="seconds"), **metadata}
     (ds_dir / "metadata.json").write_text(json.dumps(metadata, indent=2, default=str), encoding="utf-8")
 
     readme = [
