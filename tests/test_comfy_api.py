@@ -117,3 +117,51 @@ def test_combo_options_reuses_cache_without_refetching(monkeypatch: pytest.Monke
     comfy_api._combo_options("Node", "field")
 
     assert calls["n"] == 1
+
+
+# ---------- every bundled template's model filenames are configurable (0.16.0) ----------
+
+_MODEL_FILE_SUFFIXES = (".safetensors", ".ckpt", ".pth", ".pt", ".bin", ".gguf", ".onnx",
+                        ".sft")
+
+
+def _template_model_inputs() -> list[tuple[str, str, str, str]]:
+    """(template, node id, input key, value) for every model-file-looking input."""
+    import json
+
+    found = []
+    for path in sorted(comfy_api.WORKFLOWS_DIR.glob("*.json")):
+        graph = json.loads(path.read_text(encoding="utf-8"))
+        for node_id, node in graph.items():
+            for key, value in node.get("inputs", {}).items():
+                if isinstance(value, str) and value.lower().endswith(_MODEL_FILE_SUFFIXES):
+                    found.append((path.stem, node_id, key, value))
+    return found
+
+
+def test_every_bundled_model_filename_is_overridable() -> None:
+    """A filename hard-coded into a template is one the user cannot fix in .env.
+
+    Everyone downloads these weights from a different mirror under a different
+    name, so an un-remapped input fails as ComfyUI's own opaque "Value not in
+    list: ... (list of length 10574)" with no setting to change. This caught
+    `clip_name` and `vae_name` in qwen_edit.json, which were invisible to both
+    `.env` and `doctor`'s ComfyUI-models check for four releases.
+    """
+    covered = set(comfy_api._MODEL_INPUTS)
+    # UpscaleModelLoader is remapped positionally (two nodes, one input name).
+    covered.add("model_name")
+    orphans = [f"{t}.json #{n} {k}={v}"
+               for t, n, k, v in _template_model_inputs() if k not in covered]
+    assert not orphans, (
+        "add these to comfy_api._MODEL_INPUTS (and a setting in config.py + "
+        f".env.example): {orphans}")
+
+
+def test_every_model_setting_is_a_real_setting() -> None:
+    """The other half: a mapping pointing at a setting that doesn't exist would
+    raise AttributeError only once a user actually ran that template."""
+    from studio.config import settings
+
+    for attr in list(comfy_api._MODEL_INPUTS.values()) + list(comfy_api._UPSCALE_SETTINGS):
+        assert isinstance(getattr(settings, attr), str), f"settings.{attr} is missing"

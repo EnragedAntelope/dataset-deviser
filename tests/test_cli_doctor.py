@@ -14,7 +14,6 @@ import pytest
 from studio import doctor as D
 from studio import env_keys
 
-
 # --- python version check --------------------------------------------------
 
 def test_python_check_accepts_a_supported_version() -> None:

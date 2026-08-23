@@ -14,7 +14,6 @@ from studio.tagger import (
     select_tag_names,
 )
 
-
 # ---------- pure selection / formatting ----------
 
 def test_select_tag_names_danbooru_thresholds_and_order() -> None:

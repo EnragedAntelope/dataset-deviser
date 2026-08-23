@@ -10,10 +10,10 @@ import json
 import re
 import shutil
 import zipfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
 
 
 def slugify(name: str) -> str:

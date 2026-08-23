@@ -11,7 +11,6 @@ import pytest
 
 from studio import comfy_api
 
-
 # ---------- /prompt rejection bodies ----------
 
 MISSING_NODE = """

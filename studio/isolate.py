@@ -13,8 +13,8 @@ LoRA) behave far better on isolated subjects.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 from PIL import Image, ImageFilter
@@ -40,7 +40,7 @@ def _load_sam3():
             import torch  # noqa: F401
             from transformers import Sam3Model, Sam3Processor
         except ImportError as e:
-            raise IsolationError(f"transformers/torch not available: {e}")
+            raise IsolationError(f"transformers/torch not available: {e}") from e
         try:
             # SAM3 is small enough for any one card, so it is pinned to a single
             # device rather than handed to accelerate's "auto" — that sharded it
@@ -53,7 +53,7 @@ def _load_sam3():
                 f"Could not load {settings.sam3_hf_id} — it is a gated model: accept the "
                 f"license at https://huggingface.co/{settings.sam3_hf_id} and authenticate "
                 f"(`hf auth login` or set HF_TOKEN). Original error: {e}"
-            )
+            ) from e
     return _model, _processor
 
 

@@ -19,9 +19,9 @@ from studio.trainer_configs import (
 
 def _cfg(trainer: str, tmp_path: Path, **kw) -> TrainConfig:
     preset = TRAINER_MODELS[trainer][0]
-    base = dict(trainer=trainer, model=preset, dataset_dir=tmp_path,
-                name="sy-lora", trigger="sysnootles", resolution=1024,
-                rank=32, alpha=64, steps=1800, lr=8e-5, batch_size=2)
+    base = {"trainer": trainer, "model": preset, "dataset_dir": tmp_path,
+            "name": "sy-lora", "trigger": "sysnootles", "resolution": 1024,
+            "rank": 32, "alpha": 64, "steps": 1800, "lr": 8e-5, "batch_size": 2}
     base.update(kw)
     return TrainConfig(**base)
 

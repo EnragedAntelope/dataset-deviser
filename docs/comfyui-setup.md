@@ -27,7 +27,8 @@ if yours differ — see `.env.example`):
 | Purpose | File (default name) | Goes in | Source |
 |---|---|---|---|
 | Edit model | `qwen_image_edit_2511_int8_convrot.safetensors` | `models/unet/` (a.k.a. `diffusion_models/`) | any Qwen-Image-Edit-2511 checkpoint packaged for ComfyUI — e.g. the [Comfy-Org repackages](https://huggingface.co/Comfy-Org) or a quantized variant that fits your VRAM; set `LDS_QWEN_EDIT_MODEL` to its filename |
-| Qwen text encoder + VAE | per your checkpoint choice | `models/text_encoders/`, `models/vae/` | same source as the edit model (follow its README) |
+| Qwen text encoder | `qwen_2.5_vl_7b_fp8_scaled.safetensors` | `models/text_encoders/` | same source as the edit model (follow its README); set `LDS_QWEN_TEXT_ENCODER` if yours is named differently |
+| Qwen VAE | `qwen_image_vae.safetensors` | `models/vae/` | same source as the edit model; set `LDS_QWEN_VAE` if yours is named differently |
 | Multi-angle LoRA | `qwen/Qwen-Image-Edit-2511-Multiple-Angles-LoRA.safetensors` | `models/loras/qwen/` | [fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA](https://huggingface.co/fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA) (Apache-2.0) |
 | SAM3 (ComfyUI backend only) | `sam3.1_multiplex_fp16.safetensors` | `models/checkpoints/` | [Comfy-Org/sam3.1](https://huggingface.co/Comfy-Org/sam3.1) |
 | Restoration: JPEG cleanup | `1xDeJPG_OmniSR.pth` | `models/upscale_models/` | [OpenModelDB](https://openmodeldb.info/models/1x-DeJPG-OmniSR) |

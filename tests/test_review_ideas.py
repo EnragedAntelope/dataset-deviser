@@ -22,7 +22,6 @@ from studio.trainer_configs import (
     caption_mismatch_warning,
 )
 
-
 # ---------- CLIP token estimate ----------
 
 def test_estimate_clip_tokens_grows_with_length() -> None:

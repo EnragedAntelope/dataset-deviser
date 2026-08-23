@@ -18,7 +18,6 @@ from studio.shotplan import (
     plan_for_type,
 )
 
-
 # ---------- the shared selection seam ----------
 
 def test_plan_for_type_picks_the_right_plan() -> None:

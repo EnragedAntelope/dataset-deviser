@@ -20,9 +20,14 @@ class ComfyError(Exception):
 
 # Model filenames inside the bundled templates, remapped to whatever the user
 # configured in .env (LDS_QWEN_EDIT_MODEL etc.) so renamed files just work.
+# Keyed by the *input name*, which is unique per loader class across every
+# bundled template — adding an entry here also extends `doctor`'s ComfyUI-models
+# check, which validates each configured name against the server's own list.
 _MODEL_INPUTS = {
     "unet_name": "qwen_edit_model",
     "lora_name": "angles_lora",
+    "clip_name": "qwen_text_encoder",
+    "vae_name": "qwen_vae",
     "ckpt_name": "sam3_checkpoint",
 }
 _UPSCALE_SETTINGS = ("dejpg_model", "upscale_model")  # in template node order

@@ -14,7 +14,6 @@ import pytest
 
 from studio import env_keys
 
-
 # --- reading ---------------------------------------------------------------
 
 def test_read_env_parses_pairs_and_ignores_noise(tmp_path: Path) -> None:

@@ -8,10 +8,10 @@ export) is a convenience the UI/CLI provide, never a requirement.
 from __future__ import annotations
 
 import random
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
 
 from studio.config import settings
 from studio.engines.base import GenerationError

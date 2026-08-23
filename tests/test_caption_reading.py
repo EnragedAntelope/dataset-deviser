@@ -21,7 +21,7 @@ def _sidecar(tmp_path: Path, data: bytes) -> Path:
 
 
 def test_reads_plain_utf8(tmp_path: Path) -> None:
-    img = _sidecar(tmp_path, "trig, a café at dusk".encode("utf-8"))
+    img = _sidecar(tmp_path, "trig, a café at dusk".encode())
     assert read_caption(img) == "trig, a café at dusk"
 
 

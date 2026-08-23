@@ -8,8 +8,7 @@ format directive, and finalize trigger-first with no name injection.
 from __future__ import annotations
 
 from studio.captioner import SUBJECT_ALIASES, finalize_caption
-from studio.config import DATASET_TYPES, CAPTIONERS_BY_KEY
-
+from studio.config import CAPTIONERS_BY_KEY, DATASET_TYPES
 
 # ---------- constant ----------
 

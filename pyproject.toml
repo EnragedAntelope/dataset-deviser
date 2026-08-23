@@ -4,5 +4,10 @@ target-version = "py310"
 exclude = [".venv", ".cache", "__pycache__", "runs", "datasets"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W"]
-ignore = ["E501"]
+# E/F/W is flake8 parity; the rest are the cheap, mechanical families:
+#   I  import order      UP  py310+ idiom      C4 comprehensions   B  bugbear
+select = ["E", "F", "W", "I", "UP", "C4", "B"]
+ignore = [
+    "E501",   # line length: the 100-col limit is advisory here, prose comments run over
+    "B008",   # function-call-in-default: `typer.Option(...)` in a default IS the Typer API
+]

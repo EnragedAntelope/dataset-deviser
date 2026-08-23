@@ -127,7 +127,7 @@ def test_editor_choices_marks_captioned_files(tmp_path: Path) -> None:
     (tmp_path / "img1.txt").write_text("a caption", encoding="utf-8")
     dd, listed = A._editor_choices(folder)
     assert listed == names
-    labels = dict((v, lbl) for lbl, v in dd.constructor_args["choices"])
+    labels = {v: lbl for lbl, v in dd.constructor_args["choices"]}
     # Trailing, not leading: Gradio puts its own selection tick first, so a
     # leading ✓ rendered the selected+captioned row as "✓ ✓ img1.png".
     assert labels["img1.png"] == "img1.png ✓"
@@ -162,7 +162,7 @@ def test_save_and_next_writes_then_advances(tmp_path: Path) -> None:
     assert "Saved caption" in note
     assert dd.constructor_args["value"] == "img1.png"
     # The just-saved file is re-marked as done in the picker.
-    labels = dict((v, lbl) for lbl, v in dd.constructor_args["choices"])
+    labels = {v: lbl for lbl, v in dd.constructor_args["choices"]}
     assert labels["img0.png"].endswith("✓")
 
 

@@ -18,8 +18,8 @@ from __future__ import annotations
 import base64
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import httpx
 from PIL import Image
@@ -340,7 +340,7 @@ class Captioner:
             raise RuntimeError(
                 f"Could not reach {self.spec.label} at {self.spec.base_url} — is the "
                 f"server running with a vision model loaded? ({e})"
-            )
+            ) from e
         models = r.json().get("data", [])
         if not models:
             raise RuntimeError(f"No model loaded at {self.spec.base_url} — load one first.")

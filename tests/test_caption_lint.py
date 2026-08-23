@@ -14,7 +14,6 @@ from studio.caption_lint import (
     ubiquitous_tags,
 )
 
-
 # ---------- health lint ----------
 
 def test_lint_flags_empty_short_and_missing_trigger() -> None:

@@ -17,7 +17,6 @@ from studio.captioner import (
 )
 from studio.config import CAPTIONERS_BY_KEY
 
-
 # ---------- template selection ----------
 
 def test_prompt_for_selects_template_per_style() -> None:

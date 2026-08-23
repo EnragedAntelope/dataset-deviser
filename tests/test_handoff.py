@@ -148,9 +148,9 @@ def test_a_missing_folder_is_an_error_not_a_stray_write(tmp_path: Path) -> None:
 
 def test_nothing_is_written_outside_the_dataset_folder(tmp_path: Path) -> None:
     ds = _dataset(tmp_path / "root" / "d")
-    before = {p for p in tmp_path.rglob("*")}
+    before = set(tmp_path.rglob("*"))
     handoff.write_ilb_ratings(ds, handoff.triage(ds))
-    new = {p for p in tmp_path.rglob("*")} - before
+    new = set(tmp_path.rglob("*")) - before
     assert new and all(ds in p.parents for p in new)
 
 

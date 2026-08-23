@@ -21,9 +21,8 @@ from pathlib import Path
 import gradio as gr
 import pandas as pd
 
-from studio import pipeline
+from studio import pipeline, shot_style
 from studio import user_config as _uc_boot
-from studio.jobs import JobControl
 from studio.captioner import (
     SUBJECT_ALIASES,
     Captioner,
@@ -47,7 +46,7 @@ from studio.config import (
     read_caption,
     settings,
 )
-from studio import shot_style
+from studio.jobs import JobControl
 from studio.shotplan import Shot, apply_prop_exclusion, apply_wardrobe, plan_for_type
 from studio.trainer_configs import TRAINER_MODELS, TRAINERS
 
@@ -331,7 +330,7 @@ def randomize_outfits(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
         raise gr.Error("No angle/pose rows to dress — outfits are skipped for "
                        "close-ups, where clothing is barely in frame.")
     outfits = random_outfits(len(targets))
-    for i, outfit in zip(targets, outfits):
+    for i, outfit in zip(targets, outfits, strict=True):
         df.at[i, "outfit"] = outfit
     return df, (f"🎲 Dressed {len(targets)} angle/pose shots in distinct outfits "
                 f"({len(df) - len(targets)} close-ups left blank). Click again to "
@@ -454,7 +453,7 @@ _PICKER_SCRIPT = """
   }, true);
 })();
 </script>
-""" % (json.dumps(PICKER_IDS), json.dumps(_PICK_ON), json.dumps(_PICK_OFF))
+""" % (json.dumps(PICKER_IDS), json.dumps(_PICK_ON), json.dumps(_PICK_OFF))  # noqa: UP031 - the JS body is full of literal { }, which .format/f-strings would need escaped
 
 
 def _set_zoom(on: bool):
@@ -601,9 +600,9 @@ def do_preprocess(files: list[str], folder: str, target: int, restore_mode: str,
             alpha_cutout=alpha_cutout, should_stop=JOB, progress=report)
     except OSError as e:
         raise gr.Error(f"Couldn't write to '{out_dir}': {e}. Check the output folder "
-                       f"(valid drive, writable, enough space).")
+                       f"(valid drive, writable, enough space).") from e
     except Exception as e:  # whole-batch failure only — per-image ones are reported
-        raise gr.Error(f"Preprocess failed: {e}")
+        raise gr.Error(f"Preprocess failed: {e}") from e
     ok = [r for r in reports if r.output]
     failed = [r for r in reports if r.error]
     gallery = [(str(r.output), f"{r.source.name}: {r.reason}") for r in ok]
@@ -666,9 +665,9 @@ def do_generate(files: list[str], folder: str, plan_df: pd.DataFrame, engine: st
             exclude_props=exclude_props, front=front, should_stop=JOB, progress=report)
     except OSError as e:
         raise gr.Error(f"Couldn't write to '{out_dir}': {e}. Check the output folder "
-                       f"path (valid drive, no forbidden characters, writable).")
+                       f"path (valid drive, no forbidden characters, writable).") from e
     except Exception as e:
-        raise gr.Error(f"Generation failed: {e}")
+        raise gr.Error(f"Generation failed: {e}") from e
     rows, gallery, keep = _gen_gallery(results)
     if JOB.stopped:
         gr.Warning(f"Stopped after {len(results)} of {len(shots)} shot(s) — click "
@@ -703,9 +702,9 @@ def do_regenerate(files: list[str], folder: str, plan_df: pd.DataFrame, engine: 
             only_ids=redo, should_stop=JOB, progress=log.append)
     except OSError as e:
         raise gr.Error(f"Couldn't write to '{gen_dir}': {e}. Check the output folder "
-                       f"path (valid drive, no forbidden characters, writable).")
+                       f"path (valid drive, no forbidden characters, writable).") from e
     except Exception as e:
-        raise gr.Error(f"Regeneration failed: {e}")
+        raise gr.Error(f"Regeneration failed: {e}") from e
     # Regenerated shots are brand new, so a fresh full keep is the honest default.
     rows, gallery, keep = _gen_gallery(results)
     return results, rows, gallery, keep, "\n".join(log)
@@ -785,7 +784,7 @@ def _resolve_captioner_config(captioner_key: str, gemini_model: str):
     try:
         return resolve_captioner_config(captioner_key, gemini_model)
     except CaptionerConfigError as e:
-        raise gr.Error(str(e))
+        raise gr.Error(str(e)) from e
 
 
 def save_custom_captioner(base_url: str, model: str, api_key_env: str,
@@ -829,7 +828,7 @@ def do_test_caption(folder: str, selected: list[str], captioner_key: str,
         raw = cap.caption(path, subject=name or "the character", style=style,
                           dataset_type=dataset_type, sparse=sparse)
     except Exception as e:
-        raise gr.Error(str(e))
+        raise gr.Error(str(e)) from e
     finally:
         cap.unload()
     caption = finalize_caption(raw, trigger, name, SUBJECT_ALIASES, style=style,
@@ -861,7 +860,7 @@ def save_one_caption(folder: str, filename: str, text: str) -> str:
         txt.write_text(text.strip(), encoding="utf-8")
     except OSError as e:
         raise gr.Error(f"Couldn't write {txt}: {e}. Check the file isn't read-only "
-                       f"and the folder is still available.")
+                       f"and the folder is still available.") from e
     return f"✅ Saved caption for {filename}"
 
 
@@ -1024,7 +1023,7 @@ def do_caption(folder: str, selected: list[str], captioner_key: str,
                        should_stop=JOB)
     except Exception as e:
         if not written:
-            raise gr.Error(f"Captioning failed: {friendly_api_error(e)}")
+            raise gr.Error(f"Captioning failed: {friendly_api_error(e)}") from e
         # Partial success: keep the finished sidecars, keep the user's selection, and
         # say exactly how to resume. gr.Warning toasts without discarding the outputs
         # below, which gr.Error would.
@@ -1225,7 +1224,7 @@ def do_export(selected: list[str], name: str, trigger: str, output_root: str,
         ds = package_dataset(res.items, out_root, name, trigger, metadata)
     except OSError as e:
         raise gr.Error(f"Couldn't write the dataset to '{out_root}': {e}. Check the "
-                       f"output folder path (valid drive, no forbidden characters, writable).")
+                       f"output folder path (valid drive, no forbidden characters, writable).") from e
     # Show the first numbered caption (README.txt is excluded).
     caption_files = sorted(p for p in ds.glob("*.txt") if p.name != "README.txt")
     samples = [(p.name, read_caption(p)) for p in caption_files]
@@ -1286,9 +1285,9 @@ def do_publish_hf(ds_dir: str, repo_id: str, private: bool, progress=gr.Progress
     try:
         url = publish_dataset(ds_dir.strip(), repo_id, private=bool(private), progress=report)
     except HFPublishError as e:
-        raise gr.Error(str(e))
+        raise gr.Error(str(e)) from e
     except Exception as e:  # network/auth/etc. — surface, never crash the UI
-        raise gr.Error(f"Publishing failed: {e}")
+        raise gr.Error(f"Publishing failed: {e}") from e
     vis = "private" if private else "PUBLIC"
     return f"✅ Published ({vis}): [{url}]({url})"
 
@@ -1316,7 +1315,7 @@ def do_save_plan(plan_df: pd.DataFrame, plan_name: str) -> str:
     try:
         saved = save_plan(shots, path)
     except OSError as e:
-        raise gr.Error(f"Couldn't save the plan to {path}: {e}")
+        raise gr.Error(f"Couldn't save the plan to {path}: {e}") from e
     return f"✅ Saved {len(shots)} shots to {saved}"
 
 
@@ -1338,7 +1337,7 @@ def do_load_plan(plan_name: str):
         # must name the file, not dump a pydantic/yaml traceback into the UI.
         raise gr.Error(f"Couldn't read the plan at {path}: {e}. Check the YAML — "
                        f"each shot needs at least an `id`, `kind`, `local_prompt` "
-                       f"and `cloud_prompt`.")
+                       f"and `cloud_prompt`.") from e
     return _shots_to_df(shots), f"✅ Loaded {len(shots)} shots from {path}"
 
 
@@ -1463,7 +1462,7 @@ def do_generate_train_config(trainer: str, model_key: str, dataset_dir: str,
     try:
         stats = inspect(ds)
     except Exception as e:
-        raise gr.Error(f"Couldn't read the dataset at {ds}: {e}")
+        raise gr.Error(f"Couldn't read the dataset at {ds}: {e}") from e
     if not stats.n_images:
         raise gr.Error(f"No images found in {ds} — export a dataset first (④).")
     preset = _preset(trainer, model_key)
@@ -1480,7 +1479,7 @@ def do_generate_train_config(trainer: str, model_key: str, dataset_dir: str,
                                          num_repeats=max(1, round(400 / stats.n_images)))
     except OSError as e:
         raise gr.Error(f"Couldn't write the config into {ds}: {e}. Check the dataset "
-                       f"folder is writable.")
+                       f"folder is writable.") from e
     user_config.set_last_train_settings({
         "trainer": trainer, "model": model_key, "resolution": int(resolution),
         "rank": int(rank), "alpha": int(alpha), "steps": int(steps),
@@ -1517,7 +1516,7 @@ def refresh_cloud_models(force: bool = False):
     try:
         models = list_image_models(force_refresh=force)
     except Exception as e:
-        raise gr.Error(f"Could not list models: {e}")
+        raise gr.Error(f"Could not list models: {e}") from e
     return gr.Dropdown(choices=models,
                        value=models[0][1] if models else settings.gemini_image_model)
 
@@ -1529,7 +1528,7 @@ def refresh_caption_models():
     try:
         models = list_caption_models(force_refresh=True)
     except Exception as e:
-        raise gr.Error(f"Could not list caption models: {e}")
+        raise gr.Error(f"Could not list caption models: {e}") from e
     value = _DEFAULT_CAPTION_MODEL
     ids = [m[1] for m in models]
     if value not in ids and ids:

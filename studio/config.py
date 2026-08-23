@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -496,6 +495,12 @@ class Settings(BaseSettings):
     # (relative to your ComfyUI models folders — see docs/comfyui-setup.md)
     qwen_edit_model: str = "qwen_image_edit_2511_int8_convrot.safetensors"
     angles_lora: str = "qwen/Qwen-Image-Edit-2511-Multiple-Angles-LoRA.safetensors"
+    # The text encoder and VAE the Qwen Edit graph loads. Overridable for the
+    # same reason as the model above: everyone downloads these from a different
+    # mirror and they arrive under different names. Left hard-coded, a rename
+    # surfaced as ComfyUI's own "Value not in list: ... (list of length 10574)".
+    qwen_text_encoder: str = "qwen_2.5_vl_7b_fp8_scaled.safetensors"
+    qwen_vae: str = "qwen_image_vae.safetensors"
     upscale_model: str = "4xNomosWebPhoto_RealPLKSR.safetensors"
     dejpg_model: str = "1xDeJPG_OmniSR.pth"
     sam3_checkpoint: str = "sam3.1_multiplex_fp16.safetensors"

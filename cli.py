@@ -5,6 +5,14 @@
   python cli.py caption ./any/folder --trigger sysnootles      # .txt sidecars
   python cli.py export ./prepped ./generated --name "Sy Snootles"
   python cli.py build img.png --name "Sy Snootles" --trigger sysnootles  # all four
+
+First time here, or something won't start? Run `python cli.py doctor` — it checks
+Python, packages, API keys and ComfyUI, and names what each missing piece blocks.
+`python cli.py keys --setup` configures the API keys.
+
+Docs: README.md (walkthrough) - docs/comfyui-setup.md (the local engine: which
+models to download, where they go, and the .env name for each) - .env.example
+(every overridable setting) - docs/ARCHITECTURE.md (how it all fits together).
 """
 
 from __future__ import annotations
@@ -66,6 +74,38 @@ def _echo_cloud_estimate(engine: str, cloud_model: str, n_shots: int) -> None:
     if price:
         typer.echo(f"Cloud engine: ~${n_shots * price:.2f} estimated for {n_shots} "
                    f"images (build-time estimate, billed to your Google API key).")
+
+
+def _preflight_comfyui(engine: str) -> None:
+    """Fail `build` *before* it preprocesses if the local engine can't run.
+
+    `build` preprocesses first and generates second, and the ComfyUI engine only
+    checks reachability in its own constructor — so an unreachable server, or a
+    model filename that doesn't exist on it, used to surface after a full
+    (sometimes long, GPU-bound) preprocess pass whose output the user then can't
+    use. The two checks are the ones `doctor` already runs; this just runs them
+    at the top of the one command that would otherwise pay for the wait.
+
+    Only a *reachability* failure aborts. A model-name mismatch is a warning:
+    `check_comfyui_models` validates every bundled template, including ones this
+    run may never submit, so it must not block a run that would have worked.
+    """
+    if engine != "comfyui":
+        return
+    from studio import comfy_api
+    from studio.doctor import check_comfyui_models
+
+    up, reason = comfy_api.server_status()
+    if not up:
+        typer.echo(f"ComfyUI is not reachable — {reason}.\n"
+                   f"Start it, set LDS_COMFY_URL in .env (see docs/comfyui-setup.md), "
+                   f"or use --engine gemini. Nothing was preprocessed.", err=True)
+        raise typer.Exit(1)
+    models = check_comfyui_models()
+    if models is not None and models.warn:
+        typer.echo(f"Warning: {models.detail}\n"
+                   f"Fix the filename in .env (see docs/comfyui-setup.md) if the "
+                   f"stage that needs it is one you're about to run.", err=True)
 
 
 def _check_caption_style(style: str) -> str:
@@ -138,7 +178,7 @@ def _dress(shots: list, dataset_type: str = "character") -> list:
         return shots
     targets = [s for s in shots if s.kind in OUTFIT_SHOT_KINDS]
     outfits = random_outfits(len(targets))
-    dressed = dict(zip((s.id for s in targets), outfits))
+    dressed = dict(zip((s.id for s in targets), outfits, strict=True))
     return [s.model_copy(update={"outfit": dressed[s.id]}) if s.id in dressed else s
             for s in shots]
 
@@ -189,7 +229,10 @@ def generate(
     dataset_type: str = typer.Option(
         "character", "--dataset-type",
         help="character (24-shot set) | concept (18-shot object set); style does not generate"),
-    engine: str = typer.Option(settings.default_engine, help="gemini (cloud) or comfyui (local)"),
+    engine: str = typer.Option(
+        settings.default_engine,
+        help="gemini (cloud, billed to your key) or comfyui (local, free — needs "
+             "the models in docs/comfyui-setup.md; `doctor` says if it is ready)"),
     cloud_model: str = typer.Option("", help=f"Cloud image model (default {settings.gemini_image_model})"),
     shot_style: str = typer.Option(
         "match", "--shot-style",
@@ -283,7 +326,7 @@ def caption(
         model_override, spec_overrides = resolve_captioner_config(captioner, model)
     except CaptionerConfigError as e:
         typer.echo(str(e))
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
     spec_overrides = merge_tagger_overrides(
         captioner, spec_overrides, include_rating=rating_tags,
         keep_underscores=keep_underscores)
@@ -364,7 +407,7 @@ def export(
             url = publish_dataset(ds, publish_hf, private=hf_private, progress=typer.echo)
         except HFPublishError as e:
             typer.echo(str(e))
-            raise typer.Exit(1)
+            raise typer.Exit(1) from e
         typer.echo(f"Published: {url}")
 
 
@@ -373,7 +416,10 @@ def build(
     images: list[Path] = typer.Argument(..., exists=True, readable=True),
     name: str = typer.Option("", help="Character/concept name used in prompts + captions"),
     trigger: str = typer.Option("", help="LoRA trigger word placed first in every caption"),
-    engine: str = typer.Option(settings.default_engine, help="gemini (cloud) or comfyui (local)"),
+    engine: str = typer.Option(
+        settings.default_engine,
+        help="gemini (cloud, billed to your key) or comfyui (local, free — needs "
+             "the models in docs/comfyui-setup.md; `doctor` says if it is ready)"),
     captioner: str = typer.Option(settings.default_captioner,
                                   help=f"one of {list(CAPTIONERS_BY_KEY)}"),
     caption_style: str = typer.Option(
@@ -428,6 +474,10 @@ def build(
 
     style = _check_caption_style(caption_style)
     dtype = _check_dataset_type(dataset_type)
+    # Check the generation backend before spending a preprocess pass on images
+    # it would then refuse to use. Style never generates, so it never needs one.
+    if dtype != "style":
+        _preflight_comfyui(engine)
     run_dir = pipeline.new_run_dir(name or trigger)
     typer.echo(f"Run dir: {run_dir}")
 

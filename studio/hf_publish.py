@@ -14,8 +14,8 @@ is I/O-free and unit-tested; the network path is exercised only on a real publis
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from studio.config import settings
 
