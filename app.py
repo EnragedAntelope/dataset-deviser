@@ -122,7 +122,7 @@ _NAME_INFO = {
 _ISOLATE_SUBJECT = {"character": "character", "style": "character", "concept": "object"}
 
 
-def on_dataset_type_change(dataset_type: str, gen_name: str = "",
+def on_dataset_type_change(dataset_type: str, name: str = "",
                            style_key: str = shot_style.MATCH, style_text: str = ""):
     """Retune every type-dependent control across the tabs, and remember the
     choice for the next launch.
@@ -145,10 +145,9 @@ def on_dataset_type_change(dataset_type: str, gen_name: str = "",
         # ② generate & curate
         gr.Markdown(value=_TYPE_GUIDANCE.get(dataset_type, ""),
                     visible=bool(_TYPE_GUIDANCE.get(dataset_type, ""))),
-        gr.Textbox(label=f"{label} (used in prompts)"),        # gen_name
         gr.Button(value=f"Rebuild default plan with {label.lower()}",
                   interactive=not is_style),                   # refresh plan
-        _plan_table(dataset_type, gen_name, style_key, style_text),  # shot plan table
+        _plan_table(dataset_type, name, style_key, style_text),  # shot plan table
         gr.Button(interactive=not is_style),                   # generate
         gr.Button(interactive=not is_style),                   # regenerate
         gr.Button(visible=not (is_style or is_concept)),       # randomize outfits
@@ -157,12 +156,13 @@ def on_dataset_type_change(dataset_type: str, gen_name: str = "",
         gr.Checkbox(value=not is_concept),                     # exclude props
         gr.Textbox(value=subject_kw),                          # ② isolation subject
         # ③ caption
-        gr.Textbox(label=f"{label} (optional)",
-                   info=_NAME_INFO.get(dataset_type, _NAME_INFO["character"])),
-        gr.Textbox(info=_TRIGGER_INFO.get(dataset_type, _TRIGGER_INFO["character"])),
         gr.Checkbox(visible=is_style),                         # sparse (style only)
-        # ④ export
-        gr.Textbox(label=label),                               # exp_name
+        # header identity row — ②/③/④/⑤ read these two directly, so this is the
+        # only place the per-type wording has to land
+        gr.Textbox(label=label,                                # project_name
+                   info=_NAME_INFO.get(dataset_type, _NAME_INFO["character"])),
+        gr.Textbox(                                            # project_trigger
+            info=_TRIGGER_INFO.get(dataset_type, _TRIGGER_INFO["character"])),
     )
 
 
@@ -989,8 +989,7 @@ def do_caption(folder: str, selected: list[str], captioner_key: str,
                gen_thr: float, char_thr: float, prefix: str, suffix: str,
                blacklist: str, rating: bool, underscores: bool,
                skip_existing: bool, dataset_type: str, sparse: bool,
-               exp_folders_prev: str, exp_name_prev: str,
-               exp_trigger_prev: str, carry_prev, progress=gr.Progress()):
+               exp_folders_prev: str, carry_prev, progress=gr.Progress()):
     if not folder.strip() or not selected:
         raise gr.Error("Load a folder and select the images to caption first.")
     base = Path(folder.strip())
@@ -1047,14 +1046,14 @@ def do_caption(folder: str, selected: list[str], captioner_key: str,
                    f"those are saved.")
     result = f"✅ Wrote {len(written)} caption sidecar(s) in {base}{failure}"
     # Auto-fill ④ Export: ADD this folder to its list (captioning several folders
-    # in turn must accumulate), and carry name/trigger without clobbering values
-    # the user already typed there.
+    # in turn must accumulate). Name and trigger are NOT carried — ④ reads the
+    # same two header boxes this stage did, so there is nothing to copy and
+    # nothing that can go stale.
     folders = _merge_export_folders(exp_folders_prev, str(base))
     analysis = _caption_analysis(str(base), trigger)
     # Carry the captioned images forward so ④ preselects them instead of the folder.
     carry = _merge_carry(carry_prev, [str(p) for p in written])
-    return (rows, gallery, boxes, result, "\n".join(log), folders,
-            exp_name_prev or name, exp_trigger_prev or trigger, analysis, carry)
+    return (rows, gallery, boxes, result, "\n".join(log), folders, analysis, carry)
 
 
 # ---------- ④ export ----------
@@ -1255,9 +1254,19 @@ def do_export(selected: list[str], name: str, trigger: str, output_root: str,
         # prepare_handoff never raises: the dataset is already written by now,
         # so a sidecar problem is a note, not a failed export.
         ilb_note = f"\n{prepare_handoff(ds)}"
+    # State the identity this dataset was stamped with. A user exported a whole
+    # dataset under a name and trigger left over from several runs earlier and
+    # only found out at the end — the fields are now kept in step, and this is
+    # the receipt that makes a wrong one visible before training on it.
+    identity = (f"\n🏷️ Name: {name.strip() or '(none)'}  ·  Trigger: "
+                f"{trigger.strip() or '(none)'}")
+    if not trigger.strip():
+        identity += ("\n⚠️ No trigger word — captions have nothing to teach the LoRA "
+                     "to respond to. Set one at the top and re-caption if that wasn't "
+                     "deliberate.")
     result = (f"✅ Dataset ready: {ds}  ({len(res.items)} image/caption pairs from the "
               f"{checked} image(s) you checked)"
-              f"{skipped}{empty_note}{zip_note}{ilb_note}{sample_block}")
+              f"{identity}{skipped}{empty_note}{zip_note}{ilb_note}{sample_block}")
     # ds path auto-fills the ⑤ Train tab AND the HF-publish box below.
     return result, str(ds), str(ds)
 
@@ -1293,10 +1302,6 @@ def do_publish_hf(ds_dir: str, repo_id: str, private: bool, progress=gr.Progress
 
 
 # ---------- misc ----------
-
-def _fill_if_empty(current: str, incoming: str) -> str:
-    """Carry a value into the next tab without clobbering a hand-typed one."""
-    return current.strip() or incoming
 
 
 def refresh_plan(name: str, dataset_type: str = "character",
@@ -1448,7 +1453,17 @@ def do_generate_train_config(trainer: str, model_key: str, dataset_dir: str,
                              resolution, rank, alpha, steps, lr, batch_size,
                              multi_res: bool, dataset_type: str = "character",
                              style_key: str = shot_style.MATCH,
-                             style_text: str = "") -> str:
+                             style_text: str = "", project_name: str = "") -> str:
+    # ⑤'s "LoRA name" is the trained file's name, not the subject's — the one
+    # identity-ish field that is legitimately its own (people want "-v2"). Blank
+    # means "follow the header name", which is why it is not auto-filled: an
+    # auto-filled box is exactly what went stale before. The fallback is
+    # slugified because this becomes a filename ("Sy Snootles" → "sy-snootles");
+    # a name typed here is used verbatim, because it was chosen.
+    if not name.strip():
+        from studio.package import slugify
+
+        name = slugify(project_name) if project_name.strip() else ""
     if not dataset_dir.strip():
         raise gr.Error("Enter the dataset folder to write the config into "
                        "(④ Export produces one and auto-fills this).")
@@ -1633,6 +1648,23 @@ with _blocks as demo:
              "Concept generate a shot set in ②; Style brings its own images and starts "
              "at ③ Caption. Tunes caption framing, the ② shot plan, the ① isolation "
              "default, and the ⑤ sample prompt.")
+    # The ONE place that owns "who is this dataset about". ②, ③, ④ and ⑤ all
+    # read these two boxes directly instead of each keeping its own copy — see
+    # the note above `type_outputs` for why copies were removed rather than kept
+    # in sync.
+    with gr.Row():
+        project_name = gr.Textbox(
+            label="Character name", placeholder="Sy Snootles",
+            elem_id="dd-name-project",
+            info="Used by ② (woven into each shot prompt), ③ (prose captions; "
+                 "taggers ignore it), ④ (names the dataset folder) and ⑤. Leave "
+                 "blank for a generic subject.")
+        project_trigger = gr.Textbox(
+            label="Trigger word", placeholder="sysnootles",
+            elem_id="dd-trigger-project",
+            info="Unique token the LoRA learns, placed first in every caption. "
+                 "Used by ③, ④'s metadata and ⑤'s sample prompt — they have to "
+                 "agree, so there is one box.")
     with gr.Row():
         btn_stop = gr.Button("⏹ Stop the running job", size="sm", scale=0,
                              variant="stop")
@@ -1730,10 +1762,6 @@ with _blocks as demo:
                         label="…or reference folder (auto-filled by ①)",
                         info="Used only when nothing is uploaded above. A clean, "
                              "isolated reference gives much better shots.")
-                    gen_name = gr.Textbox(label="Character name (used in prompts)",
-                                          placeholder="Sy Snootles",
-                                          info="Woven into each shot prompt. Leave blank for "
-                                               "a generic subject.")
                     _style_key0, _style_text0 = _uc_boot.get_shot_style()
                     gen_style = gr.Dropdown(
                         shot_style.STYLE_CHOICES, value=_style_key0,
@@ -1865,13 +1893,6 @@ with _blocks as demo:
                              "① or ②. Captions are written as .txt sidecars beside "
                              "each image.")
                     btn_load = gr.Button("📂 Load folder")
-                    cap_name = gr.Textbox(label="Character name (optional)",
-                                          placeholder="Sy Snootles",
-                                          info="Used in prose captions; taggers ignore it.")
-                    cap_trigger = gr.Textbox(label="Trigger word (optional, placed first)",
-                                             placeholder="sysnootles",
-                                             info="Unique token the LoRA learns as the subject. "
-                                                  "Placed first in every caption.")
                     captioner = gr.Dropdown(CAPTIONER_CHOICES, value=settings.default_captioner,
                                             label="Captioner",
                                             info="Local VLMs need a GPU; taggers run on CPU too; "
@@ -2058,11 +2079,6 @@ with _blocks as demo:
             exp_select = gr.CheckboxGroup(
                 label="✅ Images to export — UNCHECK to drop", choices=[],
                 elem_id="dd-picks-exp")
-            with gr.Row():
-                exp_name = gr.Textbox(label="Character name", placeholder="Sy Snootles",
-                                      info="Names the dataset folder and metadata.")
-                exp_trigger = gr.Textbox(label="Trigger word", placeholder="sysnootles",
-                                         info="Recorded in the dataset metadata/README.")
             output_root = gr.Textbox(label="Output folder", value=str(settings.output_root),
                                      info="Where the NN.png/NN.txt dataset folder is written.")
             exp_zip = gr.Checkbox(
@@ -2122,11 +2138,12 @@ with _blocks as demo:
                                            info="Pick your target base model. Presets whose "
                                                 "label mentions setting/editing a path need you "
                                                 "to supply your own model path or HF id.")
-                    tr_name = gr.Textbox(label="LoRA name", placeholder="sysnootles-lora",
-                                         info="Output name for the trained LoRA file.")
-                    tr_trigger = gr.Textbox(label="Trigger word (used in the sample prompt)",
-                                            placeholder="sysnootles",
-                                            info="Should match the trigger you captioned with.")
+                    tr_name = gr.Textbox(
+                        label="LoRA name (optional)", placeholder="follows the name above",
+                        elem_id="dd-name-train",
+                        info="Output filename for the trained LoRA — the one field that "
+                             "is NOT the character name (you may want '-v2'). Leave it "
+                             "blank and it follows the name at the top of the page.")
                     with gr.Row():
                         tr_res = gr.Number(value=_ai_presets[0].resolution, precision=0,
                                            label="Resolution",
@@ -2185,22 +2202,31 @@ with _blocks as demo:
     # Header dataset-type selector retunes type-dependent controls across tabs
     # (and persists the choice). demo.load applies the same handler on launch so
     # a remembered Style/Concept type arrives with its defaults already set.
+    # There is exactly ONE name box and ONE trigger box, in the header above the
+    # tabs. Each tab used to keep its own, carried forward by "copy into the next
+    # tab IF it is still blank" — so the first dataset of a session seeded ④/⑤ and
+    # every later one silently kept the old value. A user exported a dataset
+    # stamped with a name and trigger from several runs earlier and only noticed
+    # at the end. Mirroring the boxes live was tried first and is worse: Gradio
+    # fires `.input` per keystroke, and with unqueued handlers the responses land
+    # out of order, so the copies settle on a PREFIX of what was typed (verified
+    # in a browser). One box cannot disagree with itself.
     type_outputs = [isolate, subject_prompt,
-                    gen_type_note, gen_name, refresh, plan, btn_gen, btn_regen,
+                    gen_type_note, refresh, plan, btn_gen, btn_regen,
                     btn_outfits, btn_outfits_clear, wardrobe_note,
                     gen_exclude_props, gen_subject,
-                    cap_name, cap_trigger, cap_sparse, exp_name]
+                    cap_sparse, project_name, project_trigger]
     # The style controls are INPUTS only — adding them to type_outputs would
     # change the handler's return arity, which a test pins on purpose.
-    type_inputs = [dataset_type, gen_name, gen_style, gen_style_text]
+    type_inputs = [dataset_type, project_name, gen_style, gen_style_text]
     dataset_type.change(on_dataset_type_change, type_inputs, type_outputs)
     demo.load(on_dataset_type_change, type_inputs, type_outputs)
 
-    refresh.click(refresh_plan, [gen_name, dataset_type, gen_style, gen_style_text],
+    refresh.click(refresh_plan, [project_name, dataset_type, gen_style, gen_style_text],
                   [plan])
     # Rebuild on pick. The custom textbox applies on Enter/blur rather than per
     # keystroke — rebuilding 24 prompts on every character typed is pure churn.
-    _style_inputs = [dataset_type, gen_name, gen_style, gen_style_text]
+    _style_inputs = [dataset_type, project_name, gen_style, gen_style_text]
     gen_style.change(_toggle_style_text, [gen_style], [gen_style_text])
     gen_style.change(rebuild_plan_for_style, _style_inputs, [plan, plan_note])
     gen_style_text.submit(rebuild_plan_for_style, _style_inputs, [plan, plan_note])
@@ -2226,8 +2252,7 @@ with _blocks as demo:
                   gen_exclude, gen_front]
     btn_gen.click(do_generate, gen_inputs + [gen_out_dir, results_state],
                   [results_state, gen_rows, gen_gallery, keep, log_box, gen_out_dir,
-                   cap_folder]) \
-           .then(_fill_if_empty, [cap_name, gen_name], [cap_name])
+                   cap_folder])
     btn_regen.click(do_regenerate, gen_inputs + [gen_out_dir, results_state, keep],
                     [results_state, gen_rows, gen_gallery, keep, log_box])
     btn_disk.click(do_refresh_disk, [results_state, gen_out_dir, keep],
@@ -2302,20 +2327,22 @@ with _blocks as demo:
         [cap_custom_url, cap_custom_model, cap_custom_keyenv, cap_custom_interval],
         [cap_custom_note])
     btn_test.click(do_test_caption,
-                   [cap_folder, cap_select, captioner, cap_name, cap_trigger, cap_gemini_model,
+                   [cap_folder, cap_select, captioner, project_name, project_trigger,
+                    cap_gemini_model,
                     cap_style, cap_gen_thr, cap_char_thr, cap_prefix, cap_suffix,
                     cap_blacklist, cap_rating, cap_underscores, dataset_type, cap_sparse],
                    [test_caption])
     btn_caption.click(
         do_caption,
-        [cap_folder, cap_select, captioner, cap_name, cap_trigger, cap_gemini_model, cap_style,
+        [cap_folder, cap_select, captioner, project_name, project_trigger,
+         cap_gemini_model, cap_style,
          cap_gen_thr, cap_char_thr, cap_prefix, cap_suffix,
          cap_blacklist, cap_rating, cap_underscores, cap_skip, dataset_type, cap_sparse,
-         exp_folders, exp_name, exp_trigger, cap_carry],
-        [cap_rows, cap_gallery, cap_select, cap_result, log_box, exp_folders, exp_name,
-         exp_trigger, cap_analysis, cap_carry]) \
+         exp_folders, cap_carry],
+        [cap_rows, cap_gallery, cap_select, cap_result, log_box, exp_folders,
+         cap_analysis, cap_carry]) \
                .then(_editor_choices, [cap_folder], [cap_edit_file, cap_edit_names])
-    btn_lint.click(do_analyze_captions, [cap_folder, cap_trigger], [cap_analysis])
+    btn_lint.click(do_analyze_captions, [cap_folder, project_trigger], [cap_analysis])
     btn_send_export.click(send_captioned_to_export,
                           [exp_folders, exp_dup_dist, cap_carry],
                           [tabs, exp_rows, exp_gallery, exp_select, exp_preview_note])
@@ -2323,12 +2350,10 @@ with _blocks as demo:
     btn_load_preview.click(load_export_preview, [exp_folders, exp_dup_dist, cap_carry],
                            [exp_rows, exp_gallery, exp_select, exp_preview_note])
     btn_export.click(do_export,
-                     [exp_select, exp_name, exp_trigger, output_root, exp_zip,
+                     [exp_select, project_name, project_trigger, output_root, exp_zip,
                       dataset_type, gen_style, gen_style_text, exp_ilb],
                      [exp_result, tr_dataset, exp_ds_dir]) \
-              .then(inspect_dataset, [tr_dataset, dataset_type], [tr_stats, tr_steps]) \
-              .then(_fill_if_empty, [tr_name, exp_name], [tr_name]) \
-              .then(_fill_if_empty, [tr_trigger, exp_trigger], [tr_trigger])
+              .then(inspect_dataset, [tr_dataset, dataset_type], [tr_stats, tr_steps])
     btn_publish_hf.click(do_publish_hf, [exp_ds_dir, exp_hf_repo, exp_hf_private],
                          [exp_hf_note])
 
@@ -2339,8 +2364,9 @@ with _blocks as demo:
     tr_save_path.click(save_trainer_path, [tr_trainer, tr_path], [tr_path_note])
     btn_inspect.click(inspect_dataset, [tr_dataset, dataset_type], [tr_stats, tr_steps])
     tr_gen.click(do_generate_train_config,
-                 [tr_trainer, tr_model, tr_dataset, tr_path, tr_name, tr_trigger]
-                 + tr_hparams + [tr_multi_res, dataset_type, gen_style, gen_style_text],
+                 [tr_trainer, tr_model, tr_dataset, tr_path, tr_name, project_trigger]
+                 + tr_hparams + [tr_multi_res, dataset_type, gen_style, gen_style_text,
+                                 project_name],
                  [tr_result])
 
     demo.load(_check_for_update, None, update_notice)

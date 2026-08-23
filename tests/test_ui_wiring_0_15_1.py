@@ -81,7 +81,7 @@ def test_dataset_type_handler_still_returns_the_wired_arity() -> None:
     """The style controls are inputs, not outputs — adding them to the outputs
     list would silently mismatch Gradio's expectations."""
     updates = A.on_dataset_type_change("character", "", MATCH, "")
-    assert len(updates) == 17
+    assert len(updates) == 15
 
 
 # ---------- ② final-prompt preview ----------

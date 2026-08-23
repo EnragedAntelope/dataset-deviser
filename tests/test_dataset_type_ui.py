@@ -66,9 +66,9 @@ def test_change_handler_returns_one_update_per_wired_output() -> None:
 
 
 def test_character_keeps_generation_and_wardrobe() -> None:
-    (isolate, subject, note, name, refresh, plan, gen, regen,
+    (isolate, subject, note, refresh, plan, gen, regen,
      outfits, outfits_clear, wardrobe, props, gen_subject,
-     cap_name, trigger, sparse, exp_name) = _updates("character")
+     sparse, proj_name, proj_trigger) = _updates("character")
     assert isolate.constructor_args["value"] is True
     assert subject.constructor_args["value"] == "character"
     assert note.constructor_args["visible"] is False
@@ -78,18 +78,18 @@ def test_character_keeps_generation_and_wardrobe() -> None:
     assert props.constructor_args["value"] is True
     assert sparse.constructor_args["visible"] is False
     assert len(plan) == 24
-    assert "Character name" in cap_name.constructor_args["label"]
-    assert exp_name.constructor_args["label"] == "Character name"
     assert "character" in refresh.constructor_args["value"].lower()
-    assert "subject" in trigger.constructor_args["info"].lower()
-    assert "Character name" in name.constructor_args["label"]
     assert gen_subject.constructor_args["value"] == "character"
+    # The single header pair carries the per-type wording for every tab.
+    assert proj_name.constructor_args["label"] == "Character name"
+    assert "captions" in proj_name.constructor_args["info"].lower()
+    assert "subject" in proj_trigger.constructor_args["info"].lower()
 
 
 def test_style_disables_generation_and_isolation() -> None:
-    (isolate, _subject, note, _name, refresh, _plan, gen, regen,
+    (isolate, _subject, note, refresh, _plan, gen, regen,
      outfits, outfits_clear, wardrobe, _props, _gen_subject,
-     cap_name, _trigger, sparse, exp_name) = _updates("style")
+     sparse, proj_name, _proj_trigger) = _updates("style")
     assert isolate.constructor_args["value"] is False
     assert gen.constructor_args["interactive"] is False
     assert regen.constructor_args["interactive"] is False
@@ -99,14 +99,13 @@ def test_style_disables_generation_and_isolation() -> None:
     assert wardrobe.constructor_args["visible"] is False
     assert sparse.constructor_args["visible"] is True  # style-only toggle
     assert note.constructor_args["visible"] is True
-    assert "Style name" in cap_name.constructor_args["label"]
-    assert exp_name.constructor_args["label"] == "Style name"
+    assert proj_name.constructor_args["label"] == "Style name"
 
 
 def test_concept_generates_with_object_defaults() -> None:
-    (isolate, subject, note, _name, _refresh, plan, gen, _regen,
+    (isolate, subject, note, _refresh, plan, gen, _regen,
      outfits, _outfits_clear, wardrobe, props, gen_subject,
-     cap_name, _trigger, sparse, exp_name) = _updates("concept")
+     sparse, proj_name, _proj_trigger) = _updates("concept")
     assert isolate.constructor_args["value"] is True
     assert subject.constructor_args["value"] == "object"
     assert gen_subject.constructor_args["value"] == "object"
@@ -118,8 +117,7 @@ def test_concept_generates_with_object_defaults() -> None:
     assert props.constructor_args["value"] is False
     assert sparse.constructor_args["visible"] is False
     assert note.constructor_args["visible"] is True
-    assert "Concept name" in cap_name.constructor_args["label"]
-    assert exp_name.constructor_args["label"] == "Concept name"
+    assert proj_name.constructor_args["label"] == "Concept name"
 
 
 def test_change_handler_remembers_the_type() -> None:
