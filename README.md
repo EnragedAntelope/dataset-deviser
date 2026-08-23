@@ -56,6 +56,12 @@ Pick one in the header (it's remembered next launch) — it retunes the ② shot
 the ① isolation default, and the ⑤ sample prompt. The trigger word is what the LoRA learns;
 captions describe everything *except* it.
 
+The **name** and **trigger word** live in that same header, and there is exactly one of each: ②
+weaves the name into every shot prompt, ③ captions with both, ④ stamps them into the dataset folder
+and its metadata, and ⑤ writes the trigger into the sample prompt. Set them once and every stage
+agrees — nothing to re-type per tab, and nothing that can go stale between runs. ④'s result line
+repeats the pair it used, so a wrong one is visible before you train on it.
+
 | Type | Trigger learns | Captions describe | ② Generate |
 |---|---|---|---|
 | **Character** *(default)* | an identity | what *varies* (pose, angle, setting) | ✅ 24 shots: angles, poses, expressions |

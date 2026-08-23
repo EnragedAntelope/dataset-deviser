@@ -159,7 +159,15 @@ caption finalization/lint, trainer-config rendering, package/zip resolution, sho
 `comfy_api`'s filename-matching/combo-cache seam, the single-device pin, etc. — without
 downloading a model or touching the network (heavy backends are lazy-imported and mocked;
 `comfy_api`'s tests monkeypatch `httpx.get`). Run the suite with `pytest -q`; lint with
-`ruff check .` (rules in `pyproject.toml`).
+`ruff check .` (rules in `pyproject.toml`: `E`/`F`/`W` flake8 parity plus `I` import order,
+`UP` py310+ idiom, `C4` comprehensions and `B` bugbear. `E501` is off — prose comments run
+long on purpose — and `B008` is off because `typer.Option(...)` **is** the Typer API for a
+default. See *Deferred* for why a type checker is not in that list).
+
+UI wiring gets its own test files (`test_ui_wiring_*.py`, `test_identity_sync.py`) that read
+`app.demo`'s real dependency graph rather than the layout source, because Gradio fails
+*silently* here: a control left out of a click's inputs simply does nothing, and a handler
+wired to the wrong component quietly receives someone else's value.
 
 The suite is **hermetic by fixture**: `tests/conftest.py`'s autouse `_isolate_run_dirs`
 repoints `settings.runs_dir` / `output_root` / `shot_plans_dir` at `tmp_path` for every
@@ -301,6 +309,46 @@ is no overlap, so ④ still works standalone on a folder that never went through
 (Design rule 1). Both hand-off buttons (`➡ Send kept shots to ③`, `➡ Send captioned
 images to ④`) also return `gr.Tabs(selected=...)` via `_goto_tab` — every `gr.Tab` now
 carries an `id` for exactly this reason.
+
+## Dataset identity: one name, one trigger (0.16.0)
+
+The name and the trigger word are **single components in the header**, above the tabs
+(`project_name` / `project_trigger`, `elem_id` `dd-name-project` / `dd-trigger-project`).
+②'s prompt builder, ③'s captioner, ③'s caption lint, ④'s packager and ⑤'s config writer
+are all wired directly to those two. `on_dataset_type_change` relabels that one pair
+(Character/Style/Concept name) instead of four boxes.
+
+**Why they are not per-tab any more.** Each tab used to own a copy, carried forward by
+`_fill_if_empty` — "copy into the next tab *if* that box is still blank". The first
+dataset of a session seeded ④ and ⑤ and every later one silently kept the earlier value;
+a user exported a whole dataset stamped with a name and trigger from several runs back
+and only found out at the end. Nothing in the UI restated what was about to be used.
+
+**Live mirroring was tried first and is worse.** With the copies kept and synced both
+ways on `.input` (which, unlike `.change`, fires only for a human edit, so there is no
+feedback loop), Gradio dispatches one round trip **per keystroke**; unqueued, the replies
+land out of order and the mirrors settle on a *prefix* of what was typed — typing
+"Sy Snootles" in the header left the other four boxes reading "Sy ". Queuing them fixes
+the ordering but puts every keystroke behind a running generate/caption job. The state
+that cannot disagree is the state that isn't duplicated.
+
+Two deliberate exceptions:
+
+- **⑤'s "LoRA name"** stays its own box: it is the trained *file's* name, not the
+  subject's, and people legitimately want `-v2`. It is **not** auto-filled (an
+  auto-filled box is exactly what went stale) — blank means "follow the header name",
+  slugified on the way, because it becomes a filename.
+- **The CLI keeps `--name` / `--trigger` per subcommand.** A CLI invocation is explicit
+  and stateless; there is no second copy to drift from.
+
+④'s result line ends with the name and trigger it stamped, plus a warning when the
+trigger is empty. That receipt is what makes a wrong value visible *before* a training
+run, and is the part of the fix that survives whatever the layout does later.
+
+`tests/test_identity_sync.py` reads the live `demo` event graph: exactly one of each box,
+every stage wired to it, no name leaking into the trigger group, and `_fill_if_empty`
+gone. Layout mistakes here are silent — a handler reading the wrong component just
+quietly gets someone else's value.
 
 ## Gotchas (hard-won)
 
@@ -755,8 +803,23 @@ carries an `id` for exactly this reason.
   surface because we only ever add files found *inside* the packaged dataset dir.
 - **ComfyUI caches model combo lists**; a freshly downloaded model file may need a ComfyUI
   restart before the bundled workflows validate.
-- **Model filenames are configuration.** The bundled workflow JSONs are patched at load time from
-  settings (`LDS_QWEN_EDIT_MODEL` etc.), so users don't edit JSON to match their filenames.
+- **Model filenames are configuration — all of them.** The bundled workflow JSONs are patched at
+  load time from settings (`LDS_QWEN_EDIT_MODEL` etc.), so users don't edit JSON to match their
+  filenames. `comfy_api._MODEL_INPUTS` is keyed by the loader's *input name*, which is unique per
+  class across every bundled template; `UpscaleModelLoader` is the one exception and is mapped
+  positionally through `_UPSCALE_SETTINGS`. Anything **not** in that map is a filename the user
+  cannot fix from `.env` and that `doctor` cannot check — `qwen_edit.json`'s `clip_name` and
+  `vae_name` were exactly that for four releases, and the symptom was ComfyUI's own opaque
+  *"Value not in list: … (list of length 10574)"*. `tests/test_comfy_api.py` now fails if any
+  model-file-looking input in any template is unreachable from the map, or if a mapping names a
+  setting that doesn't exist. Adding a template = adding its filenames here, to `config.py` and to
+  `.env.example`.
+- **`cli.py build` preflights the local engine before it preprocesses.** The ComfyUI engine only
+  tests reachability in its own constructor, which `build` doesn't reach until after a full
+  (often GPU-bound) preprocess pass. `_preflight_comfyui` runs `server_status()` +
+  `check_comfyui_models()` at the top instead. Unreachable aborts with the fix and
+  "Nothing was preprocessed"; a model-name mismatch only *warns*, because that check covers every
+  bundled template including ones the run may never submit.
 - **Trainer configs are derived from the dataset, not from constants.** `dataset_stats.inspect()`
   reads image count/dimensions (Pillow header parse only) so steps scale with the set
   (`STEPS_PER_IMAGE`, clamped to 1000–4000) and buckets come from the images that actually exist.
@@ -1097,6 +1160,25 @@ mattered for the first rename still apply:
 
 Considered and deliberately **not** pursued, with the reason each stays out.
 
+- **A type checker (mypy / pyright) in CI (0.16.0).** Raised as a gap — CI runs `ruff` only,
+  while the codebase is annotated throughout. Measured before deciding:
+  `mypy --ignore-missing-imports studio/ app.py cli.py` reports **25 errors and zero real
+  defects**. They are lazy-initialised module globals typed `None` (`studio/tagger.py`,
+  `studio/captioner.py` — the whole point is that the heavy model loads on first use),
+  Pillow's resampling constants (`Image.LANCZOS` and friends are re-exported aliases the
+  stubs don't carry), Gradio stub invariance (`list[str]` vs `list[str | int]`), and
+  narrowing mypy can't follow out of a comprehension (`[r for r in results if r.path]`).
+  Adding it to CI buys ~25 suppressions and a standing maintenance tax for no bug found.
+  Re-measure if the number of *real* findings ever changes; the command above is the test.
+- **Relocating the default export `output_root` out of the repo root.** `datasets/` next to
+  the app is discoverable, and it is gitignored. The only cost is a maintainer smoke-test
+  leaving an untracked folder — while moving the default would silently change where
+  existing users' datasets land. The gotcha is cheaper than the migration.
+- **`.gitattributes` line-ending work for the bundled workflow JSONs.** Raised on the theory
+  that CRLF could reach ComfyUI's parser. It can't: `comfy_api` reads each template with
+  `json.loads` and POSTs the resulting Python object, so the file's bytes never leave this
+  process. And `git ls-files --eol` shows every tracked text blob already stored as `i/lf`
+  under the existing `* text=auto`. Nothing to fix.
 - **Launching Idiot LoRa Builder (or any app) from ④.** Its own *Send to Fizgig* does exactly this,
   and it was the obvious way to make the 0.16.0 hand-off feel finished. Out anyway: it means storing
   a user-configured executable path and spawning it, which is the only real security surface in the
