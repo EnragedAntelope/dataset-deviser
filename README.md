@@ -76,7 +76,7 @@ action or an abstract idea, bring your own images too.
 
 > 🤝 **Want a curation UI on top?** [**Idiot LoRa Builder**](https://github.com/Fablestarexpanse/Idiot-Lora-Builder)
 > by [Fablestarexpanse](https://github.com/Fablestarexpanse) is a separate desktop app that picks up
-> where ④ leaves off — a fast grid for hundreds of images, ratings, a bucket-aware crop tool, batch
+> where ④ leaves off (including trigger words) — a fast grid for hundreds of images, ratings, a bucket-aware crop tool, batch
 > rename/resize. Tick **Prepare for Idiot LoRa Builder** at ④ and the export folder opens there with
 > your shots already triaged. Nothing is launched for you; it's one extra file in the folder.
 
