@@ -45,7 +45,7 @@ Run them in order (each step auto-fills the next) or jump straight to the one yo
 |---|---|---|
 | ① Restore / upscale | ComfyUI models, or basic Lanczos | — |
 | ① Subject isolation | **Built-in SAM3** (no ComfyUI) or ComfyUI SAM3 | — |
-| ② Generate shots *(character + concept)* | ComfyUI: Qwen Image Edit 2511 + Multiple-Angles LoRA | Gemini (Nano Banana) |
+| ② Generate shots *(character + concept)* | ComfyUI: Qwen-Image 2.1 *(Qwen Research License)* | Gemini (Nano Banana) |
 | ③ Caption | Qwen3-VL-8B, JoyCaption, NSFW finetune, **WD + e621 taggers**, LM Studio / Ollama / any OpenAI endpoint | Gemini Flash, Groq free tier |
 | ④ Export | always local (+ optional **.zip** and **Hugging Face** publish) | — |
 | ⑤ Train config | ai-toolkit (incl. SDXL) / **kohya sd-scripts** / musubi-tuner | — |
@@ -213,8 +213,7 @@ comic, digital illustration, traditional painting, 3D render, ink line art, or *
 where you describe the medium yourself (*"a 1970s screen-printed poster, halftone dots"*).
 
 Changing it rebuilds the shot plan, so hand-edited prompt cells are replaced — edit prompts
-after you've settled on a style. Camera-angle shots deliberately keep their bare
-turnaround grammar, which is what the angles LoRA was trained on. Use **👁 Preview final
+after you've settled on a style. Use **👁 Preview final
 prompt** to see exactly what a row will send, including outfit and prop-exclusion. The style
 is recorded in the exported `metadata.json` and picked up by ⑤'s sample prompt.
 

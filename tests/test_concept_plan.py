@@ -77,32 +77,24 @@ def test_wardrobe_is_a_noop_on_concept_shots() -> None:
         assert apply_wardrobe(shot) is shot
 
 
-# ---------- angle shots keep the LoRA grammar ----------
+# ---------- local prompts are plain-English instructions ----------
 
-def test_concept_angle_shots_use_sks_grammar() -> None:
-    angles = [s for s in concept_plan() if s.kind == "angle"]
-    assert len(angles) == 10
-    for shot in angles:
-        assert shot.local_prompt.startswith("<sks> ")
-
-
-def test_concept_non_angle_shots_do_not_use_sks() -> None:
-    for shot in concept_plan():
-        if shot.kind != "angle":
-            assert "<sks>" not in shot.local_prompt
+def test_concept_local_prompts_are_plain_english_instructions() -> None:
+    plan = concept_plan()
+    assert len([s for s in plan if s.kind == "angle"]) == 10
+    for shot in plan:
+        assert "<sks>" not in shot.local_prompt
+        assert shot.local_prompt.startswith("Generate an image of exactly the same")
+        assert shot.setting in shot.local_prompt
 
 
-def test_concept_angle_grammar_reuses_the_character_plans_vocabulary() -> None:
-    """The Multiple-Angles LoRA only knows the grammar it was trained on, so the
-    concept turnaround reuses the character plan's phrases rather than inventing
-    new ones (an untrained "top view" would silently render a front view). The
-    one addition follows the same shape as the attested low-angle shot."""
-    # Character angle prompts may carry a trailing ", <emotion> expression".
-    known = {s.local_prompt.split(",")[0] for s in default_plan() if s.kind == "angle"}
-    known.add("<sks> front view high-angle shot medium shot")
-    for shot in concept_plan():
-        if shot.kind == "angle":
-            assert shot.local_prompt in known
+def test_concept_three_quarter_fronts_turn_opposite_ways() -> None:
+    """Same wording split as the character plan (see test_shotplan): orbit wording
+    for the right, the image edge for the left, because "to its left" never mirrored."""
+    by_id = {s.id: s for s in concept_plan()}
+    assert "camera moved 45 degrees around it to its right" in \
+        by_id["angle-front-right"].local_prompt
+    assert "turned toward the left edge of the image" in by_id["angle-front-left"].local_prompt
 
 
 def test_rear_concept_views_chain_off_a_generated_side_view() -> None:
@@ -160,14 +152,13 @@ def test_character_setting_is_not_prefixed_twice() -> None:
         assert "in outdoors" not in shot.cloud_prompt
 
 
-def test_character_pose_shots_keep_their_mood_and_identity_clause() -> None:
+def test_character_pose_shots_keep_their_mood_and_medium_clause() -> None:
     pose = next(s for s in default_plan() if s.kind == "pose")
     assert pose.emotion
-    assert f"{pose.emotion} mood" in pose.local_prompt
+    assert f"with a {pose.emotion} expression" in pose.local_prompt
     # The medium clause used to be a hard-coded "photorealistic"; it now comes
     # from the shot style, whose default preserves the reference's own medium.
-    assert "same art style and medium as the reference" in pose.local_prompt
-    assert pose.local_prompt.endswith("consistent identity")
+    assert "Match the reference image's medium" in pose.local_prompt
 
 
 def test_character_closeups_do_not_repeat_the_expression() -> None:
@@ -176,6 +167,10 @@ def test_character_closeups_do_not_repeat_the_expression() -> None:
     for shot in default_plan():
         if shot.kind == "emotion":
             assert "with a " not in shot.cloud_prompt
+            # The local phrases are vivid ("with a stern, serious expression"), so
+            # only the builder's own appended clause is forbidden here.
+            for article in ("a", "an"):
+                assert f"with {article} {shot.emotion} expression" not in shot.local_prompt
 
 
 def test_concept_prop_exclusion_still_composes() -> None:

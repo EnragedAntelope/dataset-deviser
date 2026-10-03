@@ -1,6 +1,6 @@
 # Architecture
 
-Version: 0.15.1
+Version: 0.17.0
 
 ```
 app.py                  Gradio UI — thin wiring over the stage functions (5 tabs).
@@ -102,8 +102,8 @@ studio/
   shot_style.py         The medium ②'s prompts ask for: SHOT_STYLES (match |
                         photographic | anime | comic | illustration | painting |
                         render3d | lineart | custom) + resolve(). Pure data +
-                        one resolver; each style carries a terse `local` clause
-                        (Qwen-Edit), a full `cloud` sentence (Gemini) and a
+                        one resolver; each style carries a full `cloud` sentence
+                        (both engines' prompts end with it) and a
                         `sample_lead` for ⑤. Default `match` PRESERVES the
                         reference's own medium — see the three gotchas
   shotplan.py           Shot plans + Shot model. default_plan() = Character (curated 24:
@@ -148,8 +148,10 @@ studio/
                         (list_image_models / list_caption_models). Retries transient
                         statuses with backoff (GENERATE_RETRIES / GENERATE_BACKOFF_S)
                         and reports failures through friendly_api_error()
-    comfyui.py          Local engine (Qwen Image Edit 2511 + Multiple-Angles LoRA)
-  comfy_workflows/*.json  API-format ComfyUI graphs (restore, isolate ×2, qwen edit)
+    comfyui.py          Local engine (Qwen-Image 2.1, one reference per shot)
+  comfy_workflows/*.json  API-format ComfyUI graphs (restore, isolate ×2, qwen21 edit)
+  comfy_workflows/legacy/ The pre-0.17 Qwen-Image-Edit-2511 + Multiple-Angles graph, kept
+                          for anyone who wants it; nothing loads it (see its README)
 ```
 
 ## Testing & CI
@@ -409,11 +411,11 @@ quietly gets someone else's value.
   `photographic` preset is built from camera vocabulary (lens, depth of field, sensor,
   texture) instead. A test sweeps every style × both plans × both prompt fields to keep
   the banned wording out.
-- **Angle shots get no style clause.** `kind="angle"` local prompts stay pure `<sks>`
-  grammar for the same measured reason `apply_prop_exclusion` skips them (the
-  Multiple-Angles LoRA is trained on clean splat renders and degrades when prose is
-  appended). They carried no medium claim before either, so nothing is lost — Qwen-Edit
-  follows the reference image's medium on its own.
+- **Local and cloud prompts are the same sentence.** Qwen-Image 2.1 follows the plain-English
+  instruction Gemini gets (`shotplan._instruction`), and kept identity *and medium* (photo,
+  anime, 3D creature) far better with it than 2511 did with terse tags. The one difference:
+  close-ups keep their setting locally, because without it every close-up came back on the
+  reference's own backdrop. Every kind, angles included, ends with the style sentence.
 - **A stage that loops over user files must isolate each item.** ① was the last stage
   without this: `preprocess_sources` let one `IsolationError` (SAM3 finding no subject in
   image 3 of 20) unwind the whole batch, and `app.do_preprocess` turned it into a
@@ -582,10 +584,26 @@ quietly gets someone else's value.
 - **Occlusion holes cannot be masked away.** Where a prop physically covers the body, the
   subject mask has a real hole and the composite renders it white. Only inpainting fixes
   that; no amount of threshold/dilation tuning will.
-- **The Multiple-Angles LoRA is trained on clean splat renders** — isolating the subject
-  onto white dramatically improves its output, especially direct back views. The LoRA is
-  trigger-based (`<sks>` grammar), so its strength is 0.9 for `kind="angle"` shots and
-  zeroed for pose/emotion shots.
+- **Qwen-Image 2.1 draws what a prompt names, even negated.** "Do not include any backpacks…"
+  put a backpack on the character in 2 of 8 creature shots (and cost one its tail), so the local
+  prompt never carries a negation — `apply_prop_exclusion` edits the cloud prompt only, and a
+  test bans "without"/"do not"/"backpack" from every local prompt. Isolate the source in ① to
+  keep a prop out locally. (One reference set, one seed — a measurement, not a law.)
+- **Three-quarter fronts need camera-orbit wording.** "front-right quarter view" came back as a
+  plain front view; "with the camera moved 45 degrees around the character to its right, so the
+  character is seen in a three-quarter view showing one side of the face and body" rotates it.
+  "turned 45 degrees toward the right side of the image" overshoots to a full profile. The
+  *left* shot cannot just say "to its left" — that came back facing image-right too (found in the
+  first full live run); "in a three-quarter view, with the character's body and face turned toward
+  the left edge of the image" faces image-left. Side, back, low and high views work as plain
+  descriptions. The back three-quarter rows (and the concept plan's wording) are the least-tested
+  phrases — check them first if a set looks off.
+- **Qwen-Image 2.1 numbers (RTX 5090, 0.17.0 A/B).** ~26 s per shot at ~2.4 MP / 25 steps / CFG 1,
+  against ~65 s for 2511 at ~1 MP / 40 steps / CFG 4, and ~7 GB of weights against ~20 GB. The
+  graph is core nodes only (`TextEncodeQwenImage21`, whose `latent` output sizes the render from
+  the reference's aspect ratio). Hard side-light once darkened light hair; soften the setting
+  phrase if a set shows it. The model is under the Qwen Research License (non-commercial);
+  what users do with their outputs is theirs to decide, the README just names the license.
 - **VRAM choreography:** before loading a ~17 GB local captioner, the pipeline asks
   ComfyUI to `/free` its models (best effort) and unloads the in-process SAM3.
 - **ComfyUI queue guard:** if ComfyUI already has >10 pending jobs, the client fails
@@ -607,12 +625,10 @@ quietly gets someone else's value.
 - **The Concept plan reuses the character machinery, not a parallel one.** `concept_plan()` emits
   the same `Shot` model with `emotion`/`outfit` left empty, so the ② dataframe, `plan_io` YAML
   round-trip, `apply_wardrobe` (a no-op on an empty outfit) and `generate_shots` need no branch.
-  Its angle shots reuse the **attested** `<sks>` grammar from the character plan (view + camera
-  height + shot size) — the one addition, `front view high-angle`, mirrors the existing low-angle
-  shot. Do not invent grammar the Multiple-Angles LoRA was never trained on (a "top view" would
-  silently render a plain front view); a test pins the vocabulary. The non-angle kinds are
+  Its angle shots use the same plain-English phrases as the character plan (the three-quarter
+  fronts with camera-orbit wording, see above) plus `high-angle`. The non-angle kinds are
   `framing` (scale: detail → wide) and `context` (where it sits / how it's used, including a hand
-  for scale), which keep LoRA strength at 0 like character pose shots.
+  for scale).
 - **Character-only ② controls are hidden, not just ignored, for Concept.** Wardrobe
   (`OUTFIT_SHOT_KINDS` includes `angle`, so the randomizer *would* dress an object's turnaround)
   and prop exclusion (its clause literally says "show only the character and the clothing worn on
@@ -801,14 +817,19 @@ quietly gets someone else's value.
 - **`zip_dataset` arcnames are derived from the folder, never absolute.** Entries are stored
   under `<dataset-name>/…` and the archive is non-clobbering (`-2.zip`, …) — no path-traversal
   surface because we only ever add files found *inside* the packaged dataset dir.
+- **ComfyUI stops answering HTTP while it swaps models, and the job is fine.** The first full live
+  run lost 2 of 24 shots to `httpx.ReadTimeout` on a `/history` poll while ComfyUI was loading
+  weights; the retry then queued the same job twice. `comfy_api.run_prompt` now tolerates
+  `MAX_STALLED_POLLS` consecutive failed polls before giving up, and `ComfyUIEngine.generate` turns
+  any `httpx` error (upload, poll, fetch) into a per-shot `GenerationError`, never a crashed run.
 - **ComfyUI caches model combo lists**; a freshly downloaded model file may need a ComfyUI
   restart before the bundled workflows validate.
 - **Model filenames are configuration — all of them.** The bundled workflow JSONs are patched at
-  load time from settings (`LDS_QWEN_EDIT_MODEL` etc.), so users don't edit JSON to match their
+  load time from settings (`LDS_QWEN21_MODEL` etc.), so users don't edit JSON to match their
   filenames. `comfy_api._MODEL_INPUTS` is keyed by the loader's *input name*, which is unique per
   class across every bundled template; `UpscaleModelLoader` is the one exception and is mapped
   positionally through `_UPSCALE_SETTINGS`. Anything **not** in that map is a filename the user
-  cannot fix from `.env` and that `doctor` cannot check — `qwen_edit.json`'s `clip_name` and
+  cannot fix from `.env` and that `doctor` cannot check — the old `qwen_edit.json`'s `clip_name` and
   `vae_name` were exactly that for four releases, and the symptom was ComfyUI's own opaque
   *"Value not in list: … (list of length 10574)"*. `tests/test_comfy_api.py` now fails if any
   model-file-looking input in any template is unreachable from the map, or if a mapping names a
@@ -945,8 +966,8 @@ grouped by stage. Milestone versions are noted only where they explain a design 
   crop, resize to target long-side. Optional alpha (RGBA) cutout output (builtin backend
   only) for external compositing workflows.
 - **② Generate & curate** — curated 24-shot Character plan (angles/poses/emotions/settings) or
-  18-shot Concept plan (turnaround/framing/context), Qwen-Image-Edit 2511 + Multiple-Angles LoRA
-  (local) or Gemini (cloud), chained rear views, prop exclusion, wardrobe randomizer, per-shot
+  18-shot Concept plan (turnaround/framing/context), Qwen-Image 2.1 (local, 0.17.0 — was Qwen-Image-Edit
+  2511 + the Multiple-Angles LoRA, graph kept in `comfy_workflows/legacy/`) or Gemini (cloud), chained rear views, prop exclusion, wardrobe randomizer, per-shot
   outfit column, **shot style** (match the reference's medium by default, or convert the set to
   one of eight presets / your own description), final-prompt preview, save/load YAML plans,
   sharpness + exposure/contrast advisories, per-model cost estimate. Character + Concept;
@@ -1072,6 +1093,10 @@ ordered by benefit-to-cost.
   the rendered prompts, not by a generation run — the shot mix (10 angles / 4 framing / 4 context)
   and the `front view high-angle` addition are reasoned, not measured. If object turnarounds come
   back weak, retune the mix or drop the shots the LoRA can't do, and record the finding here.
+- **Multi-reference generation (②, local).** Qwen-Image 2.1 accepts up to 10 references
+  (`TextEncodeQwenImage21`'s `images.image_N`); the engine still sends one per shot. Several
+  references of the same character could hold identity better on hard angles. Untested — needs
+  its own A/B before it earns a control.
 - **Face-similarity identity guard (② curate).** Flag generated shots that drift from the
   reference's identity. Genuinely useful for character LoRAs but needs a face-recognition
   dependency (InsightFace + onnxruntime); could be an optional extra like the gated SAM3 download.
@@ -1095,7 +1120,8 @@ Both items below shipped in 0.14.1.
   cap does lift**, two things move with it: pass `head=` to `launch()` instead of the `Blocks`
   constructor (and drop the warning filter around it), and re-verify `_PICKER_SCRIPT` still
   finds `.thumbnail-item` — a Gallery DOM change would break click-to-select silently, which
-  is what `tests/test_selection_flow.py`'s id-contract tests guard against on our side.
+  is what `tests/test_selection_flow.py`'s id-contract tests guard against on our side. A third:
+  the suite already warns that a tuple `row_count` is removed in Gradio 6.
 
 ## Repo rename: lora-dataset-studio → lora-distillery (0.12.2)
 
@@ -1209,9 +1235,9 @@ Considered and deliberately **not** pursued, with the reason each stays out.
   sheet prompt returned a grotesque mashup. Klein 9B img2img with core nodes reached
   "recognisable but not dataset-quality"; closing the gap needs third-party identity
   packs (IdentityFeatureTransferFinal / Multi ReferenceLatent), which the core-nodes-only
-  rule for bundled workflows rules out. **Qwen Image Edit 2511 + the Multiple-Angles LoRA
-  remains the only proven approach**; don't re-evaluate these two without a new capability
-  to test. (Full test log kept locally, not in the repo — it is machine-specific.)
+  rule for bundled workflows rules out. **Qwen-Image 2.1 replaced 2511 + the Multiple-Angles LoRA
+  in 0.17.0** after a live A/B (faster, lighter, better identity and medium on poses/emotions);
+  don't re-evaluate Krea2/Klein without a new capability to test. (Full test log kept locally, not in the repo — it is machine-specific.)
 
 - **In-app / cloud training launch, Test Studio / checkpoint ranking, Merge Lab.** These cross the
   "never launch training" line this tool holds on purpose — launching is fragile across trainer
@@ -1221,7 +1247,7 @@ Considered and deliberately **not** pursued, with the reason each stays out.
   away. (For sourcing, the README points to the author's separate video-frame extractor tool.)
 - **Inpainting occluded regions.** Where a prop physically covers the body, isolation leaves a real
   hole; the honest fix needs a generative edit pass per source. The app has the machinery
-  (Qwen-Image-Edit) — revisit only if the white notch bites users.
+  (Qwen-Image 2.1 edit) — revisit only if the white notch bites users.
 - **Live cloud pricing.** Google publishes no pricing API; only scraping the pricing page could beat
   the build-time table, and it would break silently. Estimates are labelled as such.
 - **Automated aesthetic scoring beyond sharpness.** Needs a heavy scoring model; the cheap Laplacian

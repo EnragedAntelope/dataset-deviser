@@ -145,7 +145,7 @@ def test_every_bundled_model_filename_is_overridable() -> None:
     Everyone downloads these weights from a different mirror under a different
     name, so an un-remapped input fails as ComfyUI's own opaque "Value not in
     list: ... (list of length 10574)" with no setting to change. This caught
-    `clip_name` and `vae_name` in qwen_edit.json, which were invisible to both
+    `clip_name` and `vae_name` in the old qwen_edit.json, which were invisible to both
     `.env` and `doctor`'s ComfyUI-models check for four releases.
     """
     covered = set(comfy_api._MODEL_INPUTS)

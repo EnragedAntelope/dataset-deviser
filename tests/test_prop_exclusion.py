@@ -23,17 +23,12 @@ def test_cloud_prompt_gets_the_exclusion_clause() -> None:
     assert "do not include any backpacks" in shot.cloud_prompt
 
 
-def test_angle_local_prompt_is_left_alone() -> None:
-    """Angle shots use the <sks> Multiple-Angles LoRA grammar, which is trained
-    on clean splat renders and degrades when prose is appended."""
-    original = _shot("angle")
-    shot = apply_prop_exclusion(original)
-    assert shot.local_prompt == original.local_prompt
-
-
-def test_pose_local_prompt_gets_a_short_clause() -> None:
-    shot = apply_prop_exclusion(_shot("pose"))
-    assert "without any bags or carried accessories" in shot.local_prompt
+def test_local_prompt_is_never_touched() -> None:
+    """Qwen-Image 2.1 draws what a prompt names, even negated — the clause put a
+    backpack on the character in 2 of 8 test shots. Gemini follows the negation."""
+    for kind in ("angle", "pose", "emotion"):
+        original = _shot(kind)
+        assert apply_prop_exclusion(original).local_prompt == original.local_prompt
 
 
 def test_is_idempotent() -> None:

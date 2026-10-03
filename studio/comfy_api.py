@@ -18,16 +18,20 @@ class ComfyError(Exception):
     pass
 
 
+# Consecutive failed /history polls before a running job is given up on (each poll
+# waits up to 30 s, so a stalled server gets minutes, not seconds).
+MAX_STALLED_POLLS = 5
+
+
 # Model filenames inside the bundled templates, remapped to whatever the user
-# configured in .env (LDS_QWEN_EDIT_MODEL etc.) so renamed files just work.
+# configured in .env (LDS_QWEN21_MODEL etc.) so renamed files just work.
 # Keyed by the *input name*, which is unique per loader class across every
 # bundled template — adding an entry here also extends `doctor`'s ComfyUI-models
 # check, which validates each configured name against the server's own list.
 _MODEL_INPUTS = {
-    "unet_name": "qwen_edit_model",
-    "lora_name": "angles_lora",
-    "clip_name": "qwen_text_encoder",
-    "vae_name": "qwen_vae",
+    "unet_name": "qwen21_model",
+    "clip_name": "qwen21_text_encoder",
+    "vae_name": "qwen21_vae",
     "ckpt_name": "sam3_checkpoint",
 }
 _UPSCALE_SETTINGS = ("dejpg_model", "upscale_model")  # in template node order
@@ -261,8 +265,24 @@ def run_prompt(graph: dict, timeout: float = 600.0, front: bool = False) -> list
     prompt_id = r.json()["prompt_id"]
 
     deadline = time.monotonic() + timeout
+    stalled = 0
     while time.monotonic() < deadline:
-        h = httpx.get(f"{settings.comfy_url}/history/{prompt_id}", timeout=30).json()
+        # ComfyUI stops answering HTTP for tens of seconds while it swaps models in
+        # and out of VRAM, yet the job is fine and finishes. One slow poll must not
+        # fail the shot (and the retry would queue the same job a second time) — but
+        # a server that stays silent for several polls in a row is genuinely gone.
+        try:
+            h = httpx.get(f"{settings.comfy_url}/history/{prompt_id}", timeout=30).json()
+        except httpx.HTTPError as e:
+            stalled += 1
+            if stalled >= MAX_STALLED_POLLS:
+                raise ComfyError(
+                    f"ComfyUI stopped answering while running prompt {prompt_id} "
+                    f"({type(e).__name__}) — it may have crashed or run out of memory; "
+                    f"check the ComfyUI window.") from e
+            time.sleep(1.5)
+            continue
+        stalled = 0
         if prompt_id in h:
             entry = h[prompt_id]
             status = entry.get("status", {})

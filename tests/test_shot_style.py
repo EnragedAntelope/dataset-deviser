@@ -25,12 +25,12 @@ def test_match_is_the_default_everywhere() -> None:
     assert resolve("no-such-style").key == MATCH
 
 
-def test_every_preset_has_all_three_renderings() -> None:
+def test_every_preset_has_both_renderings() -> None:
     for key, style in SHOT_STYLES.items():
         assert style.label
         if key == CUSTOM:
             continue  # filled in from the user's text by resolve()
-        assert style.local and style.cloud and style.sample_lead
+        assert style.cloud and style.sample_lead
 
 
 # ---------- rule 1: `match` instructs, it does not merely stay silent ----------
@@ -79,8 +79,8 @@ def test_photographic_uses_camera_vocabulary_not_photorealistic() -> None:
     """They are different aesthetic targets: 'photorealistic' trends toward an
     idealized CG-adjacent render, a photograph has real optics."""
     style = SHOT_STYLES["photographic"]
-    assert "photorealistic" not in (style.local + style.cloud).lower()
-    assert "hyperrealistic" not in (style.local + style.cloud).lower()
+    assert "photorealistic" not in style.cloud.lower()
+    assert "hyperrealistic" not in style.cloud.lower()
     for term in ("camera", "lens", "depth of field", "texture"):
         assert term in style.cloud.lower()
 
@@ -110,27 +110,23 @@ def test_no_generated_prompt_anywhere_says_photorealistic() -> None:
 def test_style_reaches_both_plans_and_both_prompt_fields() -> None:
     shots = plan_for_type("character", "Sy Snootles", "anime")
     pose = next(s for s in shots if s.kind == "pose")
-    assert "anime illustration" in pose.local_prompt
+    assert "Rendered as an anime illustration" in pose.local_prompt
     assert "Rendered as an anime illustration" in pose.cloud_prompt
 
     concept = plan_for_type("concept", "brass compass", "render3d")
     framing = next(s for s in concept if s.kind == "framing")
-    assert "3D render" in framing.local_prompt
+    assert "Rendered as a 3D CGI render" in framing.local_prompt
     assert "Rendered as a 3D CGI render" in framing.cloud_prompt
 
 
-def test_angle_shots_keep_the_sks_grammar_clean() -> None:
-    """The Multiple-Angles LoRA is trained on clean splat renders; appending
-    prose degrades it (same reason prop exclusion skips angle local prompts)."""
+def test_every_local_prompt_ends_with_the_style_sentence() -> None:
+    """Angle shots included: they used to be exempt (the <sks> LoRA grammar broke
+    when prose was appended); Qwen-Image 2.1 follows the same instruction as Gemini."""
     for style_key in SHOT_STYLES:
-        for shot in plan_for_type("character", "X", style_key, "a woodcut print"):
-            if shot.kind != "angle":
-                continue
-            assert shot.local_prompt.startswith("<sks> ")
-            body = SHOT_STYLES[style_key].local
-            if body:
-                assert body not in shot.local_prompt
-            assert "Rendered as" not in shot.local_prompt
+        sentence = resolve(style_key, "a woodcut print").cloud
+        for dtype in ("character", "concept"):
+            for shot in plan_for_type(dtype, "X", style_key, "a woodcut print"):
+                assert shot.local_prompt.endswith(sentence), (style_key, shot.id)
 
 
 def test_style_never_generates_regardless_of_style() -> None:

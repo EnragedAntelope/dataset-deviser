@@ -6,9 +6,9 @@ Two interchangeable backends:
   page and authenticate (`hf auth login` or HF_TOKEN) before first use.
 - "comfyui"  — the bundled SAM3 workflow templates, run on your ComfyUI.
 
-Isolation matters twice: backgrounds/props can't leak into generations or the
-final dataset, and edit models trained on clean renders (the Multiple-Angles
-LoRA) behave far better on isolated subjects.
+Isolation matters because backgrounds and carried props otherwise leak into
+generations and the final dataset. Locally it is the only prop control — the
+local engine cannot be told to omit one (naming it makes Qwen draw it).
 """
 
 from __future__ import annotations
