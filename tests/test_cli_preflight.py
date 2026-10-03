@@ -108,7 +108,7 @@ def test_a_model_name_mismatch_warns_but_does_not_abort(
     monkeypatch.setattr(comfy_api, "server_status", _up)
     monkeypatch.setattr(doctor, "check_comfyui_models",
                         lambda: doctor.Check("ComfyUI models", True,
-                                             "qwen_edit: no such vae_name", warn=True))
+                                             "qwen21_edit: no such vae_name", warn=True))
 
     cli._preflight_comfyui("comfyui")  # must not raise
 

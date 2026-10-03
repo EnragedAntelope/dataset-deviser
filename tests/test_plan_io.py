@@ -29,3 +29,19 @@ def test_load_rejects_non_list(tmp_path: Path) -> None:
     bad.write_text("just: a-mapping\n", encoding="utf-8")
     with pytest.raises(ValueError):
         load_plan(bad)
+
+
+def test_loading_a_pre_0_17_plan_warns_about_sks_prompts() -> None:
+    """Plans saved by 0.16 hold the old engine's `<sks>` grammar; the 2.1 engine
+    would send it as literal text, so the load note has to say so."""
+    import app
+    from studio.config import settings
+
+    old = default_plan()[:2]
+    old[0].local_prompt = "<sks> front view eye-level shot medium shot"
+    save_plan(old, settings.shot_plans_dir / "old")
+    _, note = app.do_load_plan("old")
+    assert "1 shot(s) still use the old" in note
+
+    save_plan(default_plan()[:2], settings.shot_plans_dir / "new")
+    assert "⚠️" not in app.do_load_plan("new")[1]

@@ -25,9 +25,9 @@ Three rules the wording follows, each of which cost something to learn:
    and imperfections of a real capture. The `photographic` preset is therefore
    built from camera vocabulary (lens, depth of field, sensor, texture).
 
-`local` is kept short — it goes to Qwen-Image-Edit, which follows terse prompts
-and is not a prose model. `cloud` is a full sentence for Gemini. `sample_lead`
-is the noun phrase ⑤ uses to open a training sample prompt.
+`cloud` is a full sentence, and goes into BOTH engines' prompts (Qwen-Image 2.1
+follows prose as well as Gemini does). `sample_lead` is the noun phrase ⑤ uses
+to open a training sample prompt.
 """
 
 from __future__ import annotations
@@ -42,7 +42,6 @@ CUSTOM = "custom"
 class ShotStyle:
     key: str
     label: str
-    local: str        # terse clause for the ComfyUI / Qwen-Image-Edit prompt
     cloud: str        # full sentence for the Gemini prompt
     sample_lead: str  # how ⑤'s sample prompt names the medium
 
@@ -54,7 +53,6 @@ class ShotStyle:
 _STYLES: tuple[ShotStyle, ...] = (
     ShotStyle(
         MATCH, "Match the reference image (default)",
-        "in the same art style and medium as the reference",
         "Match the reference image's medium, art style and rendering exactly — if "
         "the reference is a drawing, painting, or 3D render, the result must be the "
         "same medium, not a photograph.",
@@ -62,8 +60,6 @@ _STYLES: tuple[ShotStyle, ...] = (
     ),
     ShotStyle(
         "photographic", "Photographic (real camera capture)",
-        "photographic, real camera capture, natural lens depth of field, "
-        "true skin and material texture",
         "Rendered as a photograph: a real camera capture, with natural lens depth of "
         "field and focus falloff, true-to-life skin and material texture, and light "
         "behaving as it does on a sensor.",
@@ -71,49 +67,42 @@ _STYLES: tuple[ShotStyle, ...] = (
     ),
     ShotStyle(
         "anime", "Anime / manga illustration",
-        "anime illustration, clean linework, cel shading",
         "Rendered as an anime illustration: clean linework, cel shading and flat "
         "colour fills, in the drawing style of the reference.",
         "an anime illustration of",
     ),
     ShotStyle(
         "comic", "Comic / cartoon (Western)",
-        "western comic illustration, bold ink outlines, flat colour",
         "Rendered as a Western comic illustration: bold ink outlines, flat colour "
         "fills and graphic shading.",
         "a comic illustration of",
     ),
     ShotStyle(
         "illustration", "Digital illustration / concept art",
-        "digital illustration, painterly brushwork, concept art",
         "Rendered as a digital illustration: painterly brushwork and concept-art "
         "finish, with visible artistic rendering rather than a photographic capture.",
         "a digital illustration of",
     ),
     ShotStyle(
         "painting", "Traditional painting (oil / watercolour)",
-        "traditional painting, visible brush strokes, canvas texture",
         "Rendered as a traditional painting: visible brush strokes, pigment and "
         "canvas or paper texture.",
         "a painting of",
     ),
     ShotStyle(
         "render3d", "3D render / CGI",
-        "3D render, CGI, physically based shading",
         "Rendered as a 3D CGI render: physically based shading and materials, clean "
         "computer-generated geometry.",
         "a 3D render of",
     ),
     ShotStyle(
         "lineart", "Ink line art / sketch",
-        "ink line art, black and white linework, minimal shading",
         "Rendered as ink line art: black-and-white linework with minimal shading and "
         "no photographic detail.",
         "a line art drawing of",
     ),
     ShotStyle(
         CUSTOM, "Custom — describe it below",
-        "",  # filled in from the user's text by resolve()
         "",
         "",
     ),
@@ -153,7 +142,6 @@ def resolve(key: str, custom_text: str = "") -> ShotStyle:
         return SHOT_STYLES[MATCH]
     return ShotStyle(
         CUSTOM, style.label,
-        _lower_first(text),
         # The connective is the whole point — see rule 2 in the module docstring.
         f"Rendered as {_lower_first(text)}.",
         f"{text}, ",

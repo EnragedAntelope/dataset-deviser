@@ -58,20 +58,42 @@ def test_no_duplicate_angle_pose_setting_combinations() -> None:
     assert len(combos) == len(plan)
 
 
-def test_angle_shots_use_sks_grammar() -> None:
-    plan = default_plan()
-    angles = [s for s in plan if s.kind == "angle"]
-    assert angles
-    for shot in angles:
-        assert "<sks>" in shot.local_prompt
-
-
-def test_pose_and_emotion_shots_do_not_use_sks() -> None:
-    plan = default_plan()
-    non_angles = [s for s in plan if s.kind != "angle"]
-    assert non_angles
-    for shot in non_angles:
+def test_local_prompts_are_plain_english_instructions() -> None:
+    for shot in default_plan():
         assert "<sks>" not in shot.local_prompt
+        assert shot.local_prompt.startswith("Generate an image of exactly the same")
+
+
+def test_every_local_shot_names_its_setting() -> None:
+    """Close-ups included: without it each one came back on the reference's own
+    backdrop and the dataset ended up with seven identical backgrounds."""
+    for shot in default_plan():
+        assert shot.setting in shot.local_prompt, shot.id
+
+
+def test_three_quarter_fronts_turn_opposite_ways() -> None:
+    """"front-right quarter view" came back as a plain front view on Qwen-Image
+    2.1. Camera-orbit wording rotates it toward image-right; "to its left" did NOT
+    mirror it (both shots faced image-right, seen live), so the left shot names the
+    image edge instead (verified to face image-left)."""
+    by_id = {x.id: x for x in default_plan()}
+    right = by_id["angle-front-right"].local_prompt
+    left = by_id["angle-front-left"].local_prompt
+    assert "camera moved 45 degrees around the character to its right" in right
+    assert "turned toward the left edge of the image" in left
+
+
+def test_local_prompts_never_negate() -> None:
+    """Qwen-Image 2.1 draws what a prompt names, even negated — "do not include any
+    backpacks" put a backpack on the character in 2 of 8 test shots. So the local
+    prompt must stay free of negation however the options are set."""
+    from studio.shotplan import apply_prop_exclusion, concept_plan
+
+    for plan in (default_plan(), concept_plan()):
+        for shot in plan:
+            local = apply_prop_exclusion(apply_wardrobe(shot)).local_prompt.lower()
+            for phrase in ("without", "do not", "don't", "no bags", "backpack"):
+                assert phrase not in local, (shot.id, phrase)
 
 
 def test_emotion_shots_are_closeup() -> None:
@@ -113,6 +135,17 @@ def test_apply_wardrobe_injects_into_both_prompts() -> None:
     assert "wearing a red raincoat" in out.cloud_prompt
     # cloud injection lands before the trailing "Keep the same" sentence
     assert out.cloud_prompt.index("wearing") < out.cloud_prompt.index("Keep the same")
+
+
+def test_apply_wardrobe_lands_before_the_style_sentence_in_real_prompts() -> None:
+    """The outfit used to be appended AFTER the style sentence, producing
+    "…not a photograph., wearing a red raincoat Show only…"."""
+    pose = next(x for x in default_plan() if x.kind == "pose")
+    out = apply_wardrobe(pose.model_copy(update={"outfit": "a red raincoat"}))
+    for prompt in (out.local_prompt, out.cloud_prompt):
+        head, _, tail = prompt.partition(". ")
+        assert head.endswith(", wearing a red raincoat")
+        assert tail.startswith("Match the reference image's medium")
 
 
 def test_apply_wardrobe_idempotent() -> None:

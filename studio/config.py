@@ -351,11 +351,6 @@ CAPTIONERS: list[CaptionerSpec] = [
 
 CAPTIONERS_BY_KEY = {c.key: c for c in CAPTIONERS}
 
-ENGINES = {
-    "gemini": "Cloud - Gemini image model (best identity fidelity, SFW only)",
-    "comfyui": "Local - ComfyUI Qwen Image Edit 2511 (free, private, uncensored)",
-}
-
 # Known Gemini image models -> USD per standard-resolution (1K) image.
 # ESTIMATES captured at build time — actual costs are billed by Google to the
 # user's own API key; the UI can live-pull the current model list.
@@ -493,14 +488,15 @@ class Settings(BaseSettings):
 
     # ComfyUI model filenames used by the optional workflow templates
     # (relative to your ComfyUI models folders — see docs/comfyui-setup.md)
-    qwen_edit_model: str = "qwen_image_edit_2511_int8_convrot.safetensors"
-    angles_lora: str = "qwen/Qwen-Image-Edit-2511-Multiple-Angles-LoRA.safetensors"
-    # The text encoder and VAE the Qwen Edit graph loads. Overridable for the
+    qwen21_model: str = "qwen_image_2.1_int8_convrot.safetensors"
+    # The text encoder and VAE the Qwen-Image 2.1 graph loads. Overridable for the
     # same reason as the model above: everyone downloads these from a different
     # mirror and they arrive under different names. Left hard-coded, a rename
     # surfaced as ComfyUI's own "Value not in list: ... (list of length 10574)".
-    qwen_text_encoder: str = "qwen_2.5_vl_7b_fp8_scaled.safetensors"
-    qwen_vae: str = "qwen_image_vae.safetensors"
+    # Named qwen21_* (not the old qwen_*) on purpose: a stale LDS_QWEN_TEXT_ENCODER
+    # pointing at the Qwen2.5-VL file would otherwise be fed to the 2.1 graph.
+    qwen21_text_encoder: str = "qwen3vl_8b_int8_convrot.safetensors"
+    qwen21_vae: str = "qwen_image_2.1_vae_bf16.safetensors"
     upscale_model: str = "4xNomosWebPhoto_RealPLKSR.safetensors"
     dejpg_model: str = "1xDeJPG_OmniSR.pth"
     sam3_checkpoint: str = "sam3.1_multiplex_fp16.safetensors"

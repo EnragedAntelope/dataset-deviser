@@ -31,10 +31,9 @@ class Shot(BaseModel):
     id: str
     # Character plan: "angle" | "pose" | "emotion".
     # Concept plan:   "angle" | "framing" | "context".
-    # Only "angle" is special downstream (it drives the Multiple-Angles LoRA
-    # strength in the ComfyUI engine and the "isolate angle shots" option).
+    # Only "angle" is special downstream (the "isolate angle shots" option).
     kind: str
-    local_prompt: str  # Qwen-Image-Edit-2511 prompt (angles use the <sks> LoRA grammar)
+    local_prompt: str  # Qwen-Image 2.1 instruction (same shape as cloud_prompt)
     cloud_prompt: str  # plain-English instruction for Nano Banana
     # Rear views hallucinate when generated straight from a front reference;
     # chain them off a generated side view instead (stepwise rotation).
@@ -49,8 +48,8 @@ class Shot(BaseModel):
     outfit: str = ""
 
 
-# Each tuple is: (id_suffix, kind, <sks> grammar or pose stub, plain-English
-# description, chain_from, emotion, setting).
+# Each tuple is: (id_suffix, kind, local phrase for Qwen-Image 2.1, plain-English
+# description for Gemini, chain_from, emotion, setting).
 #
 # Design goals:
 # - 9 angles: the core turnaround, each with a different setting/lighting so no
@@ -67,7 +66,7 @@ _SHOTS = [
     (
         "front",
         "angle",
-        "front view eye-level shot medium shot",
+        "seen directly from the front at eye level, full body visible",
         "seen directly from the front at eye level, full body visible",
         "",
         "neutral",
@@ -76,7 +75,7 @@ _SHOTS = [
     (
         "front-right",
         "angle",
-        "front-right quarter view eye-level shot medium shot",
+        "with the camera moved 45 degrees around the character to its right, so the character is seen in a three-quarter view showing one side of the face and body, full body visible",
         "seen from a front-right three-quarter angle at eye level, full body visible",
         "",
         "neutral",
@@ -85,7 +84,7 @@ _SHOTS = [
     (
         "right",
         "angle",
-        "right side view eye-level shot medium shot",
+        "seen directly from the right side in full profile, full body visible",
         "seen directly from the right side in full profile, full body visible",
         "",
         "neutral",
@@ -94,7 +93,7 @@ _SHOTS = [
     (
         "back-right",
         "angle",
-        "back-right quarter view eye-level shot medium shot",
+        "seen from a back-right three-quarter angle, full body visible",
         "seen from a back-right three-quarter angle, full body visible",
         "angle-right",
         "neutral",
@@ -103,7 +102,7 @@ _SHOTS = [
     (
         "back",
         "angle",
-        "back view eye-level shot medium shot",
+        "seen directly from behind, full body visible",
         "seen directly from behind, full body visible",
         "angle-right",
         "neutral",
@@ -112,7 +111,7 @@ _SHOTS = [
     (
         "back-left",
         "angle",
-        "back-left quarter view eye-level shot medium shot",
+        "seen from a back-left three-quarter angle, full body visible",
         "seen from a back-left three-quarter angle, full body visible",
         "angle-left",
         "neutral",
@@ -121,7 +120,7 @@ _SHOTS = [
     (
         "left",
         "angle",
-        "left side view eye-level shot medium shot",
+        "seen directly from the left side in full profile, full body visible",
         "seen directly from the left side in full profile, full body visible",
         "",
         "neutral",
@@ -130,7 +129,7 @@ _SHOTS = [
     (
         "front-left",
         "angle",
-        "front-left quarter view eye-level shot medium shot",
+        "in a three-quarter view, with the character's body and face turned toward the left edge of the image, full body visible",
         "seen from a front-left three-quarter angle at eye level, full body visible",
         "",
         "neutral",
@@ -139,7 +138,7 @@ _SHOTS = [
     (
         "low",
         "angle",
-        "front view low-angle shot medium shot",
+        "seen from a low camera angle looking up",
         "seen from a low camera angle looking up",
         "",
         "confident",
@@ -222,7 +221,7 @@ _SHOTS = [
     (
         "smiling",
         "emotion",
-        "close-up of the face, smiling expression",
+        "a close-up of the face and upper shoulders, smiling warmly",
         "a close-up of the face and upper shoulders, smiling warmly",
         "",
         "smiling",
@@ -231,7 +230,7 @@ _SHOTS = [
     (
         "serious",
         "emotion",
-        "close-up of the face, serious expression",
+        "a close-up of the face and upper shoulders, with a stern, serious expression and a furrowed brow",
         "a close-up of the face and upper shoulders, serious expression",
         "",
         "serious",
@@ -240,7 +239,7 @@ _SHOTS = [
     (
         "surprised",
         "emotion",
-        "close-up of the face, surprised expression",
+        "a close-up of the face and upper shoulders, with wide eyes and raised eyebrows, mouth open in surprise",
         "a close-up of the face and upper shoulders, surprised expression",
         "",
         "surprised",
@@ -249,7 +248,7 @@ _SHOTS = [
     (
         "laughing",
         "emotion",
-        "close-up of the face, laughing expression",
+        "a close-up of the face and upper shoulders, laughing heartily with the eyes squeezed half shut",
         "a close-up of the face and upper shoulders, laughing openly",
         "",
         "laughing",
@@ -258,7 +257,7 @@ _SHOTS = [
     (
         "contemplative",
         "emotion",
-        "close-up of the face, contemplative expression",
+        "a close-up of the face and upper shoulders, with a thoughtful, distant gaze",
         "a close-up of the face and upper shoulders, contemplative gaze",
         "",
         "contemplative",
@@ -267,7 +266,7 @@ _SHOTS = [
     (
         "confident",
         "emotion",
-        "close-up of the face, confident expression",
+        "a close-up of the face and upper shoulders, with a confident look and a slight smirk",
         "a close-up of the face and upper shoulders, confident expression",
         "",
         "confident",
@@ -276,7 +275,7 @@ _SHOTS = [
     (
         "sad",
         "emotion",
-        "close-up of the face, sad expression",
+        "a close-up of the face and upper shoulders, with a sad, downcast expression and glistening eyes",
         "a close-up of the face and upper shoulders, sad expression",
         "",
         "sad",
@@ -285,14 +284,13 @@ _SHOTS = [
 ]
 
 
-# Concept plan. Each tuple is: (id_suffix, kind, <sks> grammar or phrase,
-# plain-English description, chain_from, setting).
+# Concept plan. Each tuple is: (id_suffix, kind, local phrase, plain-English
+# description, chain_from, setting).
 #
 # Design goals (mirroring the character plan's, minus identity):
-# - 10 angles: the turnaround the Multiple-Angles LoRA is actually good at,
-#   reusing the SAME <sks> grammar (view + camera height + shot size). No
-#   invented grammar terms — a "top view" the LoRA was never trained on would
-#   silently produce a normal front view.
+# - 10 angles: the turnaround. Three-quarter fronts use camera-orbit wording
+#   ("moved 45 degrees around it") because "front-right quarter view" came back
+#   as a plain front view on Qwen-Image 2.1; side/back/low/high plain views work.
 # - 4 framing shots: scale variation (extreme detail -> tiny in a wide shot) so
 #   the LoRA isn't locked to one distance.
 # - 4 context shots: where the thing sits and how it is used, including a hand
@@ -306,7 +304,7 @@ _CONCEPT_SHOTS = [
     (
         "front",
         "angle",
-        "front view eye-level shot medium shot",
+        "seen directly from the front at eye level, the whole subject in frame",
         "seen directly from the front at eye level, the whole subject in frame",
         "",
         "on a plain neutral gray studio backdrop with soft even lighting",
@@ -314,7 +312,7 @@ _CONCEPT_SHOTS = [
     (
         "front-right",
         "angle",
-        "front-right quarter view eye-level shot medium shot",
+        "with the camera moved 45 degrees around it to its right, so it is seen in a three-quarter view showing its front and one side",
         "seen from a front-right three-quarter angle at eye level",
         "",
         "on a wooden tabletop in a warmly lit room",
@@ -322,7 +320,7 @@ _CONCEPT_SHOTS = [
     (
         "right",
         "angle",
-        "right side view eye-level shot medium shot",
+        "seen directly from the right side in full profile",
         "seen directly from the right side in full profile",
         "",
         "outdoors in daylight on flat open ground",
@@ -330,7 +328,7 @@ _CONCEPT_SHOTS = [
     (
         "back-right",
         "angle",
-        "back-right quarter view eye-level shot medium shot",
+        "seen from a back-right three-quarter angle",
         "seen from a back-right three-quarter angle",
         "angle-right",
         "on a concrete surface under overcast daylight",
@@ -338,7 +336,7 @@ _CONCEPT_SHOTS = [
     (
         "back",
         "angle",
-        "back view eye-level shot medium shot",
+        "seen directly from behind",
         "seen directly from behind",
         "angle-right",
         "on a plain neutral gray studio backdrop with soft even lighting",
@@ -346,7 +344,7 @@ _CONCEPT_SHOTS = [
     (
         "back-left",
         "angle",
-        "back-left quarter view eye-level shot medium shot",
+        "seen from a back-left three-quarter angle",
         "seen from a back-left three-quarter angle",
         "angle-left",
         "against a dark background with dramatic hard side lighting",
@@ -354,7 +352,7 @@ _CONCEPT_SHOTS = [
     (
         "left",
         "angle",
-        "left side view eye-level shot medium shot",
+        "seen directly from the left side in full profile",
         "seen directly from the left side in full profile",
         "",
         "outdoors at golden hour with warm backlighting",
@@ -362,7 +360,7 @@ _CONCEPT_SHOTS = [
     (
         "front-left",
         "angle",
-        "front-left quarter view eye-level shot medium shot",
+        "in a three-quarter view, with it turned toward the left edge of the image, showing its front and one side",
         "seen from a front-left three-quarter angle at eye level",
         "",
         "on a wooden tabletop in a warmly lit room",
@@ -370,7 +368,7 @@ _CONCEPT_SHOTS = [
     (
         "low",
         "angle",
-        "front view low-angle shot medium shot",
+        "seen from a low camera angle looking up at it",
         "seen from a low camera angle looking up at it",
         "",
         "outdoors in daylight on flat open ground",
@@ -378,7 +376,7 @@ _CONCEPT_SHOTS = [
     (
         "high",
         "angle",
-        "front view high-angle shot medium shot",
+        "seen from a high camera angle looking down on it",
         "seen from a high camera angle looking down on it",
         "",
         "on a concrete surface under overcast daylight",
@@ -472,43 +470,47 @@ def _indefinite_article(word: str) -> str:
     return "an" if word[:1].lower() in "aeiou" else "a"
 
 
+def _instruction(subject: str, phrase: str, setting: str, emotion: str,
+                 outfit: str, style: ShotStyle, with_mood: bool) -> str:
+    """The one-sentence edit instruction both engines are given.
+
+    Qwen-Image 2.1 follows the same plain-English instruction Gemini does, and it
+    keeps identity and medium far better with it than 2511 did with terse tags
+    (measured). The medium is stated once, at the END, as its own sentence — never
+    as an adjective on "image" (that used to read "Generate a photorealistic image
+    of …", which turned every illustrated reference into a photograph).
+    """
+    parts = [
+        f"Generate an image of exactly the same {_subject_phrase(subject)} "
+        "from the reference image(s), identical in every physical detail",
+        f", {phrase}",
+    ]
+    if setting:
+        parts.append(f", {setting}")
+    if with_mood and emotion and emotion != "neutral":
+        parts.append(f", with {_indefinite_article(emotion)} {emotion} expression")
+    if outfit:
+        parts.append(f", wearing {outfit}")
+    parts.append(f". {style.cloud}")
+    return "".join(parts)
+
+
 def _build_local_prompt(
-    kind: str, grammar_or_pose: str, setting: str, emotion: str,
+    kind: str, phrase: str, setting: str, emotion: str,
     outfit: str = "", subject: str = "subject", style: ShotStyle | None = None
 ) -> str:
-    """Build the ComfyUI/Qwen-Edit prompt.
+    """Build the ComfyUI / Qwen-Image 2.1 prompt.
 
-    Angle shots keep the tight <sks> Multiple-Angles LoRA grammar so the LoRA
-    can do its job; every other kind is plain English with setting/lighting
-    folded in. The emotion is appended so it influences expression without
-    breaking the LoRA grammar for angles. An explicit outfit, when given, is
-    appended after the grammar/pose so clothing can vary.
+    Same sentence as the cloud prompt, with one difference: close-up shots keep
+    their setting. Without it every close-up came back on the reference's own
+    backdrop, and the dataset ends up with seven identical backgrounds.
 
     `subject` is interpolated here, not left as a `{subject}` placeholder:
-    nothing downstream formats the local prompt, so a placeholder went to
-    ComfyUI verbatim. Shots with no emotion (the Concept plan) drop the mood
-    clause instead of emitting a dangling "  mood".
-
-    **Angle shots get no style clause.** Their prompt is the <sks> grammar the
-    Multiple-Angles LoRA was trained on (clean splat renders); appending prose
-    degrades it, which is the same reason `apply_prop_exclusion` skips them.
-    They carry no medium claim today either, so nothing is lost — Qwen-Edit
-    follows the reference image's medium on its own.
+    nothing downstream formats the local prompt.
     """
-    wardrobe = f", wearing {outfit}" if outfit else ""
-    if kind == "angle":
-        prompt = f"<sks> {grammar_or_pose}"
-        if emotion and emotion != "neutral":
-            prompt += f", {emotion} expression"
-        return prompt + wardrobe
-    # Settings are complete phrases ("in a warmly lit interior room", "outdoors
-    # at golden hour") — they carry their own preposition.
-    medium = (style or shot_style.SHOT_STYLES[shot_style.MATCH]).local
-    tail = f"{emotion} mood, " if emotion else ""
-    tail += f"{medium}, " if medium else ""
-    tail += "consistent identity" if emotion else "unchanged form"
-    return (f"the same {_subject_phrase(subject)}, {grammar_or_pose}{wardrobe}, "
-            f"{setting}, {tail}")
+    style = style or shot_style.SHOT_STYLES[shot_style.MATCH]
+    return _instruction(subject, phrase, setting, emotion, outfit, style,
+                        with_mood=kind != "emotion")
 
 
 def _build_cloud_prompt(
@@ -517,28 +519,25 @@ def _build_cloud_prompt(
 ) -> str:
     """Build the plain-English Nano Banana instruction.
 
-    The medium is stated once, at the END, as its own sentence — never as an
-    adjective on "image" (that used to read "Generate a photorealistic image
-    of …", which turned every illustrated reference into a photograph).
+    Close-up expression shots carry their own framing AND their expression in
+    the description, so they get neither a setting nor a mood clause here.
     """
     style = style or shot_style.SHOT_STYLES[shot_style.MATCH]
-    parts = [
-        f"Generate an image of exactly the same {_subject_phrase(subject)} "
-        "from the reference image(s), identical in every physical detail",
-        f", {description}",
-    ]
-    # Close-up expression shots carry their own framing AND their expression in
-    # the description; every other kind names the setting (already a complete
-    # phrase) and, for characters, the mood.
-    if kind != "emotion":
-        if setting:
-            parts.append(f", {setting}")
-        if emotion and emotion != "neutral":
-            parts.append(f", with {_indefinite_article(emotion)} {emotion} expression")
-    if outfit:
-        parts.append(f", wearing {outfit}")
-    parts.append(f". {style.cloud}")
-    return "".join(parts)
+    is_close_up = kind == "emotion"
+    return _instruction(subject, description, "" if is_close_up else setting, emotion,
+                        outfit, style, with_mood=not is_close_up)
+
+
+def _insert_outfit(prompt: str, phrase: str) -> str:
+    """Put ", wearing …" at the end of the instruction clause, before the style
+    sentence. Appends instead when the prompt has no sentence break (a cell the
+    user rewrote by hand).
+
+    ponytail: splits at the first ". " — a subject name containing one ("Dr. X")
+    would take the outfit early; rename the subject or edit the prompt cell.
+    """
+    head, sep, tail = prompt.partition(". ")
+    return f"{head}, {phrase}{sep}{tail}"
 
 
 def apply_wardrobe(shot: Shot) -> Shot:
@@ -555,14 +554,9 @@ def apply_wardrobe(shot: Shot) -> Shot:
     local = shot.local_prompt
     cloud = shot.cloud_prompt
     if phrase.lower() not in local.lower():
-        local = f"{local}, {phrase}"
+        local = _insert_outfit(local, phrase)
     if phrase.lower() not in cloud.lower():
-        # Insert before the trailing "Keep the same..." sentence when present.
-        if ". Keep the same" in cloud:
-            head, _, tail = cloud.partition(". Keep the same")
-            cloud = f"{head}, {phrase}. Keep the same{tail}"
-        else:
-            cloud = f"{cloud}, {phrase}"
+        cloud = _insert_outfit(cloud, phrase)
     return shot.model_copy(update={"local_prompt": local, "cloud_prompt": cloud})
 
 
@@ -570,34 +564,29 @@ def apply_wardrobe(shot: Shot) -> Shot:
 # dataset where 20/24 images show the same backpack teaches the LoRA that the
 # backpack IS the character. These clauses ask the generator to drop them.
 #
-# Deliberately NOT applied to `kind="angle"` local prompts: those use the <sks>
-# Multiple-Angles LoRA grammar, which is trained on clean splat renders and
-# degrades when prose is appended (see ARCHITECTURE.md). Diffusion models also
-# handle negation poorly in a positive prompt — naming "backpack" can summon one.
-# Angle shots rely on isolation instead, which removes props from the reference
-# itself and is the mechanism that actually works.
+# Deliberately NOT applied to local prompts: Qwen-Image 2.1 draws what a prompt
+# names, even negated — "do not include any backpacks" put a backpack on the
+# character in 2 of 8 test shots. Gemini follows the negation. Locally, isolating
+# the source in ① removes props from the reference itself, which is the mechanism
+# that actually works.
 _CLOUD_NO_PROPS = (
     " Show only the character and the clothing worn on their body — do not "
     "include any backpacks, bags, straps, held objects, tools, props, or "
     "accessories that appear in the reference image."
 )
-_LOCAL_NO_PROPS = ", without any bags or carried accessories"
 
 
 def apply_prop_exclusion(shot: Shot) -> Shot:
-    """Return a copy of `shot` asking the generator to omit reference props.
+    """Return a copy of `shot` whose CLOUD prompt asks to omit reference props.
 
     Applied at generation time (like `apply_wardrobe`) rather than baked into the
     plan, so the column stays honest and hand-edited prompt cells still get the
-    clause. Idempotent.
+    clause. The local prompt is never touched (see above). Idempotent.
     """
     cloud = shot.cloud_prompt
     if _CLOUD_NO_PROPS.strip() not in cloud:
         cloud = f"{cloud}{_CLOUD_NO_PROPS}"
-    local = shot.local_prompt
-    if shot.kind != "angle" and _LOCAL_NO_PROPS not in local:
-        local = f"{local}{_LOCAL_NO_PROPS}"
-    return shot.model_copy(update={"local_prompt": local, "cloud_prompt": cloud})
+    return shot.model_copy(update={"cloud_prompt": cloud})
 
 
 def default_plan(subject: str = "the character",

@@ -54,7 +54,7 @@ TRAINER_CHOICES = [(label, key) for key, label in TRAINERS.items()]
 
 ENGINE_CHOICES = [
     ("Cloud — Gemini image model (best identity fidelity, SFW only)", "gemini"),
-    ("Local — ComfyUI Qwen Image Edit 2511 (free, private, uncensored)", "comfyui"),
+    ("Local — ComfyUI Qwen Image 2.1 (free, private, uncensored)", "comfyui"),
 ]
 CLOUD_MODEL_CHOICES = [(f"{m}  (~${p:.3f}/img est.)", m) for m, p in CLOUD_IMAGE_PRICES.items()]
 CAPTIONER_CHOICES = [(c.label, c.key) for c in CAPTIONERS]
@@ -303,7 +303,7 @@ def preview_final_prompt(plan_df: pd.DataFrame, engine: str, exclude_props: bool
     if exclude_props:
         shot = apply_prop_exclusion(shot)
     field = "local_prompt" if engine == "comfyui" else "cloud_prompt"
-    which = "Local (ComfyUI / Qwen-Edit)" if engine == "comfyui" else "Cloud (Gemini)"
+    which = "Local (ComfyUI / Qwen-Image 2.1)" if engine == "comfyui" else "Cloud (Gemini)"
     return (f"**{which} prompt for `{shot.id}`** — exactly what the engine receives, "
             f"after outfit and prop-exclusion are folded in:\n\n```\n"
             f"{getattr(shot, field)}\n```")
@@ -1343,7 +1343,15 @@ def do_load_plan(plan_name: str):
         raise gr.Error(f"Couldn't read the plan at {path}: {e}. Check the YAML — "
                        f"each shot needs at least an `id`, `kind`, `local_prompt` "
                        f"and `cloud_prompt`.") from e
-    return _shots_to_df(shots), f"✅ Loaded {len(shots)} shots from {path}"
+    note = f"✅ Loaded {len(shots)} shots from {path}"
+    # Plans saved before 0.17.0 carry the old engine's `<sks>` LoRA grammar, which
+    # Qwen-Image 2.1 reads as literal text and renders badly.
+    stale = sum("<sks>" in s.local_prompt for s in shots)
+    if stale:
+        note += (f" ⚠️ {stale} shot(s) still use the old Qwen-Image-Edit `<sks>` prompts, "
+                 f"which the local Qwen-Image 2.1 engine doesn't understand — rebuild the "
+                 f"plan from the dataset type / shot style, or rewrite those local prompts.")
+    return _shots_to_df(shots), note
 
 
 def estimate_cost(engine: str, cloud_model: str, df: pd.DataFrame) -> str:
@@ -1795,15 +1803,18 @@ with _blocks as demo:
                     gen_exclude_props = gr.Checkbox(
                         value=True,
                         label="Exclude props/accessories from the reference",
-                        info="Asks the generator to drop bags, held objects and "
-                             "accessories carried in your reference, so they don't get "
-                             "baked into every dataset image. Isolating the source in ① "
-                             "is the more reliable fix. Character-oriented wording — off "
+                        info="Cloud engine only: asks Gemini to drop bags, held objects "
+                             "and accessories carried in your reference, so they don't "
+                             "get baked into every dataset image. The local engine "
+                             "ignores it (naming a prop, even to forbid it, makes "
+                             "Qwen draw it) — isolate the source in ① instead, the more "
+                             "reliable fix either way. Character-oriented wording — off "
                              "by default for Concept datasets.")
                     gen_isolate = gr.Checkbox(value=False,
                                               label="Isolate generated angle shots (white background)",
                                               info="Cut generated angle shots onto white too "
-                                                   "(helps the angles LoRA on back views).")
+                                                   "(replaces each angle shot's setting "
+                                                   "with a plain white background).")
                     gen_iso_backend = gr.Dropdown(ISOLATION_CHOICES,
                                                   value=settings.isolation_backend,
                                                   label="Isolation backend",

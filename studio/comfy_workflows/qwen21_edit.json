@@ -1,0 +1,10 @@
+{
+  "1": {"class_type": "LoadImage", "inputs": {"image": "__SOURCE__"}},
+  "2": {"class_type": "UNETLoader", "inputs": {"unet_name": "qwen_image_2.1_int8_convrot.safetensors", "weight_dtype": "default"}},
+  "3": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen3vl_8b_int8_convrot.safetensors", "type": "qwen_image", "device": "default"}},
+  "4": {"class_type": "VAELoader", "inputs": {"vae_name": "qwen_image_2.1_vae_bf16.safetensors"}},
+  "5": {"class_type": "TextEncodeQwenImage21", "inputs": {"prompt": "__PROMPT__", "negative_prompt": "", "resolution": 1536, "clip": ["3", 0], "vae": ["4", 0], "images.image_1": ["1", 0]}},
+  "6": {"class_type": "KSampler", "inputs": {"seed": 0, "steps": 25, "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "denoise": 1, "model": ["2", 0], "positive": ["5", 0], "negative": ["5", 1], "latent_image": ["5", 2]}},
+  "7": {"class_type": "VAEDecode", "inputs": {"samples": ["6", 0], "vae": ["4", 0]}},
+  "8": {"class_type": "SaveImage", "inputs": {"filename_prefix": "LDS", "images": ["7", 0]}}
+}

@@ -146,3 +146,45 @@ def test_run_prompt_preflights_before_queueing(monkeypatch) -> None:
         comfy_api.run_prompt({"1": {"class_type": "Krea2EditModelPatch"}})
     assert "Krea2EditModelPatch" in str(e.value)
     assert "out of date" in str(e.value)
+
+
+# ---------- polling a running job ----------
+
+def _queue_stubs(monkeypatch: pytest.MonkeyPatch, history) -> None:
+    """`run_prompt` with the network replaced: `history` answers each /history poll."""
+    monkeypatch.setattr(comfy_api, "queue_backlog", lambda: 0)
+    monkeypatch.setattr(comfy_api, "missing_node_types", lambda graph: [])
+    monkeypatch.setattr(comfy_api.time, "sleep", lambda s: None)
+    monkeypatch.setattr(comfy_api.httpx, "post", lambda *a, **k: httpx.Response(
+        200, json={"prompt_id": "p1"}, request=httpx.Request("POST", "http://x")))
+    monkeypatch.setattr(comfy_api.httpx, "get", history)
+
+
+def test_one_slow_poll_does_not_fail_a_running_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ComfyUI stops answering HTTP while it swaps models, but the job finishes.
+    A single ReadTimeout used to fail the shot (and the retry queued it twice)."""
+    polls = iter([httpx.ReadTimeout("timed out"), httpx.ReadTimeout("timed out"), "ok"])
+
+    def history(*a, **k):
+        item = next(polls)
+        if isinstance(item, Exception):
+            raise item
+        done = {"p1": {"status": {"completed": True},
+                       "outputs": {"8": {"images": [{"filename": "o.png"}]}}}}
+        return httpx.Response(200, json=done, request=httpx.Request("GET", "http://x"))
+
+    _queue_stubs(monkeypatch, history)
+    assert comfy_api.run_prompt({}) == [{"filename": "o.png"}]
+
+
+def test_a_server_that_stays_silent_is_given_up_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"n": 0}
+
+    def history(*a, **k):
+        calls["n"] += 1
+        raise httpx.ConnectError("refused")
+
+    _queue_stubs(monkeypatch, history)
+    with pytest.raises(comfy_api.ComfyError, match="stopped answering"):
+        comfy_api.run_prompt({})
+    assert calls["n"] == comfy_api.MAX_STALLED_POLLS

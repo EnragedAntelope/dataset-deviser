@@ -1,8 +1,10 @@
-"""Fully local engine: Qwen Image Edit 2511 (+ Multiple-Angles LoRA) via ComfyUI."""
+"""Fully local engine: Qwen-Image 2.1 (unified generate + edit) via ComfyUI."""
 
 from __future__ import annotations
 
 from pathlib import Path
+
+import httpx
 
 from studio import comfy_api
 from studio.engines.base import GenerationError
@@ -27,21 +29,22 @@ class ComfyUIEngine:
         return self._uploaded[source]
 
     def generate(self, sources: list[Path], shot: Shot, out_path: Path, seed: int) -> Path:
-        # Qwen Edit works from one reference; use the primary (first) source.
-        graph = comfy_api.load_template("qwen_edit")
-        graph["1"]["inputs"]["image"] = self._source_name(sources[0])
-        graph["9"]["inputs"]["prompt"] = shot.local_prompt
-        # The Multiple-Angles LoRA is trigger-based (<sks>); zero it out for
-        # plain pose/scene edits so it cannot bias them. 0.9 per fal's tips.
-        graph["8"]["inputs"]["strength_model"] = 0.9 if shot.kind == "angle" else 0.0
-        graph["14"]["inputs"]["seed"] = seed
+        # One reference per shot; use the primary (first) source. Qwen-Image 2.1
+        # accepts up to 10, but that is untested here (see ARCHITECTURE.md).
+        graph = comfy_api.load_template("qwen21_edit")
+        graph["5"]["inputs"]["prompt"] = shot.local_prompt
+        graph["6"]["inputs"]["seed"] = seed
 
         last_err: Exception | None = None
         for _ in range(2):
             try:
+                # Upload inside the try: ComfyUI dying mid-batch (OOM restart)
+                # surfaces as a raw httpx error from here, from /history polling
+                # or from /view — all of which must fail ONE shot, not the run.
+                graph["1"]["inputs"]["image"] = self._source_name(sources[0])
                 refs = comfy_api.run_prompt(graph, timeout=600)
                 return comfy_api.fetch_image(refs[0], out_path)
-            except comfy_api.ComfyError as e:
+            except (comfy_api.ComfyError, httpx.HTTPError) as e:
                 last_err = e
-                graph["14"]["inputs"]["seed"] = seed + 1
+                graph["6"]["inputs"]["seed"] = seed + 1
         raise GenerationError(f"shot {shot.id}: {last_err}")
