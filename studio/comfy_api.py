@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -206,18 +207,49 @@ def missing_node_types(graph: dict) -> list[str]:
     return sorted(c for c in wanted if c not in installed)
 
 
+# ComfyUI rejects uploads over its --max-upload-size (default 100 MB) with a 413.
+# Stay under that so huge TIFF/PNG sources still go through.
+MAX_UPLOAD_BYTES = 90 * 1024 * 1024
+
+
+def _shrink_for_upload(path: Path) -> Path:
+    """Re-encode ``path`` as a PNG under MAX_UPLOAD_BYTES (temp file; caller deletes)."""
+    from PIL import Image
+
+    with Image.open(path) as im:
+        img = im.convert("RGBA" if "A" in im.getbands() else "RGB")
+    while True:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            out = Path(tmp.name)
+        img.save(out, "PNG")
+        if out.stat().st_size <= MAX_UPLOAD_BYTES:
+            return out
+        out.unlink()
+        img = img.resize((round(img.width * 0.75), round(img.height * 0.75)), Image.LANCZOS)
+
+
 def upload_image(path: Path) -> str:
-    """Upload into ComfyUI's input folder; returns the stored filename."""
-    name = f"lds_{uuid.uuid4().hex[:10]}{path.suffix.lower()}"
-    with path.open("rb") as f:
-        r = httpx.post(
-            f"{settings.comfy_url}/upload/image",
-            files={"image": (name, f, "image/png")},
-            data={"overwrite": "true"},
-            timeout=60,
-        )
-    r.raise_for_status()
-    return r.json()["name"]
+    """Upload into ComfyUI's input folder; returns the stored filename.
+
+    A source over ``MAX_UPLOAD_BYTES`` is downscaled to fit first (the models work
+    at ~1-2 MP, so this costs nothing real).
+    """
+    tmp = _shrink_for_upload(path) if path.stat().st_size > MAX_UPLOAD_BYTES else None
+    send = tmp or path
+    try:
+        name = f"lds_{uuid.uuid4().hex[:10]}{send.suffix.lower()}"
+        with send.open("rb") as f:
+            r = httpx.post(
+                f"{settings.comfy_url}/upload/image",
+                files={"image": (name, f, "image/png")},
+                data={"overwrite": "true"},
+                timeout=60,
+            )
+        r.raise_for_status()
+        return r.json()["name"]
+    finally:
+        if tmp:
+            tmp.unlink(missing_ok=True)
 
 
 def queue_backlog() -> int:
