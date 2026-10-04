@@ -4,7 +4,8 @@ Every tab is standalone: point it at any folder (or upload files) and run just
 that stage. When you do run stages in order, each one auto-fills the next
 tab's input folder — chaining is a convenience, never a requirement.
 
-Run:  python app.py   then open http://127.0.0.1:7861
+Run:  python app.py   then open http://127.0.0.1:7861 (or another free port if 7861 is
+taken or reserved; the URL is printed at launch, and LDS_PORT in .env pins one)
 """
 
 from __future__ import annotations
@@ -2382,6 +2383,27 @@ with _blocks as demo:
 
     demo.load(_check_for_update, None, update_notice)
 
+def _pick_port(preferred: int = 7861) -> int:
+    """LDS_PORT if set, else ``preferred`` if bindable, else any free port.
+
+    Windows (Hyper-V/WSL/Docker) reserves ~500 contiguous ports around 7861, so a
+    "next port up" scan (Gradio's included) can land wholly inside the reserved
+    block. Port 0 lets the OS pick one that is genuinely bindable.
+    """
+    import socket
+    pinned = os.environ.get("LDS_PORT", "").strip()
+    if pinned:
+        return int(pinned)
+    for port in (preferred, 0):
+        with socket.socket() as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return s.getsockname()[1]
+            except OSError:
+                continue
+    raise OSError("No free local port; set LDS_PORT in .env.")
+
+
 if __name__ == "__main__":
     # Bound to localhost on purpose: no auth layer, and .env keys are reachable
     # through the process. Do not expose publicly / use share=True.
@@ -2391,5 +2413,5 @@ if __name__ == "__main__":
     # consequence is that the local file endpoint can serve any file the process
     # can read. Safe ONLY because of the localhost-only, no-auth bind above — see
     # the Security posture note in docs/ARCHITECTURE.md.
-    demo.launch(server_name="127.0.0.1", server_port=7861, inbrowser=True,
+    demo.launch(server_name="127.0.0.1", server_port=_pick_port(), inbrowser=True,
                 allowed_paths=_allowed_media_paths())

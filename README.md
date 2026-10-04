@@ -95,7 +95,8 @@ start.bat                    ./start.sh
 
 Needs **Python 3.10–3.13**. `setup.bat` asks whether to install the **NVIDIA-GPU (CUDA)** or
 **CPU-only** build — pick CPU if you have no NVIDIA card and lean on the cloud options. Then open
-<http://127.0.0.1:7861>.
+<http://127.0.0.1:7861>. If that port is taken or reserved by Windows, the app picks a free
+one and prints the URL; set `LDS_PORT` in `.env` to pin a port.
 
 Setup then offers to store API keys in a gitignored `.env`. **Every key is optional** — skip them
 all and stay fully local. You can add or change one at any time, without re-running the installer:
