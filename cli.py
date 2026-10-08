@@ -49,7 +49,12 @@ def _report_outputs(reports: list) -> list[Path]:
 
 
 def _echo_preprocess_failures(reports: list) -> int:
-    """Print the skipped sources; return how many there were."""
+    """Print the skipped sources (and a cropped-reference warning); return how
+    many were skipped."""
+    ok = [r for r in reports if r.output]
+    if ok and all(r.cut_off for r in ok):
+        typer.echo("WARNING: every reference is cut off at the bottom - full-body "
+                   "shots will invent the legs. Add a full-body photo if you have one.")
     failed = [r for r in reports if r.error]
     for r in failed:
         typer.echo(f"  SKIPPED {r.source.name}: {r.error}")

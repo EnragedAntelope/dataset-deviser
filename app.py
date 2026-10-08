@@ -54,7 +54,13 @@ from studio.engines.gemini import (
     resolve_image_model,
 )
 from studio.jobs import JobControl
-from studio.shotplan import Shot, apply_prop_exclusion, apply_wardrobe, plan_for_type
+from studio.shotplan import (
+    Shot,
+    apply_prop_exclusion,
+    apply_wardrobe,
+    coverage,
+    plan_for_type,
+)
 from studio.trainer_configs import TRAINER_MODELS, TRAINERS, optimizer_choices
 
 TRAINER_CHOICES = [(label, key) for key, label in TRAINERS.items()]
@@ -265,9 +271,9 @@ def _allowed_media_paths() -> list[str]:
 # Human-editable columns lead; the long prompt cells trail. Column ORDER and
 # WIDTHS must be set explicitly: pydantic field order otherwise puts the two
 # ~200-char prompts in the middle, squeezing `outfit` to an unreadable sliver.
-PLAN_COLUMNS = ["id", "kind", "emotion", "setting", "outfit",
+PLAN_COLUMNS = ["id", "kind", "framing", "emotion", "setting", "outfit",
                 "local_prompt", "cloud_prompt", "chain_from"]
-PLAN_COLUMN_WIDTHS = ["110px", "70px", "110px", "200px", "220px",
+PLAN_COLUMN_WIDTHS = ["110px", "70px", "90px", "110px", "200px", "220px",
                       "260px", "260px", "100px"]
 
 
@@ -526,7 +532,7 @@ def _df_to_shots(df: pd.DataFrame) -> list[Shot]:
 
     cols = (
         "id", "kind", "local_prompt", "cloud_prompt",
-        "chain_from", "emotion", "setting", "outfit",
+        "chain_from", "emotion", "setting", "outfit", "framing",
     )
     return [Shot(**{k: val(row, k) for k in cols})
             for _, row in df.iterrows() if val(row, "id").strip()]
@@ -607,6 +613,14 @@ def _preprocess_note(reports, out_dir: Path, alpha_cutout: bool) -> str:
                      f"which expects a white-background reference.")
         elif refs:
             head += f" — isolated references for ② in {refs}."
+    cut = [r.source.name for r in ok if r.cut_off]
+    if cut and len(cut) == len(ok):
+        head += (f"\n\n⚠️ **Every reference is cut off at the bottom** "
+                 f"({', '.join(cut)}) — full-body shots will invent the legs. Add a "
+                 f"full-body photo as another reference if you have one.")
+    elif cut:
+        head += (f"\n\n<sub>Cut off at the bottom: {', '.join(cut)} — the other "
+                 f"reference(s) show more of the body.</sub>")
     if not failed:
         return head
     lines = "\n".join(f"- `{r.source.name}` — {r.error}  \n  → {_failure_hint(r.error)}"
@@ -763,6 +777,13 @@ def do_refresh_disk(results_state, gen_dir: str, keep_ids: list[str]):
     rows, gallery, keep = _gen_gallery(results, selected=keep_ids)
     note = f"Re-synced with {gen_dir}: {before - len(results)} externally deleted shot(s) dropped."
     return results, rows, gallery, keep, note
+
+
+def coverage_note(results_state, keep_ids: list[str], percent: float) -> str:
+    """② coverage line for the kept shots (see `shotplan.coverage`)."""
+    kept = set(keep_ids or [])
+    shots = [r.shot for r in results_state or [] if r.path and r.shot.id in kept]
+    return coverage(shots, (percent or 40) / 100)
 
 
 def send_kept_to_caption(results_state, keep_ids: list[str], gen_dir: str):
@@ -2003,6 +2024,13 @@ with _blocks as demo:
                                        info="Clicks enlarge instead of selecting.")
             keep = gr.CheckboxGroup(label="✅ Kept shots — UNCHECK to reject", choices=[],
                                     elem_id="dd-picks-gen")
+            with gr.Row():
+                gen_coverage = gr.Markdown()
+                gen_dominance = gr.Number(
+                    value=40, minimum=10, maximum=100, step=5, scale=0,
+                    label="Dominance warning (%)",
+                    info="Warn when one view or expression is more than this share "
+                         "of the kept shots.")
 
         with gr.Tab("③ Caption", id="caption"):
             gr.Markdown("Tag any folder of images with caption `.txt` sidecars — the folder "
@@ -2418,6 +2446,8 @@ with _blocks as demo:
                                            (exp_gallery, exp_rows, exp_select, exp_zoom)):
         _boxes.change(_picker_mark, [_rows, _boxes], [_gallery])
         _zoom.change(_set_zoom, [_zoom], [_gallery])
+    for _event in (keep.change, gen_dominance.change):
+        _event(coverage_note, [results_state, keep, gen_dominance], [gen_coverage])
     btn_gen_all.click(_pick_all, [gen_rows], [keep])
     btn_gen_none.click(_pick_none, [gen_rows], [keep])
     btn_cap_all.click(_pick_all, [cap_rows], [cap_select])

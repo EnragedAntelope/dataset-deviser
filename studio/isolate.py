@@ -183,6 +183,22 @@ def isolate_builtin(image_path: Path, out_path: Path, subject_prompt: str = "cha
     return out_path
 
 
+def _subject_mask(image: Image.Image, bg_tolerance: int = 8) -> np.ndarray:
+    """Subject pixels of an isolated image: alpha > 0, else anything darker than white."""
+    if image.mode == "RGBA":
+        return np.asarray(image.getchannel("A")) > 0
+    arr = np.asarray(image.convert("RGB")).astype(np.int16)
+    return np.any(255 - arr > bg_tolerance, axis=-1)
+
+
+def touches_bottom(image: Image.Image, frac: float = 0.02) -> bool:
+    """True when the isolated subject reaches the bottom `frac` of the frame —
+    the photo cut it off, so a full-body shot has to invent what's missing."""
+    mask = _subject_mask(image)
+    edge = max(1, round(image.height * frac))
+    return bool(mask[-edge:].any())
+
+
 def crop_to_content(image: Image.Image, bg_tolerance: int = 8,
                     margin_frac: float = 0.02) -> Image.Image:
     """Crop an isolated (subject-on-white, or subject-with-alpha) image to the
@@ -195,11 +211,7 @@ def crop_to_content(image: Image.Image, bg_tolerance: int = 8,
     A small margin (fraction of the long side) is left around the subject.
     If the image is effectively empty (nothing found), it is returned unchanged.
     """
-    if image.mode == "RGBA":
-        nonbg = np.asarray(image.getchannel("A")) > 0
-    else:
-        arr = np.asarray(image.convert("RGB")).astype(np.int16)
-        nonbg = np.any(255 - arr > bg_tolerance, axis=-1)  # anything darker than white
+    nonbg = _subject_mask(image, bg_tolerance)
     if not nonbg.any():
         return image
     rows = np.where(nonbg.any(axis=1))[0]

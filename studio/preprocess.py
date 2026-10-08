@@ -39,6 +39,8 @@ class PreprocessReport:
     isolated: bool = False
     # The isolated copy in `refs/` — ②'s reference, never a training image.
     reference: Path | None = None
+    # The isolated subject runs off the bottom edge (needs isolation to know).
+    cut_off: bool = False
     # Empty on success. When set, this source was skipped and nothing was
     # written for it; the batch carried on with the remaining images.
     error: str = ""
@@ -190,6 +192,7 @@ def preprocess(
         out_path = work_dir / f"{source.stem}_prepped_{n}.png"
         n += 1
     ref_path = refs_dir / out_path.name if isolate else None
+    cut_off = False
     # Restoration writes `out_path` BEFORE isolation runs. A failure after that
     # point used to leave the restored (not isolated, not resized) image behind,
     # where `list_images` happily served it to ②/③ as a finished source — a
@@ -231,6 +234,9 @@ def preprocess(
                             alpha_cutout=alpha_cutout, label=source.name, front=front)
             with Image.open(ref_path) as im:
                 ref = im.copy() if alpha_cutout else im.convert("RGB")  # keep RGBA
+            from studio.isolate import touches_bottom
+
+            cut_off = touches_bottom(ref)
             if tighten_crop:
                 # Crop the subject-on-white composite to its bounding box before resizing.
                 from studio.isolate import crop_to_content
@@ -259,4 +265,5 @@ def preprocess(
         reason=reason or "clean source, resize only",
         isolated=isolate,
         reference=ref_path,
+        cut_off=cut_off,
     )
