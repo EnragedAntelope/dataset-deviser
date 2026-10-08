@@ -6,7 +6,7 @@ settings; for a **concept**, 18 shots around one object — a turnaround plus fr
 For a **style**, bring your own images and get smart, correctly-framed captions. Either way the
 output is a flat folder that drops straight into any trainer
 (**ai-toolkit / kohya / OneTrainer / …**), plus a ready-to-edit **training config** for
-ai-toolkit, kohya or musubi.
+ai-toolkit, kohya, musubi or Fizgig, and a validation pack for picking the best checkpoint.
 
 ![Generate & curate tab](docs/images/ui-generate.png)
 
@@ -48,7 +48,7 @@ Run them in order (each step auto-fills the next) or jump straight to the one yo
 | ② Generate shots *(character + concept)* | ComfyUI: Qwen-Image 2.1 *(Qwen Research License)* | Gemini (Nano Banana) |
 | ③ Caption | Qwen3-VL-8B, JoyCaption, NSFW finetune, **WD + e621 taggers**, LM Studio / Ollama / any OpenAI endpoint | Gemini Flash, Groq free tier |
 | ④ Export | always local (+ optional **.zip** and **Hugging Face** publish) | — |
-| ⑤ Train config | ai-toolkit (incl. SDXL) / **kohya sd-scripts** / musubi-tuner | — |
+| ⑤ Train config | ai-toolkit (incl. SDXL) / **kohya sd-scripts** / musubi-tuner / **Fizgig** | — |
 
 ## Dataset types
 
@@ -229,6 +229,14 @@ Both have a switch in ②, because both bit us:
 - **Props copied into every shot** (a backpack in the reference → the LoRA thinks the backpack
   *is* the character). Best fix: **isolate the source in ①** — SAM3 keeps bags and held objects
   out of the subject mask. The "Exclude props" toggle in ② helps too, especially on Gemini.
+
+## Picking the best checkpoint
+
+⑤ sets training in **epochs**: every epoch saves a checkpoint and renders the same 8 test
+prompts at the same seed. Leave **Repeats** at 0 and it sizes each epoch for you; the exposure
+line shows the total. The `validation/` folder it writes holds the prompts, a short guide and a
+score sheet. To test likeness fairly, set **Hold out N reference photos** in ④: those photos
+stay out of training, in a `-heldout` folder beside the dataset, to compare samples against.
 
 ## CLI
 

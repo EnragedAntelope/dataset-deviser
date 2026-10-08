@@ -21,30 +21,34 @@ def _cfg(trainer: str, tmp_path: Path, **kw) -> TrainConfig:
     preset = TRAINER_MODELS[trainer][0]
     base = {"trainer": trainer, "model": preset, "dataset_dir": tmp_path,
             "name": "sy-lora", "trigger": "sysnootles", "resolution": 1024,
-            "rank": 32, "alpha": 64, "steps": 1800, "lr": 8e-5, "batch_size": 2}
+            "rank": 32, "alpha": 64, "epochs": 12, "num_repeats": 3, "n_images": 10,
+            "lr": 8e-5, "batch_size": 2}
     base.update(kw)
     return TrainConfig(**base)
+
+
+def _musubi(cfg: TrainConfig, tmp_path: Path) -> str:
+    return musubi_command("C:/musubi", tmp_path / "dataset.toml", cfg, tmp_path / "p.txt")
 
 
 def test_musubi_command_honors_every_hyperparameter(tmp_path: Path) -> None:
     """The 0.3.1 bug: musubi_command() took only the ModelPreset, so rank/steps
     were hardcoded and every ⑤-tab slider was silently discarded."""
-    cfg = _cfg("musubi", tmp_path)
-    cmd = musubi_command("C:/musubi", tmp_path / "dataset.toml", cfg)
+    cmd = _musubi(_cfg("musubi", tmp_path), tmp_path)
 
     assert "--network_dim 32" in cmd
     assert "--network_alpha 64" in cmd
-    assert "--max_train_steps 1800" in cmd
+    assert "--max_train_epochs 12" in cmd
     assert "--learning_rate 8e-05" in cmd
     assert "sy-lora" in cmd
     # The old code hardcoded these; make sure they can't creep back.
     assert "--network_dim 16" not in cmd
-    assert "--max_train_steps 2000" not in cmd
+    assert "--max_train_steps" not in cmd
 
 
 def test_musubi_command_has_no_unrendered_fstring_braces(tmp_path: Path) -> None:
     """The old code emitted the literal `{16}` from a broken f-string."""
-    cmd = musubi_command("C:/musubi", tmp_path / "dataset.toml", _cfg("musubi", tmp_path))
+    cmd = _musubi(_cfg("musubi", tmp_path), tmp_path)
     # <<FILL: ...>> placeholders are intentional; bare braces are not.
     assert not re.search(r"\{\d", cmd)
     assert "{16}" not in cmd
@@ -53,11 +57,11 @@ def test_musubi_command_has_no_unrendered_fstring_braces(tmp_path: Path) -> None
 def test_write_configs_threads_config_into_musubi_command(tmp_path: Path) -> None:
     _written, command = write_configs(_cfg("musubi", tmp_path), "C:/musubi")
     assert "--network_dim 32" in command
-    assert "--max_train_steps 1800" in command
+    assert "--max_train_epochs 12" in command
 
 
 def test_musubi_toml_scales_repeats(tmp_path: Path) -> None:
-    toml = render_musubi_toml(_cfg("musubi", tmp_path), num_repeats=17)
+    toml = render_musubi_toml(_cfg("musubi", tmp_path, num_repeats=17))
     assert "num_repeats = 17" in toml
 
 
@@ -82,7 +86,7 @@ def test_aitoolkit_respects_sliders(tmp_path: Path) -> None:
     yaml = render_aitoolkit_yaml(_cfg("ai-toolkit", tmp_path))
     assert "linear: 32" in yaml
     assert "linear_alpha: 64" in yaml
-    assert "steps: 1800" in yaml
+    assert "steps: 180 " in yaml  # 10 images x 3 repeats / batch 2 = 15/epoch x 12
     assert "batch_size: 2" in yaml
 
 

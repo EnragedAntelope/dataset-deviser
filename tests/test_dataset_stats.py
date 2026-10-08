@@ -38,16 +38,16 @@ def test_steps_scale_with_image_count(tmp_path: Path) -> None:
     # The bug being fixed: a flat 2000 steps regardless of dataset size.
     small = ds.inspect(_make(tmp_path / "s", [(1024, 1024)] * 24))
     large = ds.inspect(_make(tmp_path / "l", [(1024, 1024)] * 40))
-    assert small.suggested_steps == 24 * ds.STEPS_PER_IMAGE
-    assert large.suggested_steps == 40 * ds.STEPS_PER_IMAGE
-    assert large.suggested_steps > small.suggested_steps
+    assert small.target_steps == 24 * ds.STEPS_PER_IMAGE
+    assert large.target_steps == 40 * ds.STEPS_PER_IMAGE
+    assert large.target_steps > small.target_steps
 
 
 def test_steps_are_clamped_at_both_ends(tmp_path: Path) -> None:
     tiny = ds.inspect(_make(tmp_path / "t", [(1024, 1024)] * 2))
     huge = ds.inspect(_make(tmp_path / "h", [(1024, 1024)] * 200))
-    assert tiny.suggested_steps == ds.MIN_STEPS
-    assert huge.suggested_steps == ds.MAX_STEPS
+    assert tiny.target_steps == ds.MIN_STEPS
+    assert huge.target_steps == ds.MAX_STEPS
 
 
 def test_aspect_ratios_are_labelled(tmp_path: Path) -> None:
@@ -129,7 +129,7 @@ def test_the_train_tab_actually_shows_the_advisory(tmp_path: Path) -> None:
     folder = _make(tmp_path / "small", [(512, 512)] * 4, captions=4)
     out = A.do_generate_train_config(
         "ai-toolkit", "flux-dev", str(folder), "", "lora", "sks",
-        1024, 16, 16, 2000, 1e-4, 1, True)
+        1024, 16, 16, 16, 1e-4, 1, True)
     assert "below 1024px" in out
     assert "2.0×" in out
 
@@ -140,5 +140,5 @@ def test_the_train_tab_stays_quiet_when_the_dataset_is_big_enough(tmp_path: Path
     folder = _make(tmp_path / "big", [(1024, 1024)] * 4, captions=4)
     out = A.do_generate_train_config(
         "ai-toolkit", "flux-dev", str(folder), "", "lora", "sks",
-        1024, 16, 16, 2000, 1e-4, 1, True)
+        1024, 16, 16, 16, 1e-4, 1, True)
     assert "below 1024px" not in out

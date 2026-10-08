@@ -1,3 +1,3 @@
 """Dataset Deviser: turn a character, style, or concept into a ready-to-train LoRA dataset."""
 
-__version__ = "0.17.3"
+__version__ = "0.18.0"

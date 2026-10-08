@@ -8,6 +8,7 @@ Fully standalone — point it at any image(s). Restoration backends:
 
 from __future__ import annotations
 
+import json
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -15,8 +16,10 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageOps
+from PIL.PngImagePlugin import PngInfo
 
 from studio.config import settings
+from studio.dataset_stats import PROVENANCE_KEY
 from studio.isolate import isolate_subject
 
 BLUR_THRESHOLD = 120.0  # Laplacian variance below this = soft/degraded image
@@ -156,9 +159,12 @@ def preprocess(
     restore_backend = restore_backend or settings.restore_backend
     work_dir.mkdir(parents=True, exist_ok=True)
     with Image.open(source) as raw:
+        exif = raw.getexif()
         # Phone photos store portrait shots landscape plus an EXIF rotate tag;
         # ignoring it put sideways people in the dataset.
-        rotated = raw.getexif().get(0x0112, 1) != 1  # EXIF Orientation
+        rotated = exif.get(0x0112, 1) != 1  # EXIF Orientation
+        # DateTimeOriginal (Exif IFD), else DateTime: groups burst shots later.
+        captured = str(exif.get_ifd(0x8769).get(0x9003) or exif.get(0x0132) or "")
         oriented = ImageOps.exif_transpose(raw)
     img = oriented.convert("RGB")
     original_size = img.size
@@ -218,7 +224,11 @@ def preprocess(
 
             img = crop_to_content(img)
         img = _resize_to_target(img, target)
-        img.save(out_path, "PNG")
+        info = PngInfo()
+        info.add_text(PROVENANCE_KEY, json.dumps({
+            "name": source.name, "w": original_size[0], "h": original_size[1],
+            "captured": captured, "restored": restore, "isolated": isolate}))
+        img.save(out_path, "PNG", pnginfo=info)
     except BaseException:
         out_path.unlink(missing_ok=True)
         raise

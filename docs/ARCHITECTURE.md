@@ -1,6 +1,6 @@
 # Architecture
 
-Version: 0.17.3
+Version: 0.18.0
 
 ```
 app.py                  Gradio UI — thin wiring over the stage functions (5 tabs).
@@ -54,7 +54,8 @@ studio/
                         flag) + should_stop_now(). Checked BETWEEN items by the three
                         batch loops; UI-free so the CLI and tests drive it directly
   preprocess.py         Restore (comfyui|basic|auto) + isolate + optional tighten-crop
-                        + resize. Atomic: any failure deletes the partial output.
+                        + resize, stamping a `dd_source` provenance PNG chunk.
+                        Atomic: any failure deletes the partial output.
                         failed_report() turns a failure into data, not an exception
   isolate.py            Subject isolation: builtin SAM3 (transformers) | comfyui.
                         crop_to_content() tightens the isolated (subject-on-white, or
@@ -95,8 +96,10 @@ studio/
                         gotcha; the gemini backend retries transient statuses with
                         backoff (GEMINI_RETRIES / GEMINI_BACKOFF_S)
   package.py            Dataset export (NN.<ext>/NN.txt + metadata.json + metadata.jsonl
-                        + README.txt); records dataset_type + a detected caption_style
-                        in metadata.json; zip_dataset() bundles a folder into a .zip;
+                        + README.txt); records dataset_type, a detected caption_style,
+                        ① provenance and held-out photos in metadata.json; `holdout=N`
+                        copies the N largest real photos to `<dataset>-heldout/`;
+                        zip_dataset() bundles a folder into a .zip;
                         resolve_export_items() classifies candidates by caption sidecar
                         state (ready/empty/missing) — shared by the UI gate and the CLI
   shot_style.py         The medium ②'s prompts ask for: SHOT_STYLES (match |
@@ -117,15 +120,19 @@ studio/
   wardrobe.py           Compositional unisex outfit pool for the outfit column
                         (colour x garment; one pool, no gender picker)
   plan_io.py            Save/load shot plans as YAML (user-editable prompt libraries)
-  dataset_stats.py      Inspect a dataset folder (count/sizes/aspects) -> suggested
-                        steps + bucket ladder, so ⑤'s numbers are derived not guessed
+  dataset_stats.py      Inspect a dataset folder (count/sizes/aspects/① provenance) ->
+                        target steps, auto repeats + bucket ladder, so ⑤'s numbers are
+                        derived not guessed. provenance() reads ①'s `dd_source` PNG chunk
   trainer_configs.py    Emit LoRA-trainer configs (ai-toolkit config.yaml / kohya
-                        sd-scripts kohya-dataset.toml / musubi dataset.toml) +
-                        run-command builders + model registry. ModelPreset carries
-                        per-arch train/sample knobs (noise_scheduler/sample_guidance/
-                        sample_steps) and expects_tags (drives the caption/model
-                        sanity check). _sample_prompt varies by TrainConfig.dataset_type;
-                        caption_mismatch_warning() is the ④→⑤ advisory
+                        sd-scripts kohya-dataset.toml / musubi dataset.toml / Fizgig
+                        fizgig-dataset.toml) + run-command builders + model registry +
+                        the validation pack (validation/: prompts, validation.md, scores
+                        CSV). ModelPreset carries per-arch train/sample knobs
+                        (noise_scheduler/sample_guidance/sample_steps/epochs) and
+                        expects_tags (drives the caption/model sanity check).
+                        validation_prompts() varies by TrainConfig.dataset_type;
+                        exposure() is the steps/epoch math; caption_mismatch_warning()
+                        is the ④→⑤ advisory
   user_config.py        Persist trainer install paths, last training settings, the header
                         dataset type, and the custom captioner endpoint (URL/model/
                         key-env-NAME/spacing) to .cache/user_settings.json (no secrets;
@@ -881,10 +888,45 @@ quietly gets someone else's value.
   "Nothing was preprocessed"; a model-name mismatch only *warns*, because that check covers every
   bundled template including ones the run may never submit.
 - **Trainer configs are derived from the dataset, not from constants.** `dataset_stats.inspect()`
-  reads image count/dimensions (Pillow header parse only) so steps scale with the set
-  (`STEPS_PER_IMAGE`, clamped to 1000–4000) and buckets come from the images that actually exist.
-  Only config keys attested in each trainer's own examples are emitted — inventing plausible keys
-  produces configs that fail hours into a run.
+  reads image count/dimensions (Pillow header parse only) so training scales with the set and
+  buckets come from the images that actually exist. Only config keys attested in each trainer's
+  own examples are emitted — inventing plausible keys produces configs that fail hours into a run.
+- **⑤ counts epochs, not steps (0.18.0).** An epoch is the unit you compare: every trainer saves
+  one checkpoint and renders one sample set per epoch, so "pick the best checkpoint" means "pick
+  an epoch". Each preset carries `epochs` (16 for ai-toolkit/musubi/kohya, 30–55 for Fizgig per
+  its docs). Plain epochs undertrain a small set (24 images × 16 epochs = 384 steps), so
+  **Repeats = 0 means auto**: `suggested_repeats()` picks the repeats that bring the run near
+  `target_steps` (n × 75, clamped 1000–4000 — the old steps rule, now a target). Fizgig's auto
+  is always 1 — its guidance is more epochs, not repeats. ai-toolkit counts steps, so its YAML
+  gets `steps = epochs × steps_per_epoch` and saves/samples every `steps_per_epoch`.
+  `exposure()` is the one formula; ⑤'s live exposure line shows it and warns below 400 or above
+  6000 total steps.
+- **Every config ships a validation pack (0.18.0).** `write_configs` writes
+  `validation/validation_prompts.txt` (8 fixed prompts per dataset type), `validation.md` (how to
+  pick the epoch, inference settings, held-out photos) and `validation_scores.csv` (a row per
+  epoch × prompt), all sampled at `VALIDATION_SEED` so between epochs only the LoRA changes. They
+  live in a **subfolder** because every trainer pairs `NN.txt` with `NN.png` in the dataset
+  folder; a `.txt` beside the images is one bad glob away from being read as a caption. musubi
+  and sd-scripts take per-line `--w --h --d` (+ the preset's `sample_line_args`); Fizgig and
+  ai-toolkit take plain prompts. musubi Krea 2 samples through `--turbo_dit` at `--l 1 --s 8`,
+  which needs the text encoder in the train command — it only renders samples.
+- **Provenance rides in the PNG, not a side file (0.18.0).** ① writes a `dd_source` tEXt chunk
+  (`name, w, h, captured, restored, isolated`). It survives ③ (sidecars only) and ④ (`copy2`),
+  and sits before IDAT, so `inspect()` reads it from the header without decoding pixels. That is
+  how ⑤ can name the photos that were upscaled at ① (`photo.jpg (580px)`) and how ④ tells
+  a real photo from a generated shot. Generated shots carry none and count as native size.
+- **Held-out photos sit beside the dataset, never in it (0.18.0).** ④'s "Hold out N" copies the
+  N largest real photos (by original area — the best likeness yardstick) to `<dataset>-heldout/`
+  with numbered names, and records them in `metadata.json["heldout"]`; ⑤'s `validation.md` lists
+  them. Only photos with provenance qualify (a generated shot is no test of likeness) and at
+  least one image always stays in training. The dataset naming loop skips a name whose
+  `-heldout` sibling exists, so a stale held-out folder never pairs with a new dataset.
+- **Fizgig is a ⑤ target, not a launch (0.18.0).** It reads musubi's `dataset.toml` shape, so
+  `render_musubi_toml` serves both; `arch` holds its `--family` (`krea2` / `qwen_image21` /
+  `klein`). The command is its three `cache`/`train` steps from `docs/CLI.md` with `<<FILL>>`
+  model paths, `--precision auto --blocks_to_swap -1` (what its GUI does) and 1024 samples (it
+  warns smaller previews undersell a checkpoint). Preset knobs — adaptive LR, EMA, rank 8,
+  `--speed_lora`/`--training_adapter` — follow its per-family presets.
 - **`musubi_command()` takes the whole `TrainConfig`, not just the `ModelPreset`.** It previously
   took the preset alone and hardcoded `--network_dim 16` / `--max_train_steps 2000`, so every
   ⑤-tab slider was silently discarded. Regression-tested in `tests/test_trainer_configs_0_4_0.py`.
@@ -901,7 +943,8 @@ quietly gets someone else's value.
   version flag, the text-encoder flags and the timestep args, copied from each model's
   `docs/<prefix>.md` example in musubi-tuner; `tests/test_trainer_configs.py` pins them.
 - **ai-toolkit keeps every checkpoint.** `max_step_saves_to_keep` was 4, so a long run deleted the
-  early checkpoints, which are often the best likeness. It is now `ceil(steps / save_every)`.
+  early checkpoints, which are often the best likeness. Since 0.18.0 it is `epochs` (one save per
+  epoch).
 - **Train LoRAs on the base checkpoint, never a Turbo/distilled one.** Krea 2 trains on
   `krea/Krea-2-Raw` (arch `krea2`; `krea` was never an ai-toolkit arch). A test fails if any
   preset path contains "turbo".
@@ -1031,10 +1074,12 @@ grouped by stage. Milestone versions are noted only where they explain a design 
 - **④ Export** — flat NN.png/NN.txt + metadata.json (records dataset_type + detected caption_style)
   + metadata.jsonl (HF imagefolder) + README.txt; click-to-pick selection gate preseeded with what
   ③ captioned, with near-duplicate and caption-health advisories; optional .zip; opt-in
-  private-by-default Hugging Face publish.
+  private-by-default Hugging Face publish; hold out N real photos as a likeness test.
 - **⑤ Train config** — ai-toolkit (one-command, incl. correct SDXL knobs), kohya sd-scripts SDXL,
-  musubi-tuner; steps + multi-resolution buckets derived from the dataset; caption/model sanity
-  check; type-aware sample prompt. Nothing is ever launched — configs + the run command are shown.
+  musubi-tuner, Fizgig; epochs + auto repeats + multi-resolution buckets derived from the dataset
+  with a live exposure line; caption/model sanity check; a validation pack (8 type-aware prompts
+  at one seed, a guide, a score sheet). Nothing is ever launched — configs + the run command are
+  shown.
 
 The **CLI** mirrors every stage (`preprocess`/`generate`/`caption`/`lint`/`export`/`build`) with
 the same options and the same shared seams (`resolve_captioner_config`, `merge_tagger_overrides`,
@@ -1156,6 +1201,13 @@ ordered by benefit-to-cost.
   ⑤'s bucket line (idea borrowed from Idiot LoRa Builder's crop tool, which shows the same verdict
   per crop). The *transforming* half (pad-to-square / center-crop) is still open and still wants its
   own design pass: it mutates pixels, and the advisory covers the case where knowing is enough.
+- **⑤ optimizer choice and attention-only training (planned for 0.18.0, deferred).** An
+  "Advanced" accordion with an optimizer dropdown (AdamW8bit default; Prodigy at lr 1.0, hidden
+  for Fizgig, which removed it; Automagic where the trainer has it) and a musubi/Fizgig
+  attention-only toggle via `--network_args "exclude_patterns=[…]"`. Low value for the target
+  user, who should not need either; add when someone asks.
+- **Fizgig look-score report (⑤).** Fizgig writes `fizgig_look_scores.json` per run; reading it
+  back into a per-epoch report beside `validation_scores.csv` would close the pick-the-epoch loop.
 - **Exact CLIP token count (③/④).** The 77-token warning is a tokenizer-free estimate; loading the
   real CLIP tokenizer would make it exact. Only worth it if a user needs high accuracy — the
   estimate errs safe and is fine for an advisory.
