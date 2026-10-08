@@ -21,6 +21,7 @@ from studio.preprocess import REFS_DIR, PreprocessReport, failed_report, preproc
 from studio.shotplan import Shot, apply_prop_exclusion, apply_wardrobe
 
 ProgressFn = Callable[[str], None]
+ANCHOR_SHOT = "angle-front"
 
 
 @dataclass
@@ -115,6 +116,7 @@ def generate_shots(
     only_ids: set[str] | None = None,
     exclude_props: bool = True,
     front: bool = False,
+    anchor: bool = False,
     should_stop: ShouldStop | None = None,
     progress: ProgressFn = print,
 ) -> list[GenResult]:
@@ -125,6 +127,10 @@ def generate_shots(
 
     `exclude_props` asks the generator to omit bags/held objects carried in the
     reference, so they don't end up baked into every dataset image.
+
+    `anchor` generates the front full-body view first and leads every other
+    shot's references with it: partial or poor sources (a face in shadow, a
+    body cut at the hips) then give way to one clean, complete view to copy.
     """
     if not sources:
         raise GenerationError("No reference images given — nothing to generate from.")
@@ -133,8 +139,11 @@ def generate_shots(
 
     results = [r for r in (existing or []) if only_ids is None or r.shot.id not in only_ids]
     todo = [s for s in shots if only_ids is None or s.id in only_ids]
-    # Chained shots (e.g. back views built from a generated side view) run last
-    todo.sort(key=lambda s: bool(s.chain_from))
+    # A plan without the front view (a concept, or the row deleted) has no anchor.
+    anchor_id = ANCHOR_SHOT if anchor else None
+    # The anchor runs first; chained shots (back views built from a generated
+    # side view) run last.
+    todo.sort(key=lambda s: (s.id != anchor_id, bool(s.chain_from)))
 
     done: dict[str, Path] = {r.shot.id: r.path for r in results if r.path}
     stopped_at = 0
@@ -154,10 +163,12 @@ def generate_shots(
         seed = random.randint(0, 2**48)
         out = out_dir / f"{shot.id}.png"
         shot_sources = sources
+        if anchor_id in done and shot.id != anchor_id:
+            shot_sources = [done[anchor_id], *sources]
         if shot.chain_from and shot.chain_from in done:
             # Lead with the chained view so single-reference engines rotate
             # stepwise instead of hallucinating the far side of the character.
-            shot_sources = [done[shot.chain_from], *sources]
+            shot_sources = [done[shot.chain_from], *shot_sources]
         progress(f"[{i}/{len(todo)}] {shot.id} ({engine_key})...")
         try:
             engine.generate(shot_sources, shot, out, seed)

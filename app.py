@@ -700,7 +700,7 @@ def do_preprocess(files: list[str], folder: str, target: int, restore_mode: str,
 def do_generate(files: list[str], folder: str, plan_df: pd.DataFrame, engine: str,
                 cloud_model: str, exclude_props: bool, isolate_angles: bool,
                 isolation_backend: str, subject_prompt: str, exclude_prompt: str,
-                front: bool, gen_dir_prev: str, results_state,
+                front: bool, anchor: bool, gen_dir_prev: str, results_state,
                 progress=gr.Progress()):
     sources = _inputs(files, folder)
     out_dir = _validate_out_dir(gen_dir_prev) if gen_dir_prev.strip() else _stamped("generated")
@@ -717,7 +717,7 @@ def do_generate(files: list[str], folder: str, plan_df: pd.DataFrame, engine: st
             sources, shots, engine, out_dir, cloud_model=cloud_model,
             isolate_angles=isolate_angles, subject_prompt=subject_prompt or "character",
             exclude_prompt=exclude_prompt, isolation_backend=isolation_backend,
-            exclude_props=exclude_props, front=front, should_stop=JOB, progress=report)
+            exclude_props=exclude_props, front=front, anchor=anchor, should_stop=JOB, progress=report)
     except OSError as e:
         raise gr.Error(f"Couldn't write to '{out_dir}': {e}. Check the output folder "
                        f"path (valid drive, no forbidden characters, writable).") from e
@@ -733,7 +733,7 @@ def do_generate(files: list[str], folder: str, plan_df: pd.DataFrame, engine: st
 def do_regenerate(files: list[str], folder: str, plan_df: pd.DataFrame, engine: str,
                   cloud_model: str, exclude_props: bool, isolate_angles: bool,
                   isolation_backend: str, subject_prompt: str, exclude_prompt: str,
-                  front: bool, gen_dir: str, results_state, keep_ids: list[str],
+                  front: bool, anchor: bool, gen_dir: str, results_state, keep_ids: list[str],
                   progress=gr.Progress()):
     if not results_state:
         raise gr.Error("Nothing generated yet.")
@@ -753,7 +753,7 @@ def do_regenerate(files: list[str], folder: str, plan_df: pd.DataFrame, engine: 
             sources, _df_to_shots(plan_df), engine, Path(gen_dir), cloud_model=cloud_model,
             isolate_angles=isolate_angles, subject_prompt=subject_prompt or "character",
             exclude_prompt=exclude_prompt, isolation_backend=isolation_backend,
-            exclude_props=exclude_props, front=front, existing=results_state,
+            exclude_props=exclude_props, front=front, anchor=anchor, existing=results_state,
             only_ids=redo, should_stop=JOB, progress=log.append)
     except OSError as e:
         raise gr.Error(f"Couldn't write to '{gen_dir}': {e}. Check the output folder "
@@ -1987,6 +1987,12 @@ with _blocks as demo:
                              "Qwen draw it) — isolate the source in ① instead, the more "
                              "reliable fix either way. Character-oriented wording — off "
                              "by default for Concept datasets.")
+                    gen_anchor = gr.Checkbox(
+                        value=False, label="Anchor shot: build every shot from the front view",
+                        info="Generates the front full-body view first, then leads every "
+                             "other shot's references with it. Helps when your sources "
+                             "are partial or poor (face in shadow, body cut off). Check "
+                             "the front view looks right before trusting the rest.")
                     gen_isolate = gr.Checkbox(value=False,
                                               label="Isolate generated angle shots (white background)",
                                               info="Cut generated angle shots onto white too "
@@ -2474,7 +2480,7 @@ with _blocks as demo:
 
     gen_inputs = [gen_files, gen_src_folder, plan, engine, cloud_model,
                   gen_exclude_props, gen_isolate, gen_iso_backend, gen_subject,
-                  gen_exclude, gen_front]
+                  gen_exclude, gen_front, gen_anchor]
     btn_gen.click(do_generate, gen_inputs + [gen_out_dir, results_state],
                   [results_state, gen_rows, gen_gallery, keep, log_box, gen_out_dir,
                    cap_folder])

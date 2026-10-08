@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 import app as A
+from studio import pipeline
 from studio.isolate import touches_bottom
 from studio.preprocess import PreprocessReport
 from studio.shotplan import concept_plan, coverage, default_plan
@@ -119,3 +121,49 @@ def test_preprocess_flags_a_cut_off_reference(tmp_path: Path, monkeypatch) -> No
     whole = PreprocessReport(source=Path("b.png"), output=Path("b.png"), original_size=(1, 1),
                              final_size=(1, 1), restored=False, reason="ok")
     assert "other reference(s)" in A._preprocess_note([r, whole], tmp_path / "out", False)
+
+
+def test_anchor_runs_first_and_leads_every_other_shots_references(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+
+    seen: dict[str, list[str]] = {}
+
+    class FakeEngine:
+        def generate(self, sources, shot, out_path, seed):
+            seen[shot.id] = [p.name for p in sources]
+            out_path.write_bytes(b"x")
+            return out_path
+
+    monkeypatch.setattr(pipeline, "make_engine", lambda *a, **kw: FakeEngine())
+    src = tmp_path / "ref.png"
+    src.write_bytes(b"x")
+    plan = default_plan()
+    plan = plan[1:] + plan[:1]  # the anchor runs first wherever the plan lists it
+
+    pipeline.generate_shots([src], plan, "comfyui", tmp_path / "gen", anchor=True,
+                            progress=lambda _m: None)
+
+    assert next(iter(seen)) == "angle-front" and seen["angle-front"] == ["ref.png"]
+    assert seen["emotion-sad"] == ["angle-front.png", "ref.png"]
+    # A chained view still leads; the anchor and the original follow it.
+    assert seen["angle-back"] == ["angle-right.png", "angle-front.png", "ref.png"]
+
+
+def test_without_anchor_shots_see_only_the_sources(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+
+    seen: dict[str, list[str]] = {}
+
+    class FakeEngine:
+        def generate(self, sources, shot, out_path, seed):
+            seen[shot.id] = [p.name for p in sources]
+            out_path.write_bytes(b"x")
+            return out_path
+
+    monkeypatch.setattr(pipeline, "make_engine", lambda *a, **kw: FakeEngine())
+    src = tmp_path / "ref.png"
+    src.write_bytes(b"x")
+    pipeline.generate_shots([src], default_plan(), "comfyui", tmp_path / "gen",
+                            progress=lambda _m: None)
+    assert seen["emotion-sad"] == ["ref.png"]
+    assert seen["angle-back"] == ["angle-right.png", "ref.png"]

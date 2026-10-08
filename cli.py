@@ -165,6 +165,8 @@ def _props_default(exclude_props: bool | None, dataset_type: str) -> bool:
     return exclude_props
 
 
+_ANCHOR_HELP = ("Generate the front full-body view first and lead every other "
+                "shot's references with it (helps partial or poor sources)")
 _IDENTITY_HELP = ("Characters only: identity (default — angle/pose shots get varied "
                   "outfits and captions describe the clothing, so the trigger learns "
                   "the person) | costume (keep the reference's outfit, leave it out of "
@@ -276,6 +278,7 @@ def generate(
     identity: str = typer.Option("identity", "--identity", help=_IDENTITY_HELP),
     randomize_outfits: bool = typer.Option(
         False, help="Same as --identity identity (kept for old scripts)"),
+    anchor: bool = typer.Option(False, "--anchor/--no-anchor", help=_ANCHOR_HELP),
     front: bool = typer.Option(False, help="Jump ComfyUI's pending queue"),
 ):
     """Generate the shot set from reference image(s) (standalone)."""
@@ -291,7 +294,7 @@ def generate(
         _expand(references), shots, engine, out, cloud_model=cloud_model,
         isolate_angles=isolate_angles, subject_prompt=subject_prompt,
         exclude_prompt=exclude_prompt, exclude_props=_props_default(exclude_props, dtype),
-        front=front, progress=typer.echo)
+        front=front, anchor=anchor, progress=typer.echo)
     if not any(r.path for r in results):
         raise typer.Exit(1)
     typer.echo(f"Done: {out}")
@@ -501,6 +504,7 @@ def build(
     drop_tags: str = typer.Option(
         "", "--drop-tags",
         help="Comma-separated tags to strip from tag captions (e.g. 'watermark, signature')"),
+    anchor: bool = typer.Option(False, "--anchor/--no-anchor", help=_ANCHOR_HELP),
     front: bool = typer.Option(False, help="Jump ComfyUI's pending queue"),
 ):
     """Full pipeline: preprocess -> generate -> caption -> export."""
@@ -554,7 +558,7 @@ def build(
             cloud_model=cloud_model, isolate_angles=isolate_angles, subject_prompt=subject_prompt,
             exclude_prompt=exclude_prompt,
             exclude_props=_props_default(exclude_props, dtype), front=front,
-            progress=typer.echo)
+            anchor=anchor, progress=typer.echo)
         kept = [r.path for r in results if r.path]
         if not kept:
             typer.echo("No shots succeeded; aborting before captioning.")
