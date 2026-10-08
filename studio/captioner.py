@@ -154,13 +154,14 @@ class Captioner:
 
     def caption(self, image_path: Path, subject: str = "the character",
                 style: str = "prose", dataset_type: str = "character",
-                sparse: bool = False) -> str:
+                sparse: bool = False, identity: str = "identity") -> str:
         if self.spec.backend == "wd_tagger":
             # A dedicated tagger emits canonical tags directly from image features;
             # the prose/tags/e621 selector, the subject, and the dataset type (a
             # framing hint for VLMs) don't apply to it.
             return ", ".join(self._load_tagger().tag(image_path))
-        instruction = self.spec.prompt_for(style, dataset_type, sparse).format(subject=subject)
+        instruction = self.spec.prompt_for(style, dataset_type, sparse,
+                                           identity).format(subject=subject)
         if self.spec.backend == "openai":
             return _clean(self._caption_openai(image_path, instruction))
         if self.spec.backend == "gemini":
@@ -501,6 +502,7 @@ def caption_images(
     sparse: bool = False,
     on_item: Callable[[Path, str], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    identity: str = "identity",
 ) -> list[tuple[Path, str]]:
     """Caption a list of images. Standalone — no run/pipeline state needed.
 
@@ -512,6 +514,9 @@ def caption_images(
     to strip (tag styles only); `skip_existing` leaves images that already have a
     non-empty .txt untouched. Returns (image_path, finalized_caption) pairs; the
     captioner model is loaded once and freed afterwards.
+
+    `identity` is the character identity policy ("identity" captions clothing,
+    "costume" leaves it to the trigger — see config.IDENTITY_POLICIES).
 
     `on_item(image, caption)` fires as each caption is finalized, so a caller can
     persist it immediately. That matters for cloud captioners: a 503 on the last
@@ -563,7 +568,7 @@ def caption_images(
                 break
             progress(f"Captioning {i}/{len(images)}: {p.name}")
             raw = cap.caption(p, subject=subject, style=style,
-                              dataset_type=dataset_type, sparse=sparse)
+                              dataset_type=dataset_type, sparse=sparse, identity=identity)
             cap_text = finalize_caption(raw, trigger, character_name, SUBJECT_ALIASES,
                                         style=style, dataset_type=dataset_type)
             # Drop noisy tags before affixes so a fixed prefix/suffix survives.
@@ -593,6 +598,7 @@ def caption_folder(
     blacklist: str = "",
     dataset_type: str = "character",
     sparse: bool = False,
+    identity: str = "identity",
 ) -> list[tuple[Path, str]]:
     """Caption images in `folder` (all, or the subset in `only`) and write
     .txt sidecars next to each image. The classic 'point at a folder and tag
@@ -610,7 +616,7 @@ def caption_folder(
                            model_override=model_override, spec_overrides=spec_overrides,
                            style=style, prefix=prefix, suffix=suffix,
                            skip_existing=skip_existing, blacklist=blacklist,
-                           dataset_type=dataset_type, sparse=sparse)
+                           dataset_type=dataset_type, sparse=sparse, identity=identity)
     for img, caption in items:
         img.with_suffix(".txt").write_text(caption, encoding="utf-8")
     progress(f"Wrote {len(items)} .txt sidecar(s) in {folder}")

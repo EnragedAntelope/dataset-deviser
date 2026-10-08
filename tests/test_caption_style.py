@@ -142,7 +142,7 @@ def _stub_model(monkeypatch, text: str) -> None:
     monkeypatch.setattr(
         C.Captioner, "caption",
         lambda self, image_path, subject="the character", style="prose",
-        dataset_type="character", sparse=False: text)
+        dataset_type="character", sparse=False, identity="identity": text)
     monkeypatch.setattr(C.Captioner, "load", lambda self: None)
     monkeypatch.setattr(C.Captioner, "unload", lambda self: None)
 

@@ -160,23 +160,39 @@ def _props_default(exclude_props: bool | None, dataset_type: str) -> bool:
     return exclude_props
 
 
+_IDENTITY_HELP = ("Characters only: identity (default — angle/pose shots get varied "
+                  "outfits and captions describe the clothing, so the trigger learns "
+                  "the person) | costume (keep the reference's outfit, leave it out of "
+                  "captions, so the trigger carries it)")
+
+
+def _check_identity(identity: str) -> str:
+    from studio.config import IDENTITY_POLICIES
+
+    if identity not in IDENTITY_POLICIES:
+        raise typer.BadParameter(f"--identity must be one of {list(IDENTITY_POLICIES)}")
+    return identity
+
+
+def _wants_outfits(identity: str, randomize: bool, dataset_type: str) -> bool:
+    """--randomize-outfits is the pre-0.19 spelling of --identity identity."""
+    return randomize or (_check_identity(identity) == "identity"
+                         and dataset_type == "character")
+
+
 def _dress(shots: list, dataset_type: str = "character") -> list:
     """Fill angle/pose shots with random unisex outfits (close-ups stay blank).
 
     Wardrobe is a character-only idea — an object has no clothing — so it is a
     no-op (with a note) for any other dataset type.
     """
-    from studio.wardrobe import OUTFIT_SHOT_KINDS, random_outfits
+    from studio.wardrobe import dress
 
     if dataset_type != "character":
         typer.echo(f"Skipping outfit randomization: not applicable to a "
                    f"{dataset_type} dataset.")
         return shots
-    targets = [s for s in shots if s.kind in OUTFIT_SHOT_KINDS]
-    outfits = random_outfits(len(targets))
-    dressed = dict(zip((s.id for s in targets), outfits, strict=True))
-    return [s.model_copy(update={"outfit": dressed[s.id]}) if s.id in dressed else s
-            for s in shots]
+    return dress(shots)
 
 
 @app.command()
@@ -252,8 +268,9 @@ def generate(
         None, "--exclude-props/--keep-props",
         help="Ask the generator to omit bags/held objects from the reference "
              "(default: on for character, off for concept — the clause is character-worded)"),
+    identity: str = typer.Option("identity", "--identity", help=_IDENTITY_HELP),
     randomize_outfits: bool = typer.Option(
-        False, help="Dress angle/pose shots in random unisex outfits (character only)"),
+        False, help="Same as --identity identity (kept for old scripts)"),
     front: bool = typer.Option(False, help="Jump ComfyUI's pending queue"),
 ):
     """Generate the shot set from reference image(s) (standalone)."""
@@ -262,7 +279,7 @@ def generate(
     shots = _plan_for(dtype, name, _check_shot_style(shot_style), shot_style_text)
     if max_shots:
         shots = shots[:max_shots]
-    if randomize_outfits:
+    if _wants_outfits(identity, randomize_outfits, dtype):
         shots = _dress(shots, dtype)
     _echo_cloud_estimate(engine, cloud_model, len(shots))
     results = pipeline.generate_shots(
@@ -308,6 +325,7 @@ def caption(
     skip_captioned: bool = typer.Option(
         False, "--skip-captioned",
         help="Leave images that already have a non-empty .txt caption untouched"),
+    identity: str = typer.Option("identity", "--identity", help=_IDENTITY_HELP),
 ):
     """Write .txt caption sidecars for every image in a folder (standalone).
 
@@ -334,7 +352,8 @@ def caption(
     caption_folder(folder, captioner, name, trigger, progress=typer.echo,
                    model_override=model_override, spec_overrides=spec_overrides, style=style,
                    prefix=prefix, suffix=suffix, skip_existing=skip_captioned,
-                   blacklist=drop_tags, dataset_type=dtype, sparse=sparse)
+                   blacklist=drop_tags, dataset_type=dtype, sparse=sparse,
+                   identity=_check_identity(identity))
 
 
 @app.command()
@@ -467,8 +486,9 @@ def build(
         None, "--exclude-props/--keep-props",
         help="Ask the generator to omit bags/held objects from the reference "
              "(default: on for character, off for concept)"),
+    identity: str = typer.Option("identity", "--identity", help=_IDENTITY_HELP),
     randomize_outfits: bool = typer.Option(
-        False, help="Dress angle/pose shots in random unisex outfits (character only)"),
+        False, help="Same as --identity identity (kept for old scripts)"),
     zip_: bool = typer.Option(False, "--zip", help="Also write a .zip of the dataset"),
     prefix: str = typer.Option(
         "", help="Fixed text added before every caption (e.g. Pony 'score_9, score_8_up')"),
@@ -484,6 +504,7 @@ def build(
 
     style = _check_caption_style(caption_style)
     dtype = _check_dataset_type(dataset_type)
+    identity = _check_identity(identity)
     # Check the generation backend before spending a preprocess pass on images
     # it would then refuse to use. Style never generates, so it never needs one.
     if dtype != "style":
@@ -517,7 +538,7 @@ def build(
         shots = _plan_for(dtype, name, _check_shot_style(shot_style), shot_style_text)
         if max_shots:
             shots = shots[:max_shots]
-        if randomize_outfits:
+        if _wants_outfits(identity, randomize_outfits, dtype):
             shots = _dress(shots, dtype)
         _echo_cloud_estimate(engine, cloud_model, len(shots))
 
@@ -537,7 +558,7 @@ def build(
     all_images = prepped + kept
     items = caption_images(all_images, captioner, name, trigger, progress=typer.echo,
                            style=style, prefix=prefix, suffix=suffix, blacklist=drop_tags,
-                           dataset_type=dtype, sparse=sparse)
+                           dataset_type=dtype, sparse=sparse, identity=identity)
     metadata = {
         "character_name": name,
         "trigger": trigger,
@@ -548,6 +569,8 @@ def build(
         "caption_style": style,
         "sources": [str(s) for s in images],
     }
+    if dtype == "character":
+        metadata["identity"] = identity
     if results:  # generation ran (character/concept)
         metadata["engine"] = engine
         metadata["shots"] = [{"id": r.shot.id, "seed": r.seed, "error": r.error}

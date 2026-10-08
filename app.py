@@ -140,7 +140,8 @@ _ISOLATE_SUBJECT = {"character": "character", "style": "character", "concept": "
 
 
 def on_dataset_type_change(dataset_type: str, name: str = "",
-                           style_key: str = shot_style.MATCH, style_text: str = ""):
+                           style_key: str = shot_style.MATCH, style_text: str = "",
+                           identity: str = "identity"):
     """Retune every type-dependent control across the tabs, and remember the
     choice for the next launch.
 
@@ -164,7 +165,7 @@ def on_dataset_type_change(dataset_type: str, name: str = "",
                     visible=bool(_TYPE_GUIDANCE.get(dataset_type, ""))),
         gr.Button(value=f"Rebuild default plan with {label.lower()}",
                   interactive=not is_style),                   # refresh plan
-        _plan_table(dataset_type, name, style_key, style_text),  # shot plan table
+        _plan_table(dataset_type, name, style_key, style_text, identity),  # shot plan
         gr.Button(interactive=not is_style),                   # generate
         gr.Button(interactive=not is_style),                   # regenerate
         gr.Button(visible=not (is_style or is_concept)),       # randomize outfits
@@ -271,13 +272,33 @@ PLAN_COLUMN_WIDTHS = ["110px", "70px", "110px", "200px", "220px",
 
 
 def _plan_table(dataset_type: str, name: str = "", style_key: str = shot_style.MATCH,
-                style_text: str = "") -> pd.DataFrame:
-    """The ② table for a dataset type (empty for Style, which never generates)."""
-    return _shots_to_df(plan_for_type(dataset_type, name, style_key, style_text))
+                style_text: str = "", identity: str = "identity") -> pd.DataFrame:
+    """The ② table for a dataset type (empty for Style, which never generates).
+
+    A character under the "identity" policy starts dressed in varied outfits, so
+    the trigger learns the person rather than their clothes.
+    """
+    shots = plan_for_type(dataset_type, name, style_key, style_text)
+    if dataset_type == "character" and identity == "identity":
+        from studio.wardrobe import dress
+
+        shots = dress(shots)
+    return _shots_to_df(shots)
+
+
+def _identity_visible(dataset_type: str):
+    return gr.update(visible=dataset_type == "character")
+
+
+def on_identity_change(df: pd.DataFrame, identity: str, dataset_type: str):
+    """Dress or undress the current plan to match the identity policy."""
+    if dataset_type != "character":
+        return gr.skip(), gr.skip()
+    return randomize_outfits(df) if identity == "identity" else clear_outfits(df)
 
 
 def rebuild_plan_for_style(dataset_type: str, name: str, style_key: str,
-                           style_text: str):
+                           style_text: str, identity: str = "identity"):
     """Rebuild the ② table when the shot style changes, and remember the choice.
 
     The style is baked into the prompt cells at build time (so the table shows
@@ -298,7 +319,7 @@ def rebuild_plan_for_style(dataset_type: str, name: str, style_key: str,
         note = ("⚠️ Custom style selected but no description typed — falling back to "
                 "**matching the reference image**. Type a style below and the plan "
                 "rebuilds.")
-    return _plan_table(dataset_type, name, style_key, style_text), note
+    return _plan_table(dataset_type, name, style_key, style_text, identity), note
 
 
 def _toggle_style_text(style_key: str):
@@ -833,7 +854,8 @@ def do_test_caption(folder: str, selected: list[str], captioner_key: str,
                     name: str, trigger: str, gemini_model: str, style: str,
                     gen_thr: float, char_thr: float, prefix: str, suffix: str,
                     blacklist: str, rating: bool, underscores: bool,
-                    dataset_type: str = "character", sparse: bool = False):
+                    dataset_type: str = "character", sparse: bool = False,
+                    identity: str = "identity"):
     if not folder.strip() or not selected:
         raise gr.Error("Load a folder and select at least one image first.")
     path = Path(folder.strip()) / selected[0]
@@ -846,7 +868,7 @@ def do_test_caption(folder: str, selected: list[str], captioner_key: str,
     cap = Captioner(captioner_key, model_override=model_override, spec_overrides=spec_overrides)
     try:
         raw = cap.caption(path, subject=name or "the character", style=style,
-                          dataset_type=dataset_type, sparse=sparse)
+                          dataset_type=dataset_type, sparse=sparse, identity=identity)
     except Exception as e:
         raise gr.Error(str(e)) from e
     finally:
@@ -1009,7 +1031,8 @@ def do_caption(folder: str, selected: list[str], captioner_key: str,
                gen_thr: float, char_thr: float, prefix: str, suffix: str,
                blacklist: str, rating: bool, underscores: bool,
                skip_existing: bool, dataset_type: str, sparse: bool,
-               exp_folders_prev: str, carry_prev, progress=gr.Progress()):
+               exp_folders_prev: str, carry_prev, identity: str = "identity",
+               progress=gr.Progress()):
     if not folder.strip() or not selected:
         raise gr.Error("Load a folder and select the images to caption first.")
     base = Path(folder.strip())
@@ -1039,7 +1062,7 @@ def do_caption(folder: str, selected: list[str], captioner_key: str,
                        style=style, prefix=prefix, suffix=suffix,
                        skip_existing=skip_existing, blacklist=blacklist,
                        dataset_type=dataset_type, sparse=sparse, on_item=persist,
-                       should_stop=JOB)
+                       should_stop=JOB, identity=identity)
     except Exception as e:
         if not written:
             raise gr.Error(f"Captioning failed: {friendly_api_error(e)}") from e
@@ -1217,7 +1240,7 @@ def load_export_preview(folders_text: str, dup_distance: float = 5, carry=None):
 def do_export(selected: list[str], name: str, trigger: str, output_root: str,
               make_zip: bool = False, dataset_type: str = "character",
               style_key: str = shot_style.MATCH, style_text: str = "",
-              ilb_handoff: bool = False, holdout=0):
+              ilb_handoff: bool = False, holdout=0, identity: str = "identity"):
     if not selected:
         raise gr.Error("Click '📂 Load & preview', then keep at least one image checked.")
     from studio.package import package_dataset, resolve_export_items
@@ -1238,6 +1261,8 @@ def do_export(selected: list[str], name: str, trigger: str, output_root: str,
                 "source_folders": source_folders,
                 "skipped_uncaptioned": res.missing,
                 "skipped_empty_caption": res.empties}
+    if dataset_type == "character":
+        metadata["identity"] = identity
     out_root = _validate_out_dir(output_root)
     try:
         ds = package_dataset(res.items, out_root, name, trigger, metadata,
@@ -1334,8 +1359,8 @@ def do_publish_hf(ds_dir: str, repo_id: str, private: bool, progress=gr.Progress
 
 def refresh_plan(name: str, dataset_type: str = "character",
                  style_key: str = shot_style.MATCH,
-                 style_text: str = "") -> pd.DataFrame:
-    return _plan_table(dataset_type, name, style_key, style_text)
+                 style_text: str = "", identity: str = "identity") -> pd.DataFrame:
+    return _plan_table(dataset_type, name, style_key, style_text, identity)
 
 
 def do_save_plan(plan_df: pd.DataFrame, plan_name: str) -> str:
@@ -1727,6 +1752,14 @@ with _blocks as demo:
              "Concept generate a shot set in ②; Style brings its own images and starts "
              "at ③ Caption. Tunes caption framing, the ② shot plan, the ① isolation "
              "default, and the ⑤ sample prompt.")
+    identity_policy = gr.Radio(
+        [("Identity only — outfits vary", "identity"),
+         ("Signature costume — the outfit is part of the character", "costume")],
+        value="identity", label="Identity policy",
+        info="Identity only dresses ②'s angle/pose shots in varied outfits and has ③ "
+             "describe the clothing, so the trigger learns the person. Signature "
+             "costume keeps the reference's outfit and leaves it out of captions, so "
+             "the trigger carries it.")
     # The ONE place that owns "who is this dataset about". ②, ③, ④ and ⑤ all
     # read these two boxes directly instead of each keeping its own copy — see
     # the note above `type_outputs` for why copies were removed rather than kept
@@ -1928,9 +1961,10 @@ with _blocks as demo:
                         "exact text a row will send.</sub>")
                     wardrobe_note = gr.Markdown(
                         "The **outfit** column varies wardrobe without breaking identity — "
-                        "leave blank to keep the reference's clothing. If your source images "
-                        "all show the same clothes, randomizing here stops the LoRA learning "
-                        "the outfit as part of the character. Save/load plans as reusable "
+                        "filled for you under **Identity only** (header), blank under "
+                        "**Signature costume** to keep the reference's clothing. Varied "
+                        "outfits stop the LoRA learning the clothes as part of the "
+                        "character. Save/load plans as reusable "
                         "prompt libraries under `shot_plans/`.")
                     with gr.Row():
                         btn_outfits = gr.Button("🎲 Randomize outfits", scale=1)
@@ -2326,15 +2360,21 @@ with _blocks as demo:
                     cap_sparse, project_name, project_trigger]
     # The style controls are INPUTS only — adding them to type_outputs would
     # change the handler's return arity, which a test pins on purpose.
-    type_inputs = [dataset_type, project_name, gen_style, gen_style_text]
+    type_inputs = [dataset_type, project_name, gen_style, gen_style_text, identity_policy]
     dataset_type.change(on_dataset_type_change, type_inputs, type_outputs)
     demo.load(on_dataset_type_change, type_inputs, type_outputs)
+    # Wardrobe is a character-only idea.
+    for _event in (dataset_type.change, demo.load):
+        _event(_identity_visible, [dataset_type], [identity_policy])
+    identity_policy.change(on_identity_change, [plan, identity_policy, dataset_type],
+                           [plan, plan_note])
 
-    refresh.click(refresh_plan, [project_name, dataset_type, gen_style, gen_style_text],
+    refresh.click(refresh_plan,
+                  [project_name, dataset_type, gen_style, gen_style_text, identity_policy],
                   [plan])
     # Rebuild on pick. The custom textbox applies on Enter/blur rather than per
     # keystroke — rebuilding 24 prompts on every character typed is pure churn.
-    _style_inputs = [dataset_type, project_name, gen_style, gen_style_text]
+    _style_inputs = [dataset_type, project_name, gen_style, gen_style_text, identity_policy]
     gen_style.change(_toggle_style_text, [gen_style], [gen_style_text])
     gen_style.change(rebuild_plan_for_style, _style_inputs, [plan, plan_note])
     gen_style_text.submit(rebuild_plan_for_style, _style_inputs, [plan, plan_note])
@@ -2438,7 +2478,8 @@ with _blocks as demo:
                    [cap_folder, cap_select, captioner, project_name, project_trigger,
                     cap_gemini_model,
                     cap_style, cap_gen_thr, cap_char_thr, cap_prefix, cap_suffix,
-                    cap_blacklist, cap_rating, cap_underscores, dataset_type, cap_sparse],
+                    cap_blacklist, cap_rating, cap_underscores, dataset_type, cap_sparse,
+                    identity_policy],
                    [test_caption])
     btn_caption.click(
         do_caption,
@@ -2446,7 +2487,7 @@ with _blocks as demo:
          cap_gemini_model, cap_style,
          cap_gen_thr, cap_char_thr, cap_prefix, cap_suffix,
          cap_blacklist, cap_rating, cap_underscores, cap_skip, dataset_type, cap_sparse,
-         exp_folders, cap_carry],
+         exp_folders, cap_carry, identity_policy],
         [cap_rows, cap_gallery, cap_select, cap_result, log_box, exp_folders,
          cap_analysis, cap_carry]) \
                .then(_editor_choices, [cap_folder], [cap_edit_file, cap_edit_names])
@@ -2459,7 +2500,8 @@ with _blocks as demo:
                            [exp_rows, exp_gallery, exp_select, exp_preview_note])
     btn_export.click(do_export,
                      [exp_select, project_name, project_trigger, output_root, exp_zip,
-                      dataset_type, gen_style, gen_style_text, exp_ilb, exp_holdout],
+                      dataset_type, gen_style, gen_style_text, exp_ilb, exp_holdout,
+                      identity_policy],
                      [exp_result, tr_dataset, exp_ds_dir]) \
               .then(inspect_dataset, [tr_dataset, dataset_type], [tr_stats])
     btn_publish_hf.click(do_publish_hf, [exp_ds_dir, exp_hf_repo, exp_hf_private],

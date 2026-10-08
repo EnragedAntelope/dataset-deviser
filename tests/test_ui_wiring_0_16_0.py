@@ -44,9 +44,9 @@ def test_the_handoff_checkbox_is_actually_wired() -> None:
 
 
 def test_export_inputs_end_in_signature_order() -> None:
-    """`ilb_handoff, holdout` end do_export's signature, so they end the inputs."""
-    assert _export_inputs()[-2:] == ["Prepare for Idiot LoRa Builder",
-                                     "Hold out N reference photos"]
+    """`ilb_handoff, holdout, identity` end do_export's signature, so they end the inputs."""
+    assert _export_inputs()[-3:] == ["Prepare for Idiot LoRa Builder",
+                                     "Hold out N reference photos", "Identity policy"]
 
 
 def test_export_with_the_box_ticked_writes_the_sidecar(tmp_path: Path) -> None:
