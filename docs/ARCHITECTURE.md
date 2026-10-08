@@ -670,8 +670,20 @@ quietly gets someone else's value.
   2026-06-25, so every fresh install 404'd on its first ② shot. `resolve_image_model()` walks
   `IMAGE_MODEL_PREFERENCE` against the cached live list (never a network call), maps a pinned
   retired preview id to its GA id, and the cost line names what Auto resolved to. A model 404
-  now says "pick Auto". The preference order is provisional until the Pro-vs-2.1 A/B. The live
+  now says to refresh and pick another. The live
   list filter must match `nano-banana` ids too — `gemini-nano-banana-2.1` has no "image" in it.
+  `models.list` still returns the shut-down `-preview` ids, so their presence proves nothing.
+- **Auto prefers Nano Banana 2.1 over Pro (0.17.3 A/B).** One real person, two poor phone
+  photos (a cropped, occluded 12 MP shot and a 580 px heavy-JPEG one), both isolated onto white
+  by ①, the 24-shot character plan on each model with identical prompts:
+  - **2.1** (~$0.82, ~6 min): 24/24, every shot a consistent photograph in a real setting; one
+    near-duplicate pair of profiles and one very dark shot.
+  - **Pro** (~$3.22, ~7 min): 24/24, comparable likeness, more outfit variety drawn from both
+    references, but six close-ups/poses came back on the reference's white background with
+    cut-out edges and one drifted to a painted look.
+  Neither showed the removed props or the face shadow. One subject and one run each, so treat
+  the order as a default to revisit, not a law; the white-background leak should shrink once
+  ② references keep their background (0.19).
 - **Every image sent to an API goes through `config.api_image()`.** Cloud generation, Gemini and
   OpenAI-compatible captioning used to send raw file bytes labelled `image/png` whatever they
   were, with no size cap. `api_image` passes PNG/JPEG/WebP within the limit through untouched,

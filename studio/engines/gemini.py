@@ -35,11 +35,12 @@ REFERENCE_MAX_SIDE = 2048
 
 # What the "auto" model setting resolves to: the first of these the model list
 # offers. Image models have no "-latest" alias, so this list is the one place a
-# release moves the default. Order set by an identity A/B on real references.
+# release moves the default. Order set by the 0.17.3 A/B (docs/ARCHITECTURE.md):
+# 2.1 matched Pro's likeness at a quarter of the price and drifted less.
 AUTO_MODEL = "auto"
 IMAGE_MODEL_PREFERENCE = [
-    "gemini-3-pro-image",  # Nano Banana Pro: 5 character refs
     "gemini-nano-banana-2.1",
+    "gemini-3-pro-image",  # Nano Banana Pro: 5 character refs
     "gemini-3.1-flash-image",  # Nano Banana 2
 ]
 # 3 attempts at 2s/4s. Image generation is slow and billed per call, so this stays
