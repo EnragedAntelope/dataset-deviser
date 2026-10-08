@@ -1,6 +1,6 @@
 # Architecture
 
-Version: 0.18.0
+Version: 0.18.1
 
 ```
 app.py                  Gradio UI — thin wiring over the stage functions (5 tabs).
@@ -921,6 +921,15 @@ quietly gets someone else's value.
   them. Only photos with provenance qualify (a generated shot is no test of likeness) and at
   least one image always stays in training. The dataset naming loop skips a name whose
   `-heldout` sibling exists, so a stale held-out folder never pairs with a new dataset.
+- **The optimizer defaults to AdamW8bit; Prodigy is the one alternative (0.18.1).** AdamW8bit is
+  the default and the validated recipe in ai-toolkit's UI, musubi's examples, sd-scripts and
+  Fizgig. Prodigy is offered because it removes the learning-rate guess: it runs at lr 1.0 with
+  its README's diffusion advice (`weight_decay=0.01, use_bias_correction, safeguard_warmup`).
+  ai-toolkit ships `prodigyopt`; sd-scripts (`Prodigy`) and musubi (`prodigyopt.Prodigy`, its
+  module-path form) need `pip install prodigyopt`, which ⑤ says. Fizgig is AdamW8bit only: it
+  removed Prodigy because a self-tuning LR fights its adaptive LR. Adafactor, Lion and Automagic
+  are left out: for a LoRA the optimizer state is small, so their memory savings buy little, and
+  each needs its own LR recipe.
 - **Fizgig is a ⑤ target, not a launch (0.18.0).** It reads musubi's `dataset.toml` shape, so
   `render_musubi_toml` serves both; `arch` holds its `--family` (`krea2` / `qwen_image21` /
   `klein`). The command is its three `cache`/`train` steps from `docs/CLI.md` with `<<FILL>>`
@@ -1201,11 +1210,10 @@ ordered by benefit-to-cost.
   ⑤'s bucket line (idea borrowed from Idiot LoRa Builder's crop tool, which shows the same verdict
   per crop). The *transforming* half (pad-to-square / center-crop) is still open and still wants its
   own design pass: it mutates pixels, and the advisory covers the case where knowing is enough.
-- **⑤ optimizer choice and attention-only training (planned for 0.18.0, deferred).** An
-  "Advanced" accordion with an optimizer dropdown (AdamW8bit default; Prodigy at lr 1.0, hidden
-  for Fizgig, which removed it; Automagic where the trainer has it) and a musubi/Fizgig
-  attention-only toggle via `--network_args "exclude_patterns=[…]"`. Low value for the target
-  user, who should not need either; add when someone asks.
+- **Attention-only training (⑤, planned for 0.18.0, deferred).** A musubi/Fizgig toggle that
+  puts the LoRA on the attention projections only (via `--network_args "exclude_patterns=[…]"`),
+  leaving the feed-forward layers, which hold more of the textures, clothes and backgrounds, alone.
+  Evidence for a likeness gain is anecdotal and per-model; add when an A/B shows it.
 - **Fizgig look-score report (⑤).** Fizgig writes `fizgig_look_scores.json` per run; reading it
   back into a per-epoch report beside `validation_scores.csv` would close the pick-the-epoch loop.
 - **Exact CLIP token count (③/④).** The 77-token warning is a tokenizer-free estimate; loading the
