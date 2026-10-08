@@ -597,7 +597,8 @@ def _preprocess_note(reports, out_dir: Path, alpha_cutout: bool) -> str:
 def do_preprocess(files: list[str], folder: str, target: int, restore_mode: str,
                   restore_backend: str, isolate: bool, isolation_backend: str,
                   subject_prompt: str, exclude_prompt: str, tighten: bool = False,
-                  alpha_cutout: bool = False, progress=gr.Progress()):
+                  alpha_cutout: bool = False, front: bool = False,
+                  progress=gr.Progress()):
     sources = _inputs(files, folder)
     out_dir = _stamped("prepped")
     force = {"Auto (only if needed)": None, "Always": True, "Never": False}[restore_mode]
@@ -614,7 +615,7 @@ def do_preprocess(files: list[str], folder: str, target: int, restore_mode: str,
             subject_prompt=subject_prompt or "character",
             exclude_prompt=exclude_prompt or "", restore_backend=restore_backend,
             isolation_backend=isolation_backend, tighten_crop=tighten,
-            alpha_cutout=alpha_cutout, should_stop=JOB, progress=report)
+            alpha_cutout=alpha_cutout, front=front, should_stop=JOB, progress=report)
     except OSError as e:
         raise gr.Error(f"Couldn't write to '{out_dir}': {e}. Check the output folder "
                        f"(valid drive, writable, enough space).") from e
@@ -1759,6 +1760,10 @@ with _blocks as demo:
                              "own compositing workflows. Builtin SAM3 backend only. Leave off "
                              "(default) if you're continuing to ② Generate — it expects a white "
                              "background reference. Needs isolation on.")
+                    pre_front = gr.Checkbox(
+                        value=False, label="Prioritize this app's ComfyUI jobs",
+                        info="Puts ComfyUI restore/isolation jobs at the head of its "
+                             "pending queue. Does not interrupt a job already running.")
                     btn_pre = gr.Button("① Preprocess", variant="primary")
                 with gr.Column(scale=2):
                     pre_note = gr.Markdown()
@@ -2212,7 +2217,7 @@ with _blocks as demo:
         do_preprocess,
         [pre_files, pre_folder, target, restore_mode, restore_backend, isolate,
          isolation_backend, subject_prompt, exclude_prompt, pre_tighten,
-         pre_alpha_cutout],
+         pre_alpha_cutout, pre_front],
         [prep_gallery, pre_note, log_box, gen_src_folder, cap_folder]) \
            .then(lambda s, e: (s, e), [subject_prompt, exclude_prompt],
                  [gen_subject, gen_exclude])

@@ -111,7 +111,7 @@ def test_preprocess_removes_the_partial_output_when_isolation_fails(
     _img(src, size=(300, 300))
     out = tmp_path / "out"
 
-    def fake_restore(source, out_path, upscale=True):
+    def fake_restore(source, out_path, upscale=True, front=False):
         Image.new("RGB", (512, 512), (10, 20, 30)).save(out_path, "PNG")
         return out_path
 
@@ -172,7 +172,7 @@ def _restore_calls(monkeypatch) -> list[tuple[tuple[int, int], bool]]:
 
     calls = []
 
-    def fake_restore(source, out_path, upscale=True):
+    def fake_restore(source, out_path, upscale=True, front=False):
         with Image.open(source) as im:
             calls.append((im.size, upscale))
             im.convert("RGB").save(out_path, "PNG")
@@ -180,6 +180,34 @@ def _restore_calls(monkeypatch) -> list[tuple[tuple[int, int], bool]]:
 
     monkeypatch.setattr(pp, "_restore_comfyui", fake_restore)
     return calls
+
+
+def test_preprocess_can_jump_the_comfyui_queue(tmp_path: Path, monkeypatch) -> None:
+    # ① had no way to prioritize, so a busy ComfyUI queue refused every ① job.
+    import studio.preprocess as pp
+    from studio import comfy_api
+
+    fronts = []
+
+    def fake_run(graph, timeout=600.0, front=False):
+        fronts.append(front)
+        return ["ref"]
+
+    def fake_isolate(image_path, out_path, *a, front=False, **kw):
+        fronts.append(front)
+        Image.open(image_path).convert("RGB").save(out_path, "PNG")
+
+    monkeypatch.setattr(comfy_api, "upload_image", lambda p: "up.png")
+    monkeypatch.setattr(comfy_api, "run_prompt", fake_run)
+    monkeypatch.setattr(comfy_api, "fetch_image",
+                        lambda ref, out: Image.new("RGB", (64, 64)).save(out) or out)
+    monkeypatch.setattr(pp, "isolate_subject", fake_isolate)
+    src = _noisy_jpeg(tmp_path / "small.jpg", (64, 64))
+    from studio import pipeline
+
+    pipeline.preprocess_sources([src], tmp_path / "out", target=128, front=True,
+                                restore_backend="comfyui", progress=lambda _m: None)
+    assert fronts == [True, True]  # restore, then isolation
 
 
 def test_a_large_phone_jpeg_is_not_restored(tmp_path: Path, monkeypatch) -> None:
@@ -218,7 +246,7 @@ def test_restore_without_upscale_saves_the_dejpg_output(tmp_path: Path,
     sent = {}
     monkeypatch.setattr(comfy_api, "upload_image", lambda p: "up.png")
     monkeypatch.setattr(comfy_api, "run_prompt",
-                        lambda g, timeout: sent.setdefault("graph", g) and ["ref"])
+                        lambda g, timeout, front=False: sent.setdefault("graph", g) and ["ref"])
     monkeypatch.setattr(comfy_api, "fetch_image", lambda ref, out: out)
     pp._restore_comfyui(tmp_path / "a.png", tmp_path / "b.png", upscale=False)
     graph = sent["graph"]

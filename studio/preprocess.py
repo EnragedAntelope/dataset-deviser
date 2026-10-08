@@ -87,7 +87,8 @@ def _resize_to_target(img: Image.Image, target: int) -> Image.Image:
     return img.resize(new_size, Image.LANCZOS)
 
 
-def _restore_comfyui(source: Path, out_path: Path, upscale: bool = True) -> Path:
+def _restore_comfyui(source: Path, out_path: Path, upscale: bool = True,
+                     front: bool = False) -> Path:
     """DeJPG, then the 4x photo upscale only when `upscale` (source below target).
 
     Running the 4x model on a full-size photo turned a 3000x4000 JPEG into a
@@ -101,7 +102,7 @@ def _restore_comfyui(source: Path, out_path: Path, upscale: bool = True) -> Path
     if not upscale:
         graph["6"]["inputs"]["images"] = ["3", 0]  # save the DeJPG output
         del graph["4"], graph["5"]
-    refs = comfy_api.run_prompt(graph, timeout=420)
+    refs = comfy_api.run_prompt(graph, timeout=420, front=front)
     return comfy_api.fetch_image(refs[0], out_path)
 
 
@@ -136,6 +137,7 @@ def preprocess(
     isolation_backend: str = "",
     tighten_crop: bool = False,
     alpha_cutout: bool = False,
+    front: bool = False,
     progress: Callable[[str], None] | None = None,
 ) -> PreprocessReport:
     """Copy + clean one source image into `work_dir` at target resolution.
@@ -193,7 +195,7 @@ def preprocess(
                 restore_backend = "comfyui" if comfy_api.is_up() else "basic"
             if restore_backend == "comfyui":
                 _restore_comfyui(stage_path, out_path,
-                                 upscale=max(original_size) < target)
+                                 upscale=max(original_size) < target, front=front)
                 stage_path = out_path
             else:
                 # Basic path: Lanczos handles resolution; sharpness/compression
@@ -203,7 +205,7 @@ def preprocess(
         if isolate:
             isolate_subject(stage_path, out_path, subject_prompt, exclude_prompt,
                             backend=isolation_backend, progress=progress,
-                            alpha_cutout=alpha_cutout, label=source.name)
+                            alpha_cutout=alpha_cutout, label=source.name, front=front)
             stage_path = out_path
 
         if isolate and alpha_cutout:

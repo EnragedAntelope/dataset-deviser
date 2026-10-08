@@ -621,7 +621,10 @@ quietly gets someone else's value.
   ComfyUI to put the job at the head of the pending queue (`/prompt` accepts `front`
   and negates the job's priority number). `front` does **not** interrupt the job already
   running, so the UI must not promise "immediate". Polling is always by our own
-  `prompt_id`, so another client's jobs are never mistaken for ours.
+  `prompt_id`, so another client's jobs are never mistaken for ours. Every stage that
+  queues ComfyUI work carries the flag: ① and ② each have a "Prioritize" checkbox, and
+  `preprocess`/`generate`/`build` take `--front`. Until 0.17.3 ① had none, so a busy
+  queue refused every ComfyUI restore/isolation with advice that only worked on ②.
 - **The bundled workflows use ONLY core nodes.** `isolate_*.json` previously needed
   `MaskPreview+` from the third-party `ComfyUI_essentials` pack — used purely as a hack to
   render a white backdrop — which silently broke the workflows for anyone who didn't
