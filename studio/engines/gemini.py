@@ -12,7 +12,9 @@ from pathlib import Path
 
 from studio.config import (
     CLOUD_IMAGE_PRICES,
+    DEPRECATED_IMAGE_MODELS,
     MODEL_CACHE_FILE,
+    api_image,
     friendly_api_error,
     gemini_client,
     is_transient_api_error,
@@ -26,6 +28,20 @@ from studio.engines.base import GenerationError
 from studio.shotplan import Shot
 
 MAX_REFERENCE_IMAGES = 14
+# References are capped here before upload. ① already outputs 1024 px, but ②
+# also takes files straight from the user (a pasted 12 MP photo), and every
+# current Gemini image model works at 1-2K.
+REFERENCE_MAX_SIDE = 2048
+
+# What the "auto" model setting resolves to: the first of these the model list
+# offers. Image models have no "-latest" alias, so this list is the one place a
+# release moves the default. Order set by an identity A/B on real references.
+AUTO_MODEL = "auto"
+IMAGE_MODEL_PREFERENCE = [
+    "gemini-3-pro-image",  # Nano Banana Pro: 5 character refs
+    "gemini-nano-banana-2.1",
+    "gemini-3.1-flash-image",  # Nano Banana 2
+]
 # 3 attempts at 2s/4s. Image generation is slow and billed per call, so this stays
 # shorter than the captioner's ladder — enough to ride out a spike, not enough to
 # quietly burn a user's budget retrying a model that is genuinely down.
@@ -46,15 +62,73 @@ def _save_model_cache(models: list[dict]) -> None:
     save_cloud_model_cache(models)
 
 
-def _model_label(name: str, price: float | None) -> str:
+# Shut-down ids still named in someone's .env (LDS_GEMINI_IMAGE_MODEL) or a saved
+# CLI script, mapped to the GA release that replaced them.
+_RETIRED_IMAGE_MODELS = {
+    "gemini-3-pro-image-preview": "gemini-3-pro-image",
+    "gemini-3.1-flash-image-preview": "gemini-3.1-flash-image",
+}
+
+
+def _model_label(name: str) -> str:
+    # Priced from the table at display time, never from the cache: a cached
+    # price outlives the release that corrected it.
+    price = CLOUD_IMAGE_PRICES.get(name)
     if price is None:
         return f"{name}  (price unknown)"
-    return f"{name}  (${price:.3f}/img est.)"
+    note = ", deprecated" if name in DEPRECATED_IMAGE_MODELS else ""
+    return f"{name}  (~${price:.3f}/img est.{note})"
+
+
+def _labelled(ids: list[str]) -> list[tuple[str, str]]:
+    return [(_model_label(m), m) for m in ids]
 
 
 def _fallback_models() -> list[tuple[str, str]]:
     """Static fallback when live listing is impossible."""
-    return [(_model_label(m, p), m) for m, p in CLOUD_IMAGE_PRICES.items()]
+    return _labelled(list(CLOUD_IMAGE_PRICES))
+
+
+def _known_ids() -> list[str]:
+    """Model ids from the fresh cache, else the price table. Never a network call."""
+    cached = _load_model_cache()
+    return [m["model_id"] for m in cached] if cached else list(CLOUD_IMAGE_PRICES)
+
+
+def known_image_models() -> list[tuple[str, str]]:
+    """`list_image_models` without the network: for building the UI at startup."""
+    return _labelled(_known_ids())
+
+
+def resolve_image_model(model: str = "", available: list[str] | None = None) -> str:
+    """The concrete model id for `model` ("" or "auto" = best available).
+
+    Resolves against `available`, else the cached/static list, so cost estimates
+    can call it on every keystroke without touching the network.
+    """
+    model = model or settings.gemini_image_model
+    if model != AUTO_MODEL:
+        return _RETIRED_IMAGE_MODELS.get(model, model)
+    ids = available if available is not None else _known_ids()
+    return next((m for m in IMAGE_MODEL_PREFERENCE if m in ids), IMAGE_MODEL_PREFERENCE[0])
+
+
+def image_price(model: str = "") -> tuple[str, float | None]:
+    """(resolved model id, estimated USD per 1K image or None if unknown)."""
+    resolved = resolve_image_model(model)
+    return resolved, CLOUD_IMAGE_PRICES.get(resolved)
+
+
+def image_model_choices(models: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Dropdown choices: "Auto" first, labelled with what it resolves to."""
+    auto = resolve_image_model(AUTO_MODEL, [m for _, m in models])
+    return [(f"Auto (recommended) → {_model_label(auto)}", AUTO_MODEL), *models]
+
+
+def _is_image_model(name: str) -> bool:
+    # imagen = text-to-image only, no reference editing. "nano-banana" ids carry
+    # no "image" in the name (gemini-nano-banana-2.1).
+    return ("image" in name or "nano-banana" in name) and "imagen" not in name
 
 
 def list_image_models(force_refresh: bool = False) -> list[tuple[str, str]]:
@@ -67,10 +141,7 @@ def list_image_models(force_refresh: bool = False) -> list[tuple[str, str]]:
     if not force_refresh:
         cached = _load_model_cache()
         if cached:
-            return [
-                (_model_label(m["model_id"], m.get("price")), m["model_id"])
-                for m in cached
-            ]
+            return _labelled([m["model_id"] for m in cached])
 
     key = settings.resolved_gemini_key()
     if not key:
@@ -81,35 +152,33 @@ def list_image_models(force_refresh: bool = False) -> list[tuple[str, str]]:
         found: list[dict] = []
         for m in client.models.list():
             name = m.name.removeprefix("models/")
-            if "image" not in name or "imagen" in name:  # imagen = t2i only, no reference edit
+            if not _is_image_model(name):
                 continue
             # Skip deprecated / shutdown models when the API lists them.
             if any(tag in name for tag in ("-shut-down", "deprecated", "-experimental")):
                 continue
-            price = CLOUD_IMAGE_PRICES.get(name)
             found.append(
                 {
                     "model_id": name,
                     "display_name": getattr(m, "display_name", name),
-                    "price": price,
                     "cached_at": datetime.now(tz=timezone.utc).isoformat(),
                 }
             )
+        # A "-preview" id the API still lists next to its GA release is the
+        # retired one (gemini-3-pro-image-preview, shut down 2026-06-25).
+        ids = {f["model_id"] for f in found}
+        found = [f for f in found
+                 if not (f["model_id"].endswith("-preview")
+                         and f["model_id"].removesuffix("-preview") in ids)]
         if found:
             _save_model_cache(found)
-            return [
-                (_model_label(f["model_id"], f["price"]), f["model_id"])
-                for f in found
-            ]
+            return _labelled([f["model_id"] for f in found])
     except Exception:
         # Live pull failed; try stale cache as a last resort before falling
         # back to the static dict.
         stale = _load_model_cache()
         if stale:
-            return [
-                (_model_label(m["model_id"], m.get("price")), m["model_id"])
-                for m in stale
-            ]
+            return _labelled([m["model_id"] for m in stale])
 
     return _fallback_models()
 
@@ -120,8 +189,9 @@ def list_image_models(force_refresh: bool = False) -> list[tuple[str, str]]:
 _CAPTION_FALLBACK = [
     "gemini-flash-latest",
     "gemini-flash-lite-latest",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
+    # Pinned fallbacks. Not 2.5: new projects no longer get access to it.
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
 ]
 
 
@@ -132,17 +202,17 @@ def list_caption_models(force_refresh: bool = False) -> list[tuple[str, str]]:
     filtered to text/vision models that support `generateContent` (excludes
     image-generation, embedding, TTS, and audio/live models).
     """
-    def _labelled(ids: list[str]) -> list[tuple[str, str]]:
+    def _plain(ids: list[str]) -> list[tuple[str, str]]:
         return [(m, m) for m in ids]
 
     if not force_refresh:
         cached = load_caption_model_cache()
         if cached:
-            return _labelled([m["model_id"] for m in cached])
+            return _plain([m["model_id"] for m in cached])
 
     key = settings.resolved_gemini_key()
     if not key:
-        return _labelled(_CAPTION_FALLBACK)
+        return _plain(_CAPTION_FALLBACK)
 
     try:
         client = gemini_client(key)
@@ -167,13 +237,13 @@ def list_caption_models(force_refresh: bool = False) -> list[tuple[str, str]]:
             found.sort(key=lambda f: (0 if f["model_id"].endswith("latest") else 1,
                                       f["model_id"]))
             save_caption_model_cache(found)
-            return _labelled([f["model_id"] for f in found])
+            return _plain([f["model_id"] for f in found])
     except Exception:
         stale = load_caption_model_cache()
         if stale:
-            return _labelled([m["model_id"] for m in stale])
+            return _plain([m["model_id"] for m in stale])
 
-    return _labelled(_CAPTION_FALLBACK)
+    return _plain(_CAPTION_FALLBACK)
 
 
 class GeminiEngine:
@@ -190,15 +260,15 @@ class GeminiEngine:
         # gemini_client defers the google-genai import, so local-only installs never
         # need it configured.
         self._client = gemini_client(key)
-        self._model = model or settings.gemini_image_model
+        self._model = resolve_image_model(model)
 
     def generate(self, sources: list[Path], shot: Shot, out_path: Path, seed: int) -> Path:
         from google.genai import types
 
-        parts: list = [
-            types.Part.from_bytes(data=p.read_bytes(), mime_type="image/png")
-            for p in sources[:MAX_REFERENCE_IMAGES]
-        ]
+        parts: list = []
+        for p in sources[:MAX_REFERENCE_IMAGES]:
+            data, mime = api_image(p, REFERENCE_MAX_SIDE)
+            parts.append(types.Part.from_bytes(data=data, mime_type=mime))
         parts.append(shot.cloud_prompt)
 
         last_err: Exception | None = None

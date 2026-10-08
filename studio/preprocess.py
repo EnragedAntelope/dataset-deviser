@@ -8,12 +8,13 @@ Fully standalone — point it at any image(s). Restoration backends:
 
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 from studio.config import settings
 from studio.isolate import isolate_subject
@@ -60,13 +61,19 @@ def _laplacian_variance(img: Image.Image) -> float:
 
 
 def _needs_restoration(img: Image.Image, path: Path, target: int) -> str:
-    """Return a human-readable reason, or '' if the image is fine as-is."""
+    """Return a human-readable reason, or '' if the image is fine as-is.
+
+    Judged at the size the dataset will hold. A lossy photo at 2x the target or
+    more loses its block artefacts in the downscale, and sharpness measured on
+    12 MP of sensor noise says nothing about the 1024 px result — flagging every
+    phone JPEG sent it through a 4x upscale for nothing.
+    """
     long_side = max(img.size)
     if long_side < target:
         return f"long side {long_side}px < target {target}px"
-    if path.suffix.lower() in (".jpg", ".jpeg", ".webp"):
+    if path.suffix.lower() in (".jpg", ".jpeg", ".webp") and long_side < 2 * target:
         return "lossy source format"
-    if _laplacian_variance(img) < BLUR_THRESHOLD:
+    if _laplacian_variance(_resize_to_target(img, target)) < BLUR_THRESHOLD:
         return "low sharpness (blur/grain)"
     return ""
 
@@ -80,14 +87,41 @@ def _resize_to_target(img: Image.Image, target: int) -> Image.Image:
     return img.resize(new_size, Image.LANCZOS)
 
 
-def _restore_comfyui(source: Path, out_path: Path) -> Path:
+def _restore_comfyui(source: Path, out_path: Path, upscale: bool = True) -> Path:
+    """DeJPG, then the 4x photo upscale only when `upscale` (source below target).
+
+    Running the 4x model on a full-size photo turned a 3000x4000 JPEG into a
+    12000x16000 PNG that was saved, fetched and shrunk straight back to 1024.
+    """
     from studio import comfy_api
 
     uploaded = comfy_api.upload_image(source)
     graph = comfy_api.load_template("restore_upscale")
     graph["1"]["inputs"]["image"] = uploaded
+    if not upscale:
+        graph["6"]["inputs"]["images"] = ["3", 0]  # save the DeJPG output
+        del graph["4"], graph["5"]
     refs = comfy_api.run_prompt(graph, timeout=420)
     return comfy_api.fetch_image(refs[0], out_path)
+
+
+def _stage_copy(oriented: Image.Image, changed: bool, max_side: int | None) -> Path | None:
+    """A temp copy of the source for restore/isolation, or None to use the file.
+
+    Needed when EXIF rotation changed the pixels (the file on disk is sideways)
+    or the source exceeds `max_side` (restore/isolation cost scales with pixels).
+    None = keep full size.
+    """
+    if not changed and (max_side is None or max(oriented.size) <= max_side):
+        return None
+    # convert(): a CMYK JPEG cannot be written as PNG.
+    staged = oriented.convert("RGBA" if oriented.has_transparency_data else "RGB")
+    if max_side:
+        staged.thumbnail((max_side, max_side), Image.LANCZOS)
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        path = Path(tmp.name)
+    staged.save(path, "PNG")
+    return path
 
 
 def preprocess(
@@ -119,7 +153,12 @@ def preprocess(
     target = target or settings.target_long_side
     restore_backend = restore_backend or settings.restore_backend
     work_dir.mkdir(parents=True, exist_ok=True)
-    img = Image.open(source).convert("RGB")
+    with Image.open(source) as raw:
+        # Phone photos store portrait shots landscape plus an EXIF rotate tag;
+        # ignoring it put sideways people in the dataset.
+        rotated = raw.getexif().get(0x0112, 1) != 1  # EXIF Orientation
+        oriented = ImageOps.exif_transpose(raw)
+    img = oriented.convert("RGB")
     original_size = img.size
 
     reason = _needs_restoration(img, source, target)
@@ -141,15 +180,20 @@ def preprocess(
     # isolated, not resized) image behind, where `list_images` happily served it
     # to ②/③ as a finished source — a silent half-processed file in the dataset.
     # The stage is therefore atomic: complete output, or none at all.
+    # 2x the target is all a resize needs, but tighten-crop keeps only the
+    # subject's box: shrinking first would upscale a small subject back up.
+    staged = _stage_copy(oriented, rotated,
+                         None if isolate and tighten_crop else 2 * target)
     try:
-        stage_path = source
+        stage_path = staged or source
         if restore:
             if restore_backend == "auto":
                 from studio import comfy_api
 
                 restore_backend = "comfyui" if comfy_api.is_up() else "basic"
             if restore_backend == "comfyui":
-                _restore_comfyui(stage_path, out_path)
+                _restore_comfyui(stage_path, out_path,
+                                 upscale=max(original_size) < target)
                 stage_path = out_path
             else:
                 # Basic path: Lanczos handles resolution; sharpness/compression
@@ -176,6 +220,9 @@ def preprocess(
     except BaseException:
         out_path.unlink(missing_ok=True)
         raise
+    finally:
+        if staged:
+            staged.unlink(missing_ok=True)
     return PreprocessReport(
         source=source,
         output=out_path,

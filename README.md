@@ -201,8 +201,8 @@ drop-list. It's advisory: nothing is blocked or rewritten.
 | Qwen3-VL-8B NSFW-Caption | your GPU, ~17 GB | explicit-dataset specialist |
 | **WD EVA02 / ViT v3** *(tagger)* | GPU or CPU, ONNX | canonical **Danbooru** tags |
 | **Z3D e621 ConvNeXt** *(tagger)* | GPU or CPU, ONNX | canonical **e621/furry** tags |
-| Gemini Flash | Google API | SFW, ~$0.0007/img est., billed to your key |
-| Groq Qwen3.6 27B | Groq API | SFW, free tier, rate-limited |
+| Gemini Flash | Google API | SFW, ~$0.002/img est., billed to your key |
+| Groq Qwen3.8 27B | Groq API | SFW, free or paid plan, rate-limited |
 | LM Studio / Ollama / custom | your choice | any OpenAI-compatible endpoint |
 
 ## Shot style

@@ -6,17 +6,28 @@ from studio.captioner import Captioner
 from studio.config import CAPTIONERS_BY_KEY
 
 
-def test_groq_qwen3_6_spec_exists() -> None:
-    spec = CAPTIONERS_BY_KEY["groq-qwen3.6"]
-    assert spec.model == "qwen/qwen3.6-27b"
+def test_groq_qwen_spec_exists() -> None:
+    spec = CAPTIONERS_BY_KEY["groq-qwen"]
+    # qwen3.6-27b was shut down 2026-09-14.
+    assert spec.model == "qwen/qwen3.8-27b"
     assert spec.backend == "openai"
     assert spec.base_url == "https://api.groq.com/openai/v1"
     assert spec.api_key_env == "GROQ_API_KEY"
 
 
-def test_groq_qwen3_6_rate_interval_is_conservative() -> None:
-    spec = CAPTIONERS_BY_KEY["groq-qwen3.6"]
-    assert spec.min_interval_s >= 3.0
+def test_retired_groq_key_still_resolves() -> None:
+    # An .env naming the old key must keep working, and the ③ dropdown must get
+    # the current key (the alias is not one of its choices).
+    from studio.config import Settings
+
+    assert CAPTIONERS_BY_KEY["groq-qwen3.6"].key == "groq-qwen"
+    assert Settings(default_captioner="groq-qwen3.6").default_captioner == "groq-qwen"
+
+
+def test_groq_qwen_rate_interval_fits_8k_tpm() -> None:
+    # ~2.6K tokens a call against 8K tokens/minute: anything under ~20 s 429s.
+    spec = CAPTIONERS_BY_KEY["groq-qwen"]
+    assert spec.min_interval_s >= 20.0
 
 
 def test_groq_llama4_scout_removed() -> None:
@@ -24,12 +35,12 @@ def test_groq_llama4_scout_removed() -> None:
     assert "groq-llama4-scout" not in CAPTIONERS_BY_KEY
 
 
-def test_groq_qwen3_6_disables_reasoning() -> None:
-    # Qwen3.6 is a thinking model; we switch its scratchpad off so the
-    # response is just the caption, and keep headroom on the token budget.
-    spec = CAPTIONERS_BY_KEY["groq-qwen3.6"]
+def test_groq_qwen_disables_reasoning() -> None:
+    # A thinking model; its scratchpad is switched off so the response is just
+    # the caption, and the budget stays small because Groq bills it per minute.
+    spec = CAPTIONERS_BY_KEY["groq-qwen"]
     assert spec.extra_params.get("reasoning_effort") == "none"
-    assert spec.max_tokens >= 800
+    assert 300 <= spec.max_tokens <= 400
 
 
 def test_gemini_caption_default_is_rolling_alias() -> None:

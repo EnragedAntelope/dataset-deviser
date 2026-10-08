@@ -100,3 +100,151 @@ def test_list_image_models_fallback_without_key(
     models = gemini.list_image_models()
     ids = {m[1] for m in models}
     assert ids == set(CLOUD_IMAGE_PRICES)
+
+
+# ---------- model resolution (0.17.3: the -preview defaults were shut down) ----------
+
+def _point_cache_at(temp_cache_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from studio import config as config_mod
+    from studio.engines import gemini
+
+    cache_file = temp_cache_dir / "gemini_image_models.json"
+    monkeypatch.setattr(config_mod, "MODEL_CACHE_FILE", cache_file)
+    monkeypatch.setattr(gemini, "MODEL_CACHE_FILE", cache_file)
+    return cache_file
+
+
+def test_auto_picks_first_preferred_model_on_offer() -> None:
+    from studio.engines import gemini
+
+    pref = gemini.IMAGE_MODEL_PREFERENCE
+    assert gemini.resolve_image_model("auto", [pref[1], "other"]) == pref[1]
+    assert gemini.resolve_image_model("auto", ["other"]) == pref[0]
+    assert gemini.resolve_image_model("gemini-x", []) == "gemini-x"
+
+
+def test_retired_preview_ids_map_to_their_ga_release() -> None:
+    from studio.engines import gemini
+
+    assert gemini.resolve_image_model("gemini-3-pro-image-preview") == "gemini-3-pro-image"
+
+
+def test_every_preferred_model_has_a_price() -> None:
+    from studio.engines import gemini
+
+    assert set(gemini.IMAGE_MODEL_PREFERENCE) <= set(CLOUD_IMAGE_PRICES)
+
+
+def test_default_model_is_auto_and_choices_lead_with_it(
+    temp_cache_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from studio.config import Settings
+    from studio.engines import gemini
+
+    _point_cache_at(temp_cache_dir, monkeypatch)
+    assert Settings.model_fields["gemini_image_model"].default == gemini.AUTO_MODEL
+    choices = gemini.image_model_choices(gemini.known_image_models())
+    assert choices[0][1] == gemini.AUTO_MODEL
+    assert gemini.IMAGE_MODEL_PREFERENCE[0] in choices[0][0]
+
+
+def test_live_list_keeps_nano_banana_and_drops_retired_previews(
+    temp_cache_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from studio import config as config_mod
+    from studio.engines import gemini
+
+    _point_cache_at(temp_cache_dir, monkeypatch)
+    monkeypatch.setattr(config_mod.settings, "gemini_api_key", "k")
+    names = ["gemini-nano-banana-2.1", "gemini-3-pro-image", "gemini-3-pro-image-preview",
+             "imagen-4.0-generate", "gemini-flash-latest"]
+    listed = [type("M", (), {"name": f"models/{n}"})() for n in names]
+    client = type("C", (), {"models": type("Ms", (), {"list": lambda self: listed})()})()
+    monkeypatch.setattr(gemini, "gemini_client", lambda key: client)
+
+    ids = [m for _, m in gemini.list_image_models(force_refresh=True)]
+    assert ids == ["gemini-nano-banana-2.1", "gemini-3-pro-image"]
+
+
+def test_refresh_keeps_the_users_pick(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app
+    from studio.engines import gemini
+
+    live = [("a", "gemini-3-pro-image"), ("b", "gemini-nano-banana-2.1")]
+    monkeypatch.setattr(gemini, "list_image_models", lambda force_refresh=False: live)
+    assert app.refresh_cloud_models("gemini-nano-banana-2.1").value == "gemini-nano-banana-2.1"
+    # A pick the API no longer offers falls back to Auto, never to whatever is first.
+    assert app.refresh_cloud_models("gone-model").value == gemini.AUTO_MODEL
+
+
+# ---------- api_image: what every cloud/VLM call sends ----------
+
+def test_api_image_passes_small_files_through_with_their_real_mime(tmp_path: Path) -> None:
+    from PIL import Image
+
+    from studio.config import api_image
+
+    jpg = tmp_path / "a.png"  # wrong extension on purpose: the format decides
+    Image.new("RGB", (64, 32)).save(jpg, "JPEG")
+    data, mime = api_image(jpg, 1024)
+    assert mime == "image/jpeg"
+    assert data == jpg.read_bytes()
+
+
+def test_api_image_downscales_and_keeps_alpha(tmp_path: Path) -> None:
+    import io
+
+    from PIL import Image
+
+    from studio.config import api_image
+
+    big = tmp_path / "big.png"
+    Image.new("RGBA", (3000, 4000)).save(big)
+    data, mime = api_image(big, 2048)
+    assert mime == "image/png"
+    with Image.open(io.BytesIO(data)) as im:
+        assert max(im.size) == 2048 and im.mode == "RGBA"
+
+    photo = tmp_path / "photo.tif"
+    Image.new("RGB", (3000, 4000)).save(photo)
+    data, mime = api_image(photo, 1536)
+    assert mime == "image/jpeg"
+    with Image.open(io.BytesIO(data)) as im:
+        assert im.size == (1152, 1536)
+
+
+def test_a_pinned_retired_id_opens_on_its_ga_release_not_auto() -> None:
+    # Falling back to Auto (Pro) silently doubled a Flash pin's cost.
+    import app
+
+    choices = [("a", "auto"), ("b", "gemini-3-pro-image"), ("c", "gemini-3.1-flash-image")]
+    assert app._cloud_model_default("gemini-3.1-flash-image-preview", choices) == \
+        "gemini-3.1-flash-image"
+    assert app._cloud_model_default("auto", choices) == "auto"
+    assert app._cloud_model_default("some-unlisted-id", choices) == "auto"
+
+
+def test_api_image_keeps_16_bit_grey_and_palette_transparency(tmp_path: Path) -> None:
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    from studio.config import api_image
+
+    grey = tmp_path / "grey16.png"
+    Image.fromarray(np.full((3000, 3000), 32768, dtype=np.uint16)).save(grey)
+    data, _ = api_image(grey, 1536)
+    with Image.open(io.BytesIO(data)) as im:
+        assert 120 <= im.convert("L").getpixel((10, 10)) <= 136  # mid-grey, not clipped white
+
+    pal = tmp_path / "pal.png"
+    p = Image.new("P", (3000, 3000), 1)
+    p.putpalette([255, 0, 0, 0, 0, 255] + [0] * 762)
+    p.info["transparency"] = 0
+    p.paste(0, (0, 0, 100, 100))  # transparent corner
+    p.save(pal, transparency=0)
+    data, mime = api_image(pal, 1536)
+    assert mime == "image/png"
+    with Image.open(io.BytesIO(data)) as im:
+        assert im.mode == "RGBA" and im.getpixel((2, 2))[3] == 0

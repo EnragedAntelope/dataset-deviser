@@ -1,6 +1,6 @@
 # Architecture
 
-Version: 0.17.2
+Version: 0.17.3
 
 ```
 app.py                  Gradio UI — thin wiring over the stage functions (5 tabs).
@@ -571,6 +571,16 @@ quietly gets someone else's value.
   white, so this is backend-agnostic and needs no mask handle. It runs only when isolation is
   on and the toggle is set (default off → the Character path is byte-identical), before the
   resize. An effectively all-white image (nothing found) is returned unchanged.
+- **Restoration is judged at the size the dataset holds (0.17.3).** Every JPEG used to be flagged
+  "lossy" and sent through DeJPG + the 4x upscale at full size: a 3000x4000 phone photo became a
+  12000x16000 PNG, fetched only to be shrunk to 1024. Now "lossy" applies only below 2x the
+  target, sharpness is measured after resizing to the target, the upload is pre-shrunk to 2x the
+  target, and `_restore_comfyui(upscale=False)` rewires the template's SaveImage to the DeJPG
+  output when the source already reaches the target.
+- **EXIF orientation is applied at ①.** Phone portraits are stored landscape plus a rotate tag;
+  `Image.open().convert()` ignores it, so they entered the dataset sideways. `preprocess()`
+  transposes first and hands restore/isolation an upright temp copy (`_stage_copy`) whenever
+  the file on disk is rotated or larger than 2x the target.
 - **Preprocess output names must not clobber.** `list_images` admits several extensions, so
   two sources sharing a stem (`cat.jpg` + `cat.png`, in one folder or across merged input
   folders) both map to `cat_prepped.png`. `preprocess()` makes the output non-clobbering
@@ -652,6 +662,18 @@ quietly gets someone else's value.
   to `.cache/gemini_caption_models.json`, both with a 24-hour TTL. The UI seeds each
   dropdown from cache (never a network call on startup); a refresh button force-pulls.
   Both fall back to a static list if the API is unreachable or no key is set.
+- **Gemini image models have no `-latest` alias, so the default is `auto` (0.17.3).** The old
+  default `gemini-3-pro-image-preview` and `gemini-3.1-flash-image-preview` were shut down on
+  2026-06-25, so every fresh install 404'd on its first ② shot. `resolve_image_model()` walks
+  `IMAGE_MODEL_PREFERENCE` against the cached live list (never a network call), maps a pinned
+  retired preview id to its GA id, and the cost line names what Auto resolved to. A model 404
+  now says "pick Auto". The preference order is provisional until the Pro-vs-2.1 A/B. The live
+  list filter must match `nano-banana` ids too — `gemini-nano-banana-2.1` has no "image" in it.
+- **Every image sent to an API goes through `config.api_image()`.** Cloud generation, Gemini and
+  OpenAI-compatible captioning used to send raw file bytes labelled `image/png` whatever they
+  were, with no size cap. `api_image` passes PNG/JPEG/WebP within the limit through untouched,
+  otherwise downscales and encodes PNG (alpha) or JPEG q95, and returns the true mime. Limits:
+  2048 for generation references, 1536 for cloud captions; local VLMs get 1024 (the training size).
 - **Update check is best-effort by design.** `update_check.py` hits the GitHub releases
   API on `demo.load` (not at process start, so it can't slow down launch), caches the
   result 24h in `.cache/update_check.json`, and falls back to a stale cache on a failed
@@ -681,11 +703,13 @@ quietly gets someone else's value.
   `gemini-flash-latest` so it doesn't 404 when a pinned version is decommissioned. The
   Caption tab can refresh and pick a specific model; `Captioner(model_override=...)`
   applies it only when the backend is Gemini.
-- **Groq Qwen3.6 is a reasoning model.** Its spec sets `extra_params={"reasoning_effort":
+- **Groq Qwen3.8 is a reasoning model.** Its spec sets `extra_params={"reasoning_effort":
   "none"}` to switch off the `<think>` scratchpad (otherwise the token budget is spent
-  on reasoning and the caption comes back empty/truncated), plus a higher `max_tokens`
-  as insurance and `_clean()` strips any residual `<think>` tags. 429s are retried with
-  backoff; `min_interval_s` spaces requests for the free tier.
+  on reasoning and the caption comes back empty/truncated), and `_clean()` strips any
+  residual `<think>` tags. 429s are retried with backoff. Groq meters tokens per minute
+  (8K on the base tier) and a captioned image costs ~2.6K, so `min_interval_s` is 20 s and
+  `max_tokens` stays ~400. The key is `groq-qwen`; the pre-0.17.3 `groq-qwen3.6` (model shut
+  down 2026-09-14) stays as an alias so a saved `.env` keeps working.
 - **Custom OpenAI-compatible captioner.** The `custom` captioner carries no endpoint in
   config; either the Caption tab or `cli.py custom-endpoint` (0.12.2 — previously UI-only,
   a CLI-only user had no way to set this at all) collects base URL / model / key-env-NAME /
@@ -853,8 +877,19 @@ quietly gets someone else's value.
   run.** The ⑤ tab says so. Don't imply otherwise.
 - **ai-toolkit configs are one-command; musubi configs are not.** ai-toolkit emits a fully
   runnable `config.yaml` (model is a HF id → `python run.py config.yaml`). musubi's `dataset.toml`
-  is complete, but its *training* invocation needs the user's local DiT/VAE/text-encoder paths, so
-  the musubi run command is a `<<FILL: ...>>` template. The UI says so; it is not faked as one-click.
+  is complete, but its invocation needs the user's local DiT/VAE/text-encoder paths, so the
+  command carries `<<FILL: ...>>` paths. The UI says so; it is not faked as one-click.
+- **musubi needs three commands and a per-architecture network module (0.17.3).** Before 0.17.3
+  the command skipped the latent and text-encoder cache steps (training fails without them) and
+  passed `networks.lora` for every model; each architecture has its own (`lora_qwen_image`,
+  `lora_flux_2`, `lora_zimage`, `lora_krea2`, …). `ModelPreset` now carries the module, the
+  version flag, the text-encoder flags and the timestep args, copied from each model's
+  `docs/<prefix>.md` example in musubi-tuner; `tests/test_trainer_configs.py` pins them.
+- **ai-toolkit keeps every checkpoint.** `max_step_saves_to_keep` was 4, so a long run deleted the
+  early checkpoints, which are often the best likeness. It is now `ceil(steps / save_every)`.
+- **Train LoRAs on the base checkpoint, never a Turbo/distilled one.** Krea 2 trains on
+  `krea/Krea-2-Raw` (arch `krea2`; `krea` was never an ai-toolkit arch). A test fails if any
+  preset path contains "turbo".
 - **Trainer model registry is curated, not exhaustive.** Where a model's canonical HF id or musubi
   script isn't something we can guarantee, the preset carries a `<<FILL>>` placeholder so the
   emitted config is honest rather than silently wrong.
@@ -963,7 +998,7 @@ grouped by stage. Milestone versions are noted only where they explain a design 
 
 - **① Preprocess** — restore (ComfyUI models / basic Lanczos / auto), SAM3 subject isolation
   (built-in transformers or ComfyUI, with measured over-cut fixes), optional tighten-to-subject
-  crop, resize to target long-side. Optional alpha (RGBA) cutout output (builtin backend
+  crop, resize to target long-side, EXIF rotation applied. Optional alpha (RGBA) cutout output (builtin backend
   only) for external compositing workflows.
 - **② Generate & curate** — curated 24-shot Character plan (angles/poses/emotions/settings) or
   18-shot Concept plan (turnaround/framing/context), Qwen-Image 2.1 (local, 0.17.0 — was Qwen-Image-Edit
