@@ -45,6 +45,48 @@ def test_coverage_note_counts_only_kept_shots_that_exist() -> None:
     assert note.startswith("**Coverage of 4 kept shot(s)**")
 
 
+def _noise(path: Path, seed: int) -> Path:
+    import numpy as np
+
+    rng = np.random.default_rng(seed)
+    Image.fromarray(rng.integers(0, 255, (64, 64, 3), dtype=np.uint8)).save(path)
+    return path
+
+
+def test_find_gen_duplicates_names_reference_copies_and_twins(tmp_path: Path) -> None:
+    ref = _noise(tmp_path / "ref.png", 1)
+    plan = default_plan()[:4]
+    paths = [tmp_path / f"{s.id}.png" for s in plan]
+    for p, seed in zip(paths, (1, 2, 2, 3), strict=True):  # copy, twin, twin, unique
+        _noise(p, seed)
+    results = [A.pipeline.GenResult(s, p, seed=1) for s, p in zip(plan, paths, strict=True)]
+    note = A.find_gen_duplicates(results, [s.id for s in plan], [str(ref)], "", 5)
+    assert "1 shot group(s) look like a copy of a reference" in note
+    assert f"{plan[0].id}.png" in note
+    assert "1 near-duplicate group(s)" in note
+    assert A.primary_reference([str(ref)], "") == str(ref)
+    assert A.primary_reference([], "") is None
+
+
+def test_bursts_group_photos_taken_seconds_apart(tmp_path: Path) -> None:
+    import json
+
+    from PIL.PngImagePlugin import PngInfo
+
+    from studio.dataset_stats import PROVENANCE_KEY
+    from studio.dedupe import find_bursts
+
+    def photo(name: str, captured: str) -> Path:
+        info = PngInfo()
+        info.add_text(PROVENANCE_KEY, json.dumps({"name": name, "captured": captured}))
+        Image.new("RGB", (8, 8)).save(tmp_path / name, pnginfo=info)
+        return tmp_path / name
+
+    shots = [photo("a.png", "2026:05:01 10:00:00"), photo("b.png", "2026:05:01 10:00:02"),
+             photo("c.png", "2026:05:01 10:05:00"), photo("d.png", "")]
+    assert find_bursts(shots) == [shots[:2]]
+
+
 def test_touches_bottom_on_white_and_alpha() -> None:
     img = Image.new("RGB", (100, 100), "white")
     img.paste((0, 0, 0), (40, 10, 60, 90))

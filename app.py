@@ -786,6 +786,43 @@ def coverage_note(results_state, keep_ids: list[str], percent: float) -> str:
     return coverage(shots, (percent or 40) / 100)
 
 
+def primary_reference(files: list[str], folder: str) -> str | None:
+    """The reference ② leads with (it sets the local engine's output shape)."""
+    try:
+        return str(_inputs(files, folder)[0])
+    except gr.Error:
+        return None
+
+
+def find_gen_duplicates(results_state, keep_ids: list[str], files: list[str],
+                        folder: str, distance: float) -> str:
+    """Near-duplicate kept shots, and shots that just copied a reference.
+
+    Uses ④'s sensitivity slider so both scans agree on what "near" means.
+    """
+    from studio.dedupe import find_near_duplicate_groups
+
+    kept = {r.path for r in results_state or []
+            if r.path and r.path.exists() and r.shot.id in set(keep_ids or [])}
+    if not kept:
+        raise gr.Error("No kept shots to compare — generate first.")
+    refs = [] if primary_reference(files, folder) is None else _inputs(files, folder)
+    groups = find_near_duplicate_groups(refs + sorted(kept), max_distance=int(distance))
+    copies = [g for g in groups if any(p in refs for p in g)]
+    twins = [g for g in groups if g not in copies]
+    if not groups:
+        return f"🔁 No near-duplicates among {len(kept)} kept shot(s) (sensitivity {distance:g})."
+    note = ""
+    if copies:
+        note += (f"🔁 **{len(copies)} shot group(s) look like a copy of a reference** — "
+                 f"the generator ignored the prompt; regenerate them: {_groups_text(copies)}")
+    if twins:
+        note += ("\n\n" if note else "") + (
+            f"🔁 **{len(twins)} near-duplicate group(s)** among kept shots — keep one of "
+            f"each: {_groups_text(twins)}")
+    return note
+
+
 def send_kept_to_caption(results_state, keep_ids: list[str], gen_dir: str):
     """Load ②'s output folder into ③ with only the kept shots preselected.
 
@@ -1216,6 +1253,11 @@ def refresh_export_preview(folders_text: str, current_rows, current_selected):
     return rows, _picker_gallery(rows, values), gr.CheckboxGroup(choices=choices, value=values), note
 
 
+def _groups_text(groups: list[list[Path]], limit: int = 5) -> str:
+    shown = "; ".join("=".join(f"{p.parent.name}/{p.name}" for p in g) for g in groups[:limit])
+    return shown + (f" (+{len(groups) - limit} more)" if len(groups) > limit else "")
+
+
 def load_export_preview(folders_text: str, dup_distance: float = 5, carry=None):
     if not (folders_text or "").strip():
         raise gr.Error("Enter at least one folder of captioned images (one per line).")
@@ -1229,15 +1271,17 @@ def load_export_preview(folders_text: str, dup_distance: float = 5, carry=None):
             "Only checked images are exported; a checked image without a usable "
             "caption is skipped and called out in the result.")
     try:  # advisory near-duplicate scan — never blocks the preview
-        from studio.dedupe import find_near_duplicate_groups
+        from studio.dedupe import find_bursts, find_near_duplicate_groups
 
         groups = find_near_duplicate_groups(images, max_distance=int(dup_distance))
         if groups:
-            shown = "; ".join("=".join(f"{p.parent.name}/{p.name}" for p in g)
-                              for g in groups[:5])
-            more = f" (+{len(groups) - 5} more)" if len(groups) > 5 else ""
             note += (f"\n\n🔁 **{len(groups)} near-duplicate group(s)** — consider "
-                     f"unchecking extras so one shot isn't over-weighted: {shown}{more}")
+                     f"unchecking extras so one shot isn't over-weighted: "
+                     f"{_groups_text(groups)}")
+        bursts = find_bursts(images)
+        if bursts:
+            note += (f"\n\n📸 **{len(bursts)} burst(s)** — photos taken seconds apart "
+                     f"are one moment; keep the best of each: {_groups_text(bursts)}")
     except Exception:
         pass
     try:  # advisory caption health + tag frequency — never blocks the preview
@@ -2012,13 +2056,18 @@ with _blocks as demo:
             gen_send_note = gr.Markdown()
             # allow_preview=False so a click TOGGLES the shot instead of opening a
             # lightbox; the Zoom checkbox flips it back when you want a closer look.
-            gen_gallery = gr.Gallery(
-                label="Generated shots — click a thumbnail to keep/reject it "
-                      "(shift-click for a range)",
-                columns=6, height=420, allow_preview=False, elem_id="dd-gallery-gen")
+            with gr.Row():
+                gen_gallery = gr.Gallery(
+                    label="Generated shots — click a thumbnail to keep/reject it "
+                          "(shift-click for a range)",
+                    columns=6, height=420, allow_preview=False, elem_id="dd-gallery-gen",
+                    scale=4)
+                gen_primary = gr.Image(label="Primary reference", height=420,
+                                       interactive=False, scale=1)
             with gr.Row():
                 btn_gen_all = gr.Button("Select all", size="sm")
                 btn_gen_none = gr.Button("Select none", size="sm")
+                btn_gen_dupes = gr.Button("🔁 Find near-duplicates", size="sm")
                 gen_zoom = gr.Checkbox(value=False, label="🔍 Zoom on click",
                                        elem_id="dd-zoom-gen",
                                        info="Clicks enlarge instead of selecting.")
@@ -2448,6 +2497,11 @@ with _blocks as demo:
         _zoom.change(_set_zoom, [_zoom], [_gallery])
     for _event in (keep.change, gen_dominance.change):
         _event(coverage_note, [results_state, keep, gen_dominance], [gen_coverage])
+    for _event in (gen_files.change, gen_src_folder.change):
+        _event(primary_reference, [gen_files, gen_src_folder], [gen_primary])
+    btn_gen_dupes.click(find_gen_duplicates,
+                        [results_state, keep, gen_files, gen_src_folder, exp_dup_dist],
+                        [gen_send_note])
     btn_gen_all.click(_pick_all, [gen_rows], [keep])
     btn_gen_none.click(_pick_none, [gen_rows], [keep])
     btn_cap_all.click(_pick_all, [cap_rows], [cap_select])

@@ -32,6 +32,36 @@ def hamming(a: int, b: int) -> int:
     return bin(a ^ b).count("1")
 
 
+def find_bursts(paths: list[Path], within_s: float = 3.0) -> list[list[Path]]:
+    """Group real photos whose capture times (① provenance) are `within_s` apart.
+
+    A burst is one moment shot several times: near-identical pose and light that
+    a pixel hash can miss after a crop or exposure change.
+    """
+    from datetime import datetime
+
+    from PIL import Image
+
+    from studio.dataset_stats import provenance
+
+    stamped: list[tuple[datetime, Path]] = []
+    for p in paths:
+        try:
+            with Image.open(p) as im:
+                stamped.append((datetime.strptime(provenance(im)["captured"],
+                                                  "%Y:%m:%d %H:%M:%S"), p))
+        except Exception:
+            continue  # generated shot, no EXIF time, unreadable: not a burst member
+    stamped.sort()
+    groups: list[list[Path]] = []
+    for i, (t, p) in enumerate(stamped):
+        if i and (t - stamped[i - 1][0]).total_seconds() <= within_s:
+            groups[-1].append(p)
+        else:
+            groups.append([p])
+    return [g for g in groups if len(g) > 1]
+
+
 def find_near_duplicate_groups(
     paths: list[Path], max_distance: int = 5
 ) -> list[list[Path]]:
