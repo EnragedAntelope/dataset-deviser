@@ -111,7 +111,7 @@ def test_preprocess_removes_the_partial_output_when_isolation_fails(
     _img(src, size=(300, 300))
     out = tmp_path / "out"
 
-    def fake_restore(source, out_path):
+    def fake_restore(source, out_path, upscale=True, front=False):
         Image.new("RGB", (512, 512), (10, 20, 30)).save(out_path, "PNG")
         return out_path
 
@@ -155,6 +155,138 @@ def test_isolation_error_names_the_users_file_not_the_intermediate(
         assert "prepped" not in str(e)
     else:
         raise AssertionError("expected the isolation failure to propagate")
+
+
+# ---------- 0.17.3: phone photos (size, JPEG, EXIF rotation) ----------
+
+def _noisy_jpeg(path: Path, size: tuple[int, int], exif=None) -> Path:
+    # Noise keeps the sharpness check from firing on a flat test image.
+    rng = np.random.default_rng(0)
+    arr = rng.integers(0, 255, (size[1], size[0], 3), dtype=np.uint8)
+    Image.fromarray(arr).save(path, "JPEG", quality=90, exif=exif or Image.Exif())
+    return path
+
+
+def _restore_calls(monkeypatch) -> list[tuple[tuple[int, int], bool]]:
+    import studio.preprocess as pp
+
+    calls = []
+
+    def fake_restore(source, out_path, upscale=True, front=False):
+        with Image.open(source) as im:
+            calls.append((im.size, upscale))
+            im.convert("RGB").save(out_path, "PNG")
+        return out_path
+
+    monkeypatch.setattr(pp, "_restore_comfyui", fake_restore)
+    return calls
+
+
+def test_preprocess_can_jump_the_comfyui_queue(tmp_path: Path, monkeypatch) -> None:
+    # ① had no way to prioritize, so a busy ComfyUI queue refused every ① job.
+    import studio.preprocess as pp
+    from studio import comfy_api
+
+    fronts = []
+
+    def fake_run(graph, timeout=600.0, front=False):
+        fronts.append(front)
+        return ["ref"]
+
+    def fake_isolate(image_path, out_path, *a, front=False, **kw):
+        fronts.append(front)
+        Image.open(image_path).convert("RGB").save(out_path, "PNG")
+
+    monkeypatch.setattr(comfy_api, "upload_image", lambda p: "up.png")
+    monkeypatch.setattr(comfy_api, "run_prompt", fake_run)
+    monkeypatch.setattr(comfy_api, "fetch_image",
+                        lambda ref, out: Image.new("RGB", (64, 64)).save(out) or out)
+    monkeypatch.setattr(pp, "isolate_subject", fake_isolate)
+    src = _noisy_jpeg(tmp_path / "small.jpg", (64, 64))
+    from studio import pipeline
+
+    pipeline.preprocess_sources([src], tmp_path / "out", target=128, front=True,
+                                restore_backend="comfyui", progress=lambda _m: None)
+    assert fronts == [True, True]  # restore, then isolation
+
+
+def test_a_large_phone_jpeg_is_not_restored(tmp_path: Path, monkeypatch) -> None:
+    # The 4x upscale turned a 3000x4000 photo into 12000x16000 for nothing.
+    calls = _restore_calls(monkeypatch)
+    src = _noisy_jpeg(tmp_path / "phone.jpg", (3000, 4000))
+    r = preprocess(src, tmp_path / "out", target=1024, isolate=False,
+                   restore_backend="comfyui")
+    assert not r.restored and calls == []
+    assert max(r.final_size) == 1024
+
+
+def test_a_small_jpeg_gets_both_restore_passes(tmp_path: Path, monkeypatch) -> None:
+    calls = _restore_calls(monkeypatch)
+    src = _noisy_jpeg(tmp_path / "small.jpg", (580, 580))
+    r = preprocess(src, tmp_path / "out", target=1024, isolate=False,
+                   restore_backend="comfyui")
+    assert r.restored and calls == [((580, 580), True)]
+
+
+def test_a_forced_restore_of_a_big_photo_skips_the_4x_pass(tmp_path: Path,
+                                                            monkeypatch) -> None:
+    calls = _restore_calls(monkeypatch)
+    src = _noisy_jpeg(tmp_path / "phone.jpg", (3000, 4000))
+    preprocess(src, tmp_path / "out", target=1024, force_restore=True, isolate=False,
+               restore_backend="comfyui")
+    # Uploaded pre-shrunk to 2x the target, de-JPEG only.
+    assert calls == [((1536, 2048), False)]
+
+
+def test_restore_without_upscale_saves_the_dejpg_output(tmp_path: Path,
+                                                         monkeypatch) -> None:
+    import studio.preprocess as pp
+    from studio import comfy_api
+
+    sent = {}
+    monkeypatch.setattr(comfy_api, "upload_image", lambda p: "up.png")
+    monkeypatch.setattr(comfy_api, "run_prompt",
+                        lambda g, timeout, front=False: sent.setdefault("graph", g) and ["ref"])
+    monkeypatch.setattr(comfy_api, "fetch_image", lambda ref, out: out)
+    pp._restore_comfyui(tmp_path / "a.png", tmp_path / "b.png", upscale=False)
+    graph = sent["graph"]
+    assert graph["6"]["inputs"]["images"] == ["3", 0]
+    linked = {v[0] for n in graph.values() for v in n["inputs"].values()
+              if isinstance(v, list)}
+    assert linked <= set(graph)  # no input points at a deleted node
+    assert not any("4x" in str(n["inputs"]) for n in graph.values())
+
+
+def test_tighten_crop_isolates_the_full_size_source(tmp_path: Path, monkeypatch) -> None:
+    # Cropping a 2x-target copy to a small subject would upscale it back up.
+    import studio.preprocess as pp
+
+    seen = []
+
+    def fake_isolate(image_path, out_path, *a, **kw):
+        with Image.open(image_path) as im:
+            seen.append(im.size)
+            im.convert("RGB").save(out_path, "PNG")
+
+    monkeypatch.setattr(pp, "isolate_subject", fake_isolate)
+    src = _noisy_jpeg(tmp_path / "big.jpg", (3000, 4000))
+    pp.preprocess(src, tmp_path / "out", target=1024, isolate=True, tighten_crop=True,
+                  restore_backend="comfyui")
+    pp.preprocess(src, tmp_path / "out2", target=1024, isolate=True,
+                  restore_backend="comfyui")
+    assert seen == [(3000, 4000), (1536, 2048)]
+
+
+def test_exif_rotation_is_applied(tmp_path: Path, monkeypatch) -> None:
+    calls = _restore_calls(monkeypatch)
+    exif = Image.Exif()
+    exif[0x0112] = 6  # stored landscape, shown portrait
+    src = _noisy_jpeg(tmp_path / "rot.jpg", (400, 300), exif=exif)
+    r = preprocess(src, tmp_path / "out", target=256, force_restore=True,
+                   isolate=False, restore_backend="comfyui")
+    assert r.original_size == (300, 400)
+    assert calls[0][0] == (300, 400)  # restore sees the upright copy too
+    assert r.final_size == (192, 256)
 
 
 # ---------- batch resilience: one bad image must not kill the run ----------

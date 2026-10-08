@@ -6,12 +6,13 @@ Everything here is overridable via environment variables prefixed LDS_
 
 from __future__ import annotations
 
+import io
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -309,22 +310,25 @@ CAPTIONERS: list[CaptionerSpec] = [
         model="gemini-flash-latest",
         api_key_env="GEMINI_API_KEY",
         nsfw_capable=False,
-        cost_note="billed by Google to your key (~$0.001/img est. — check current pricing)",
+        cost_note="billed by Google to your key (~$0.002/img est. — check current pricing)",
     ),
     CaptionerSpec(
-        key="groq-qwen3.6",
-        label="Cloud: Groq Qwen3.6 27B (free tier, SFW)",
+        # Versionless key: Groq retires models every few months (qwen3.6-27b went
+        # on 2026-09-14) and the key is what .env / scripts name.
+        key="groq-qwen",
+        label="Cloud: Groq Qwen3.8 27B (SFW, rate-limited)",
         backend="openai",
         base_url="https://api.groq.com/openai/v1",
-        model="qwen/qwen3.6-27b",
+        model="qwen/qwen3.8-27b",
         api_key_env="GROQ_API_KEY",
-        min_interval_s=3.0,  # respect the free-tier 8K TPM limit
+        # 8K tokens/min on the base tier, and one call is ~2.6K (an image costs up
+        # to 2,048 tokens). 3 s spacing ran straight into 429s; 20 s stays under.
+        min_interval_s=20.0,
         nsfw_capable=False,
-        cost_note="free tier (rate-limited; 8K TPM)",
-        # Qwen3.6 is a reasoning model; "none" disables its <think> scratchpad
-        # so the response is just the caption. Keep a slightly higher token
-        # budget as insurance if a future model ignores the flag.
-        max_tokens=800,
+        cost_note="Groq free or paid plan (~$0.003/img est. paid; 8K tokens/min)",
+        # A reasoning model; "none" disables its <think> scratchpad so the response
+        # is just the caption. Kept low because Groq counts it against the minute.
+        max_tokens=400,
         extra_params={"reasoning_effort": "none"},
     ),
     CaptionerSpec(
@@ -350,29 +354,37 @@ CAPTIONERS: list[CaptionerSpec] = [
 ]
 
 CAPTIONERS_BY_KEY = {c.key: c for c in CAPTIONERS}
+# Retired keys still named in someone's .env (LDS_DEFAULT_CAPTIONER) or scripts.
+CAPTIONERS_BY_KEY["groq-qwen3.6"] = CAPTIONERS_BY_KEY["groq-qwen"]
 
 # Known Gemini image models -> USD per standard-resolution (1K) image.
 # ESTIMATES captured at build time — actual costs are billed by Google to the
 # user's own API key; the UI can live-pull the current model list.
+# Captured 2026-10; the -preview ids of Pro and Nano Banana 2 were shut down on
+# 2026-06-25. Order is the dropdown order when the API can't be listed.
 CLOUD_IMAGE_PRICES = {
-    "gemini-3-pro-image-preview": 0.134,  # Nano Banana Pro (1K-2K)
-    "gemini-3.1-flash-image-preview": 0.067,  # Nano Banana 2 (1K)
+    "gemini-3-pro-image": 0.134,  # Nano Banana Pro (1K-2K), 5 character refs
+    "gemini-nano-banana-2.1": 0.034,  # Nano Banana 2.1 (1K), 4 character refs
+    "gemini-3.1-flash-image": 0.067,  # Nano Banana 2 (1K), 4 character refs
+    "gemini-3.1-flash-lite-image": 0.034,  # Nano Banana 2 Lite (1K only)
     "gemini-2.5-flash-image": 0.039,  # Nano Banana (1K)
 }
+# Still served, but Google has announced a shutdown; labelled in the dropdown.
+DEPRECATED_IMAGE_MODELS = {"gemini-2.5-flash-image"}
 
 # Known Gemini caption models -> USD per captioned image. ESTIMATES captured at
-# build time, derived from published token pricing: ~1290 tokens for a 1K image
-# in, ~120 tokens of caption out. Actual costs are billed by Google to the
-# user's own key — always check current pricing.
+# build time (2026-10), derived from published token pricing: ~1.5K tokens for
+# a 1K image plus instruction in, ~120 tokens of caption out. Gemini 3.8 Flash
+# (what flash-latest serves) doubles its price on 2027-01-01. Actual costs are
+# billed by Google to the user's own key — always check current pricing.
 CAPTION_IMAGE_PRICES = {
-    "gemini-flash-latest": 0.0007,
-    "gemini-2.5-flash": 0.0007,
-    "gemini-flash-lite-latest": 0.0002,
-    "gemini-2.5-flash-lite": 0.0002,
+    "gemini-flash-latest": 0.0016,
+    "gemini-flash-lite-latest": 0.0008,
+    "gemini-3.5-flash-lite": 0.0008,
 }
 # Applied to a Gemini caption model we have no specific price for, so the
 # estimate degrades to "about a Flash" rather than silently reporting $0.
-DEFAULT_CAPTION_PRICE = 0.0007
+DEFAULT_CAPTION_PRICE = 0.0016
 
 # Local cache for the live Gemini model list so the dropdown can be populated
 # without an API call on every UI load. 24-hour TTL; falls back to stale cache,
@@ -443,7 +455,10 @@ class Settings(BaseSettings):
     # `LDS_HF_TOKEN=…` in .env was read by nothing and silently ignored, while the
     # Gemini/Groq aliases worked — an inconsistency users had no way to see.
     hf_token: str = ""  # also read from HF_TOKEN if unset
-    gemini_image_model: str = "gemini-3-pro-image-preview"
+    # "auto" = the best image model the API currently offers (see
+    # IMAGE_MODEL_PREFERENCE in studio/engines/gemini.py), so a retired id
+    # can't break the default again.
+    gemini_image_model: str = "auto"
 
     # Checks GitHub releases for a newer version at UI launch (cached 24h,
     # best-effort, never blocks). Set false to disable entirely (no network call).
@@ -452,6 +467,14 @@ class Settings(BaseSettings):
     target_long_side: int = 1024
     default_engine: str = "gemini"
     default_captioner: str = "qwen3vl"
+
+    @field_validator("default_captioner")
+    @classmethod
+    def _current_captioner_key(cls, v: str) -> str:
+        # A retired alias in .env would otherwise reach the ③ dropdown as a
+        # value that isn't one of its choices.
+        spec = CAPTIONERS_BY_KEY.get(v)
+        return spec.key if spec else v
     # "builtin" = SAM3 via transformers in-process; "comfyui" = SAM3 workflow
     isolation_backend: str = "builtin"
     sam3_hf_id: str = "facebook/sam3"  # gated: accept license + `hf auth login`
@@ -538,6 +561,37 @@ def list_images(folder: Path) -> list[Path]:
                   if p.is_file() and p.suffix.lower() in IMAGE_EXTS)
 
 
+_PASSTHROUGH_FORMATS = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}
+
+
+def api_image(path: Path, max_side: int) -> tuple[bytes, str]:
+    """`path` as (bytes, true mime) for a cloud or VLM call, long side <= `max_side`.
+
+    Every API path used to send raw file bytes labelled image/png: a JPEG went out
+    mislabelled and a 12 MP phone photo went out whole. A file already small enough
+    in a format every provider reads is sent untouched; anything else is re-encoded
+    (PNG when it has alpha, else JPEG q95) after an EXIF-aware Lanczos downscale.
+    """
+    from PIL import Image, ImageOps
+
+    with Image.open(path) as im:
+        mime = _PASSTHROUGH_FORMATS.get(im.format or "")
+        if mime and max(im.size) <= max_side:
+            return path.read_bytes(), mime
+        img = ImageOps.exif_transpose(im)
+    if img.mode.startswith("I;16"):  # 16-bit grey: convert() would clip it to white
+        img = img.convert("I").point(lambda v: v / 256, "L")
+    # has_transparency_data also catches a palette image's tRNS transparency.
+    img = img.convert("RGBA" if img.has_transparency_data else "RGB")
+    img.thumbnail((max_side, max_side), Image.LANCZOS)
+    buf = io.BytesIO()
+    if img.mode == "RGBA":
+        img.save(buf, "PNG")
+        return buf.getvalue(), "image/png"
+    img.save(buf, "JPEG", quality=95)
+    return buf.getvalue(), "image/jpeg"
+
+
 # HTTP statuses a cloud provider returns for "try again", mapped to plain English.
 # 503 is by far the common one — a Gemini demand spike, not anything the user did.
 _TRANSIENT_STATUS = {
@@ -572,9 +626,15 @@ def friendly_api_error(exc: BaseException) -> str:
     named cause and the two things actually worth doing about them; everything else
     degrades to a trimmed message so no failure is ever swallowed.
     """
-    reason = _TRANSIENT_STATUS.get(api_status_code(exc) or 0, "")
+    status = api_status_code(exc) or 0
+    reason = _TRANSIENT_STATUS.get(status, "")
     if reason:
         return f"{reason}. {_RETRY_ADVICE}"
+    if status == 404 and "model" in str(exc).lower():
+        # What a retired model id looks like (gemini-3-pro-image-preview, 2026-06).
+        return ("this model isn't available to your key — the provider may have "
+                "retired it. Refresh the model list and pick another (for ② images, "
+                "'Auto (recommended)').")
     text = " ".join(str(exc).split())
     return text[:300] + ("…" if len(text) > 300 else "") or exc.__class__.__name__
 

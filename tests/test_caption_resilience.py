@@ -10,9 +10,15 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from studio import captioner as C
 from studio import config
+
+
+def _png(path: Path) -> Path:
+    Image.new("RGB", (8, 8)).save(path)
+    return path
 
 
 class _Boom(Exception):
@@ -131,8 +137,7 @@ def _gemini_captioner(monkeypatch: pytest.MonkeyPatch, responses: list):
 
 
 def test_gemini_retries_a_503_then_succeeds(tmp_path: Path, monkeypatch) -> None:
-    img = tmp_path / "a.png"
-    img.write_bytes(b"")
+    img = _png(tmp_path / "a.png")
     ok = type("R", (), {"text": "a caption"})()
     cap, attempts = _gemini_captioner(monkeypatch, [_Boom(503), _Boom(503), ok])
     assert cap._caption_gemini(img, "describe") == "a caption"
@@ -140,8 +145,7 @@ def test_gemini_retries_a_503_then_succeeds(tmp_path: Path, monkeypatch) -> None
 
 
 def test_gemini_gives_up_after_the_last_attempt(tmp_path: Path, monkeypatch) -> None:
-    img = tmp_path / "a.png"
-    img.write_bytes(b"")
+    img = _png(tmp_path / "a.png")
     cap, attempts = _gemini_captioner(monkeypatch, [_Boom(503)] * C.GEMINI_RETRIES)
     with pytest.raises(_Boom):
         cap._caption_gemini(img, "describe")
@@ -149,8 +153,7 @@ def test_gemini_gives_up_after_the_last_attempt(tmp_path: Path, monkeypatch) -> 
 
 
 def test_gemini_does_not_retry_a_bad_request(tmp_path: Path, monkeypatch) -> None:
-    img = tmp_path / "a.png"
-    img.write_bytes(b"")
+    img = _png(tmp_path / "a.png")
     cap, attempts = _gemini_captioner(monkeypatch, [_Boom(400)])
     with pytest.raises(_Boom):
         cap._caption_gemini(img, "describe")

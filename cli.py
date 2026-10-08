@@ -22,7 +22,7 @@ from pathlib import Path
 import typer
 
 from studio import env_keys, pipeline
-from studio.config import CAPTIONERS_BY_KEY, list_images, settings
+from studio.config import CAPTIONERS, list_images, settings
 from studio.shotplan import plan_for_type
 
 app = typer.Typer(add_completion=False, help=__doc__)
@@ -63,17 +63,13 @@ def _echo_cloud_estimate(engine: str, cloud_model: str, n_shots: int) -> None:
     """Warn what a cloud run will cost before it starts billing the user."""
     if engine != "gemini":
         return
-    from studio.config import CLOUD_IMAGE_PRICES, load_cloud_model_cache
+    from studio.engines.gemini import image_price
 
-    model_id = cloud_model or settings.gemini_image_model
-    price = CLOUD_IMAGE_PRICES.get(model_id)
-    for m in load_cloud_model_cache() or []:
-        if m.get("model_id") == model_id and m.get("price") is not None:
-            price = m["price"]
-            break
+    model_id, price = image_price(cloud_model)
     if price:
         typer.echo(f"Cloud engine: ~${n_shots * price:.2f} estimated for {n_shots} "
-                   f"images (build-time estimate, billed to your Google API key).")
+                   f"images on {model_id} (build-time estimate, billed to your Google "
+                   f"API key).")
 
 
 def _preflight_comfyui(engine: str) -> None:
@@ -203,6 +199,7 @@ def preprocess(
         False, "--alpha-cutout/--no-alpha-cutout",
         help="Export on a transparent background instead of white (builtin backend "
              "only; for your own compositing workflows — not meant to feed 'generate')"),
+    front: bool = typer.Option(False, help="Jump ComfyUI's pending queue"),
 ):
     """Restore/upscale/isolate images (standalone)."""
     out = out or pipeline.new_run_dir("prepped")
@@ -210,7 +207,7 @@ def preprocess(
         _expand(inputs), out, target=target, force_restore=restore, isolate=isolate,
         subject_prompt=subject_prompt, exclude_prompt=exclude_prompt,
         restore_backend=restore_backend, isolation_backend=isolation_backend,
-        tighten_crop=tighten, alpha_cutout=alpha_cutout, progress=typer.echo)
+        tighten_crop=tighten, alpha_cutout=alpha_cutout, front=front, progress=typer.echo)
     _echo_preprocess_failures(reports)
     # Exit non-zero only when nothing was written: a partial run still produced
     # a usable folder, and failing the whole command would hide that.
@@ -279,7 +276,7 @@ def caption(
     folder: Path = typer.Argument(..., exists=True, file_okay=False,
                                   help="Folder of images to tag"),
     captioner: str = typer.Option(settings.default_captioner,
-                                  help=f"one of {list(CAPTIONERS_BY_KEY)}"),
+                                  help=f"one of {[c.key for c in CAPTIONERS]}"),
     name: str = typer.Option("", help="Character name used in captions"),
     trigger: str = typer.Option("", help="Trigger word placed first in every caption"),
     model: str = typer.Option("", help="Model id (gemini captioner; blank = default)"),
@@ -421,7 +418,7 @@ def build(
         help="gemini (cloud, billed to your key) or comfyui (local, free — needs "
              "the models in docs/comfyui-setup.md; `doctor` says if it is ready)"),
     captioner: str = typer.Option(settings.default_captioner,
-                                  help=f"one of {list(CAPTIONERS_BY_KEY)}"),
+                                  help=f"one of {[c.key for c in CAPTIONERS]}"),
     caption_style: str = typer.Option(
         "prose", "--caption-style",
         help="prose (natural language), tags (Danbooru: SDXL/Illustrious) or e621 (furry/Pony)"),
@@ -467,6 +464,7 @@ def build(
     drop_tags: str = typer.Option(
         "", "--drop-tags",
         help="Comma-separated tags to strip from tag captions (e.g. 'watermark, signature')"),
+    front: bool = typer.Option(False, help="Jump ComfyUI's pending queue"),
 ):
     """Full pipeline: preprocess -> generate -> caption -> export."""
     from studio.captioner import caption_images
@@ -487,7 +485,7 @@ def build(
     reports = pipeline.preprocess_sources(
         _expand(images), run_dir / "prepped", target=target, force_restore=restore,
         isolate=do_isolate, subject_prompt=subject_prompt, exclude_prompt=exclude_prompt,
-        tighten_crop=tighten, progress=typer.echo)
+        tighten_crop=tighten, front=front, progress=typer.echo)
     _echo_preprocess_failures(reports)
     # A per-image failure is reported, not raised, so `output` can be None —
     # everything downstream must run on the images that actually exist.
@@ -515,7 +513,8 @@ def build(
             prepped, shots, engine, run_dir / "generated",
             cloud_model=cloud_model, isolate_angles=do_isolate, subject_prompt=subject_prompt,
             exclude_prompt=exclude_prompt,
-            exclude_props=_props_default(exclude_props, dtype), progress=typer.echo)
+            exclude_props=_props_default(exclude_props, dtype), front=front,
+            progress=typer.echo)
         kept = [r.path for r in results if r.path]
         if not kept:
             typer.echo("No shots succeeded; aborting before captioning.")
@@ -709,4 +708,10 @@ def custom_endpoint(
 
 
 if __name__ == "__main__":
+    import sys
+
+    # Redirected to a file on Windows, stdout is cp1252 and a "→" in a progress
+    # line raised UnicodeEncodeError, ending the whole batch mid-run.
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(errors="replace")
     app()

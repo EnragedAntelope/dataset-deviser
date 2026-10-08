@@ -18,10 +18,14 @@ and placeholders are preserved. No secrets are ever written — only the model i
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import yaml
 from pydantic import BaseModel
+
+# ai-toolkit checkpoint/sample interval, in steps.
+SAVE_EVERY = 250
 
 
 def _yaml_str(value: str) -> str:
@@ -57,6 +61,11 @@ class ModelPreset(BaseModel):
     arch: str = ""
     is_flux: bool = False
     quantize: bool = True
+    # ai-toolkit: extra `model:` keys (quantize_te, low_vram, qtype…) and the
+    # train.timestep_type, copied from the arch's defaults in ai-toolkit's
+    # extensions_built_in/diffusion_models/ui.tsx.
+    model_extras: dict[str, bool | str] = {}
+    timestep_type: str = ""
     # ai-toolkit train/sample knobs that vary by architecture family. Defaults
     # match the flow-matching models (Flux / Qwen-Image / Z-Image); SDXL, which
     # is not flow-matching, overrides them (ddpm scheduler, higher CFG).
@@ -68,8 +77,16 @@ class ModelPreset(BaseModel):
     # Qwen-Image / Z-Image / Krea) from natural language. Drives the ④→⑤ advisory
     # that warns when the dataset's captions don't match — nothing else.
     expects_tags: bool = False
-    # musubi training script (…_train_network.py). Placeholder when unverified.
+    # musubi training script (…_train_network.py). Its prefix also names the two
+    # cache scripts. Everything below is from the arch's page in musubi's docs/.
     musubi_script: str = "<<FILL: see musubi docs for this arch>>"
+    # Every musubi arch has its own LoRA module; plain networks.lora is wrong
+    # for all of them.
+    network_module: str = "networks.lora"
+    musubi_args: str = ""  # timestep sampling etc. for the train command
+    musubi_version: str = ""  # --model_version, passed to all three commands
+    musubi_text_encoders: list[str] = ["text_encoder"]
+    musubi_train_te: bool = True  # Krea 2 trains from cached TE outputs alone
     # kohya-ss sd-scripts training script (SDXL uses sdxl_train_network.py).
     kohya_script: str = "<<FILL: see kohya sd-scripts docs for this arch>>"
     # per-model defaults (UI pre-fills these; the user can override)
@@ -80,6 +97,8 @@ class ModelPreset(BaseModel):
     lr: float = 1e-4
     batch_size: int = 1
 
+
+_SHIFT = "--timestep_sampling shift --weighting_scheme none --discrete_flow_shift {}"
 
 # Curated, extensible — not exhaustive. Where a model's canonical HF id or
 # musubi script is not something we can guarantee, it is a <<FILL>> placeholder
@@ -105,24 +124,49 @@ TRAINER_MODELS: dict[str, list[ModelPreset]] = {
                     name_or_path="<<FILL: your SDXL-family checkpoint HF id or local path>>",
                     arch="sdxl", quantize=False, noise_scheduler="ddpm",
                     sample_guidance=7.0, sample_steps=25, expects_tags=True),
+        ModelPreset(key="qwen-image-2.1", label="Qwen-Image 2.1",
+                    name_or_path="Comfy-Org/Qwen-Image-2.1", arch="qwen_image_2",
+                    timestep_type="shift", sample_guidance=3.0,
+                    # The Comfy-Org weights are pre-quantized int8 convrot.
+                    model_extras={"quantize_te": True, "low_vram": True,
+                                  "qtype": "convrot8", "qtype_te": "convrot8"}),
         ModelPreset(key="zimage", label="Z-Image",
-                    name_or_path="<<FILL: Z-Image model path or HF id>>",
-                    arch="zimage"),
-        ModelPreset(key="krea", label="Krea 2",
-                    name_or_path="<<FILL: Krea 2 diffusers model path>>",
-                    arch="krea"),
+                    name_or_path="Tongyi-MAI/Z-Image", arch="zimage",
+                    timestep_type="weighted", sample_steps=30,
+                    model_extras={"quantize_te": True, "low_vram": True,
+                                  "qtype": "qfloat8"}),
+        # Key stays "krea" so saved ⑤ settings still find it. Train on Raw:
+        # Turbo is distilled, and samples use Raw's own 28 steps / CFG 5.5.
+        ModelPreset(key="krea", label="Krea 2 (Raw)",
+                    name_or_path="krea/Krea-2-Raw", arch="krea2",
+                    timestep_type="linear", sample_guidance=5.5, sample_steps=28,
+                    model_extras={"quantize_te": True, "low_vram": True}),
         ModelPreset(key="custom", label="Custom (edit name_or_path below)",
                     name_or_path="<<FILL: your model name_or_path>>", arch="flux"),
     ],
     "musubi": [
         ModelPreset(key="qwen-image", label="Qwen-Image", arch="qwen_image",
-                    musubi_script="qwen_image_train_network.py"),
+                    musubi_script="qwen_image_train_network.py",
+                    network_module="networks.lora_qwen_image", musubi_version="original",
+                    musubi_args=_SHIFT.format(2.2)),
         ModelPreset(key="flux-kontext", label="FLUX.1 Kontext", arch="flux_kontext",
-                    musubi_script="<<FILL: flux train script, see musubi docs>>"),
+                    musubi_script="flux_kontext_train_network.py",
+                    network_module="networks.lora_flux",
+                    musubi_args="--timestep_sampling flux_shift --weighting_scheme none",
+                    musubi_text_encoders=["text_encoder1", "text_encoder2"]),
         ModelPreset(key="flux2", label="FLUX.2", arch="flux2",
-                    musubi_script="<<FILL: flux2 train script, see musubi docs>>"),
+                    musubi_script="flux_2_train_network.py",
+                    network_module="networks.lora_flux_2", musubi_version="dev",
+                    musubi_args="--timestep_sampling flux2_shift --weighting_scheme none"),
         ModelPreset(key="zimage", label="Z-Image", arch="zimage",
-                    musubi_script="<<FILL: z-image train script, see musubi docs>>"),
+                    musubi_script="zimage_train_network.py",
+                    network_module="networks.lora_zimage", musubi_args=_SHIFT.format(2.0)),
+        # docs/krea2.md: --dit is the Raw checkpoint; training reads the cached
+        # text-encoder outputs, so the train command takes no --text_encoder.
+        ModelPreset(key="krea2", label="Krea 2 (Raw)", arch="krea2",
+                    musubi_script="krea2_train_network.py",
+                    network_module="networks.lora_krea2", musubi_args=_SHIFT.format(2.5),
+                    musubi_train_te=False, rank=32, alpha=32),
     ],
     # kohya-ss sd-scripts is the standard SDXL LoRA trainer — the natural home for
     # the Danbooru/e621 tag captions (③). SDXL base is a runnable HF id; a family
@@ -214,6 +258,13 @@ def render_aitoolkit_yaml(cfg: TrainConfig) -> str:
     """A complete, runnable ai-toolkit config.yaml."""
     m = cfg.model
     arch_line = "        is_flux: true\n" if m.is_flux else f'        arch: "{m.arch}"\n'
+    model_extras = "".join(
+        f"        {k}: {str(v).lower() if isinstance(v, bool) else _yaml_str(v)}\n"
+        for k, v in m.model_extras.items())
+    timestep = f"        timestep_type: {m.timestep_type}\n" if m.timestep_type else ""
+    raw_note = ("        # Train on Raw. Turbo is distilled: a LoRA trained on it fights the\n"
+                "        # distillation. Use the LoRA with Turbo at inference instead.\n"
+                if m.arch.startswith("krea2") else "")
     return (
         "# ai-toolkit LoRA config generated by Dataset Deviser.\n"
         "# Run from your ai-toolkit install:  python run.py <this file>\n"
@@ -232,8 +283,10 @@ def render_aitoolkit_yaml(cfg: TrainConfig) -> str:
         f"        linear_alpha: {cfg.alpha}\n"
         "      save:\n"
         "        dtype: float16\n"
-        "        save_every: 250\n"
-        "        max_step_saves_to_keep: 4\n"
+        f"        save_every: {SAVE_EVERY}\n"
+        # Keep every save: the best checkpoint is often an early one, and
+        # pruning to the last few deleted it before anyone could compare.
+        f"        max_step_saves_to_keep: {max(1, math.ceil(cfg.steps / SAVE_EVERY))}\n"
         "      datasets:\n"
         f"        - folder_path: \"{cfg.dataset_dir.as_posix()}\"\n"
         "          caption_ext: \"txt\"\n"
@@ -249,15 +302,18 @@ def render_aitoolkit_yaml(cfg: TrainConfig) -> str:
         "        train_text_encoder: false\n"
         "        gradient_checkpointing: true\n"
         f"        noise_scheduler: {m.noise_scheduler}\n"
+        f"{timestep}"
         f"        optimizer: adamw8bit\n"
         f"        lr: {cfg.lr}\n"
         "        dtype: bf16\n"
         "      model:\n"
+        f"{raw_note}"
         f"        name_or_path: {_yaml_str(m.name_or_path)}\n"
         f"{arch_line}"
         f"        quantize: {str(m.quantize).lower()}\n"
+        f"{model_extras}"
         "      sample:\n"
-        "        sample_every: 250\n"
+        f"        sample_every: {SAVE_EVERY}\n"
         f"        width: {cfg.resolution}\n"
         f"        height: {cfg.resolution}\n"
         "        prompts:\n"
@@ -304,20 +360,40 @@ def musubi_command(install_path: str, toml_path: Path, cfg: TrainConfig) -> str:
     Takes the whole TrainConfig, not just the preset: rank/alpha/steps/lr are
     user-tunable in the UI and must actually reach the command line.
     """
+    m = cfg.model
     base = install_path.strip() or "<<FILL: path to your musubi-tuner install>>"
+    prefix = m.musubi_script.removesuffix("_train_network.py")
+    toml = toml_path.as_posix()
+    version = f" --model_version {m.musubi_version}" if m.musubi_version else ""
+    te = " ".join(f"--{f} <<FILL: {f.replace('_', ' ')} path>>"
+                  for f in m.musubi_text_encoders)
+    train_te = f"  {te} \\\n" if m.musubi_train_te else ""
+    extra = f"  {m.musubi_args} \\\n" if m.musubi_args else ""
     return (
-        f'cd "{base}" && accelerate launch src/musubi_tuner/{cfg.model.musubi_script} \\\n'
-        f'  --dataset_config "{toml_path.as_posix()}" \\\n'
+        "# 1-2: cache latents and text-encoder outputs (re-run after changing the\n"
+        "# images or captions). 3: train, saving a LoRA every epoch to compare.\n"
+        f'cd "{base}"\n'
+        f'python src/musubi_tuner/{prefix}_cache_latents.py --dataset_config "{toml}" '
+        f"--vae <<FILL: VAE path>>{version}\n"
+        f'python src/musubi_tuner/{prefix}_cache_text_encoder_outputs.py '
+        f'--dataset_config "{toml}" {te} --batch_size 1{version}\n'
+        "accelerate launch --num_cpu_threads_per_process 1 --mixed_precision bf16 "
+        f"src/musubi_tuner/{m.musubi_script} \\\n"
         "  --dit <<FILL: DiT/model weights path>> \\\n"
         "  --vae <<FILL: VAE path>> \\\n"
-        "  --text_encoder <<FILL: text encoder path>> \\\n"
-        "  --network_module networks.lora \\\n"
+        f"{train_te}"
+        f'  --dataset_config "{toml}"{version} \\\n'
+        "  --sdpa --mixed_precision bf16 --gradient_checkpointing \\\n"
+        f"{extra}"
+        f"  --optimizer_type adamw8bit --learning_rate {cfg.lr} \\\n"
+        "  --max_data_loader_n_workers 2 --persistent_data_loader_workers \\\n"
+        f"  --network_module {m.network_module} \\\n"
         f"  --network_dim {cfg.rank} \\\n"
         f"  --network_alpha {cfg.alpha} \\\n"
-        f"  --learning_rate {cfg.lr} \\\n"
-        f'  --output_dir output --output_name "{cfg.name}" \\\n'
-        f"  --max_train_steps {cfg.steps} --mixed_precision bf16\n"
-        "# Consult the musubi-tuner arch-specific doc for the exact required flags."
+        f"  --max_train_steps {cfg.steps} --save_every_n_epochs 1 --seed 42 \\\n"
+        f'  --output_dir output --output_name "{cfg.name}"\n'
+        f"# Flags follow musubi-tuner's docs/{prefix}.md example; check "
+        "it if a run complains."
     )
 
 

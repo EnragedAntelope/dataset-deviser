@@ -35,6 +35,12 @@ from studio.config import (
 
 _JOYCAPTION_SYSTEM = "You are a helpful image captioner."
 
+# Long-side caps for the image a captioner sees. Cloud: big enough for detail,
+# small enough that Groq's 2,048-token image budget and Gemini's tiling don't
+# bill for pixels the caption can't use. Local: the training size.
+CLOUD_CAPTION_MAX_SIDE = 1536
+LOCAL_VLM_MAX_SIDE = 1024
+
 # Cloud captioning retries: 4 attempts at 2s/4s/8s covers the seconds-long Gemini
 # demand spikes that produce a 503 without leaving a user staring at a stuck batch.
 GEMINI_RETRIES = 4
@@ -221,7 +227,10 @@ class Captioner:
         import torch
 
         self._load_transformers()
+        # Capped at the training size: a full-res phone photo otherwise becomes
+        # thousands of vision tokens and a VRAM spike for no better caption.
         image = Image.open(image_path).convert("RGB")
+        image.thumbnail((LOCAL_VLM_MAX_SIDE, LOCAL_VLM_MAX_SIDE), Image.LANCZOS)
         messages = []
         if self.spec.prompt_style == "llava":  # JoyCaption expects its system prompt
             messages.append({"role": "system", "content": _JOYCAPTION_SYSTEM})
@@ -260,8 +269,9 @@ class Captioner:
         from google.genai import types
 
         client = config.gemini_client(key)
+        data, mime = config.api_image(image_path, CLOUD_CAPTION_MAX_SIDE)
         contents = [
-            types.Part.from_bytes(data=image_path.read_bytes(), mime_type="image/png"),
+            types.Part.from_bytes(data=data, mime_type=mime),
             instruction,
         ]
         # Retry transient statuses with backoff, like the OpenAI backend already did.
@@ -304,7 +314,8 @@ class Captioner:
             headers["Authorization"] = f"Bearer {key}"
 
         model = self.model or self._first_served_model(headers)
-        b64 = base64.b64encode(image_path.read_bytes()).decode()
+        data, mime = config.api_image(image_path, CLOUD_CAPTION_MAX_SIDE)
+        b64 = base64.b64encode(data).decode()
         payload = {
             "model": model,
             "max_tokens": self.spec.max_tokens,
@@ -314,7 +325,7 @@ class Captioner:
                     "role": "user",
                     "content": [
                         {"type": "image_url",
-                         "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                         "image_url": {"url": f"data:{mime};base64,{b64}"}},
                         {"type": "text", "text": instruction},
                     ],
                 }

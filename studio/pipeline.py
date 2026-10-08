@@ -60,6 +60,7 @@ def preprocess_sources(
     isolation_backend: str = "",
     tighten_crop: bool = False,
     alpha_cutout: bool = False,
+    front: bool = False,
     should_stop: ShouldStop | None = None,
     progress: ProgressFn = print,
 ) -> list[PreprocessReport]:
@@ -82,7 +83,7 @@ def preprocess_sources(
                              isolate=isolate, subject_prompt=subject_prompt,
                              exclude_prompt=exclude_prompt, restore_backend=restore_backend,
                              isolation_backend=isolation_backend, tighten_crop=tighten_crop,
-                             alpha_cutout=alpha_cutout, progress=progress)
+                             alpha_cutout=alpha_cutout, front=front, progress=progress)
         except Exception as e:
             progress(f"  SKIPPED {src.name}: {e}")
             reports.append(failed_report(src, str(e)))

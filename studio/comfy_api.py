@@ -274,8 +274,8 @@ def run_prompt(graph: dict, timeout: float = 600.0, front: bool = False) -> list
     if backlog > 10 and not front:
         raise ComfyError(
             f"ComfyUI queue is busy: {backlog} jobs already pending. This app's jobs "
-            f"would wait behind them. Either enable 'Prioritize this app's ComfyUI jobs' "
-            f"to jump the pending queue, or open ComfyUI ({settings.comfy_url}) and clear "
+            f"would wait behind them. Either tick 'Prioritize this app's ComfyUI jobs' "
+            f"(① and ② each have one; `--front` in the CLI) to jump the pending queue, or open ComfyUI ({settings.comfy_url}) and clear "
             f"it (Queue panel → Clear, or the Manager's 'Clear Queue'), then retry. To "
             f"generate without ComfyUI, switch the engine to the Cloud (Gemini) option, "
             f"or set the isolation/restore backend to Built-in/Basic."

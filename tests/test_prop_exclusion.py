@@ -63,7 +63,7 @@ def test_gemini_cost_scales_with_image_count() -> None:
     many = estimate_caption_cost("gemini-flash", "gemini-flash-latest", 100)
     assert "1 image(s)" in one
     assert "100 image(s)" in many
-    assert "$0.07" in many  # 100 * 0.0007
+    assert "$0.16" in many  # 100 * 0.0016
 
 
 def test_gemini_cost_differs_by_model() -> None:

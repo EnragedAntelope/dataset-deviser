@@ -40,12 +40,18 @@ from studio.captioner import (
 from studio.config import (
     CAPTIONERS,
     CAPTIONERS_BY_KEY,
-    CLOUD_IMAGE_PRICES,
     friendly_api_error,
     list_images,
     load_caption_model_cache,
     read_caption,
     settings,
+)
+from studio.engines.gemini import (
+    AUTO_MODEL,
+    image_model_choices,
+    image_price,
+    known_image_models,
+    resolve_image_model,
 )
 from studio.jobs import JobControl
 from studio.shotplan import Shot, apply_prop_exclusion, apply_wardrobe, plan_for_type
@@ -57,7 +63,17 @@ ENGINE_CHOICES = [
     ("Cloud — Gemini image model (best identity fidelity, SFW only)", "gemini"),
     ("Local — ComfyUI Qwen Image 2.1 (free, private, uncensored)", "comfyui"),
 ]
-CLOUD_MODEL_CHOICES = [(f"{m}  (~${p:.3f}/img est.)", m) for m, p in CLOUD_IMAGE_PRICES.items()]
+CLOUD_MODEL_CHOICES = image_model_choices(known_image_models())
+
+
+def _cloud_model_default(pinned: str, choices: list[tuple[str, str]]) -> str:
+    """The ② dropdown's start value: the .env pin (retired ids mapped) if listed, else Auto."""
+    if pinned != AUTO_MODEL:
+        pinned = resolve_image_model(pinned)
+    return pinned if pinned in {m for _, m in choices} else AUTO_MODEL
+
+
+CLOUD_MODEL_DEFAULT = _cloud_model_default(settings.gemini_image_model, CLOUD_MODEL_CHOICES)
 CAPTIONER_CHOICES = [(c.label, c.key) for c in CAPTIONERS]
 
 # Gemini caption-model dropdown seed: use the local cache if present, else a
@@ -581,7 +597,8 @@ def _preprocess_note(reports, out_dir: Path, alpha_cutout: bool) -> str:
 def do_preprocess(files: list[str], folder: str, target: int, restore_mode: str,
                   restore_backend: str, isolate: bool, isolation_backend: str,
                   subject_prompt: str, exclude_prompt: str, tighten: bool = False,
-                  alpha_cutout: bool = False, progress=gr.Progress()):
+                  alpha_cutout: bool = False, front: bool = False,
+                  progress=gr.Progress()):
     sources = _inputs(files, folder)
     out_dir = _stamped("prepped")
     force = {"Auto (only if needed)": None, "Always": True, "Never": False}[restore_mode]
@@ -598,7 +615,7 @@ def do_preprocess(files: list[str], folder: str, target: int, restore_mode: str,
             subject_prompt=subject_prompt or "character",
             exclude_prompt=exclude_prompt or "", restore_backend=restore_backend,
             isolation_backend=isolation_backend, tighten_crop=tighten,
-            alpha_cutout=alpha_cutout, should_stop=JOB, progress=report)
+            alpha_cutout=alpha_cutout, front=front, should_stop=JOB, progress=report)
     except OSError as e:
         raise gr.Error(f"Couldn't write to '{out_dir}': {e}. Check the output folder "
                        f"(valid drive, writable, enough space).") from e
@@ -1358,17 +1375,10 @@ def do_load_plan(plan_name: str):
 def estimate_cost(engine: str, cloud_model: str, df: pd.DataFrame) -> str:
     n = len(df)
     if engine == "gemini":
-        from studio.config import CLOUD_IMAGE_PRICES, load_cloud_model_cache
-
-        price = CLOUD_IMAGE_PRICES.get(cloud_model)
-        cached = load_cloud_model_cache() or []
-        for m in cached:
-            if m.get("model_id") == cloud_model and m.get("price") is not None:
-                price = m["price"]
-                break
+        model, price = image_price(cloud_model)
         if price is None:
-            return f"**Cost:** {n} images on `{cloud_model}` (price unknown — billed to your API key)"
-        return (f"**Cost:** ~${n * price:.2f} for {n} images on `{cloud_model}` "
+            return f"**Cost:** {n} images on `{model}` (price unknown — billed to your API key)"
+        return (f"**Cost:** ~${n * price:.2f} for {n} images on `{model}` "
                 f"(estimate at build time — billed to your own Google API key)")
     return f"**Cost:** {n} images, $0 (local generation)"
 
@@ -1534,15 +1544,16 @@ def do_generate_train_config(trainer: str, model_key: str, dataset_dir: str,
             f"trainer's own docs before a long run.")
 
 
-def refresh_cloud_models(force: bool = False):
+def refresh_cloud_models(current: str = "", force: bool = False):
+    """New choices from the API; keeps the user's pick when it is still offered."""
     from studio.engines.gemini import list_image_models
 
     try:
-        models = list_image_models(force_refresh=force)
+        choices = image_model_choices(list_image_models(force_refresh=force))
     except Exception as e:
         raise gr.Error(f"Could not list models: {e}") from e
-    return gr.Dropdown(choices=models,
-                       value=models[0][1] if models else settings.gemini_image_model)
+    keep = current if current in {m for _, m in choices} else AUTO_MODEL
+    return gr.Dropdown(choices=choices, value=keep)
 
 
 def refresh_caption_models():
@@ -1749,6 +1760,10 @@ with _blocks as demo:
                              "own compositing workflows. Builtin SAM3 backend only. Leave off "
                              "(default) if you're continuing to ② Generate — it expects a white "
                              "background reference. Needs isolation on.")
+                    pre_front = gr.Checkbox(
+                        value=False, label="Prioritize this app's ComfyUI jobs",
+                        info="Puts ComfyUI restore/isolation jobs at the head of its "
+                             "pending queue. Does not interrupt a job already running.")
                     btn_pre = gr.Button("① Preprocess", variant="primary")
                 with gr.Column(scale=2):
                     pre_note = gr.Markdown()
@@ -1793,8 +1808,10 @@ with _blocks as demo:
                                       label="Generation engine",
                                       info="Cloud Gemini needs no GPU (best identity, SFW); "
                                            "local ComfyUI is free, private, uncensored.")
+                    # A pinned id the list lacks (a retired preview in .env) would
+                    # make Gradio reject every event that reads this dropdown.
                     cloud_model = gr.Dropdown(CLOUD_MODEL_CHOICES,
-                                              value=settings.gemini_image_model,
+                                              value=CLOUD_MODEL_DEFAULT,
                                               label="Cloud image model",
                                               info="Only used by the Cloud engine. Prices are "
                                                    "build-time estimates.")
@@ -2200,7 +2217,7 @@ with _blocks as demo:
         do_preprocess,
         [pre_files, pre_folder, target, restore_mode, restore_backend, isolate,
          isolation_backend, subject_prompt, exclude_prompt, pre_tighten,
-         pre_alpha_cutout],
+         pre_alpha_cutout, pre_front],
         [prep_gallery, pre_note, log_box, gen_src_folder, cap_folder]) \
            .then(lambda s, e: (s, e), [subject_prompt, exclude_prompt],
                  [gen_subject, gen_exclude])
@@ -2249,12 +2266,12 @@ with _blocks as demo:
     btn_outfits_clear.click(clear_outfits, [plan], [plan, plan_note])
     btn_save_plan.click(do_save_plan, [plan, plan_name], [plan_note])
     btn_load_plan.click(do_load_plan, [plan_name], [plan, plan_note])
-    refresh_models.click(refresh_cloud_models, [], [cloud_model])
+    refresh_models.click(refresh_cloud_models, [cloud_model], [cloud_model])
 
-    def _force_refresh():
-        return refresh_cloud_models(force=True)
+    def _force_refresh(current: str):
+        return refresh_cloud_models(current, force=True)
 
-    force_refresh_models.click(_force_refresh, [], [cloud_model])
+    force_refresh_models.click(_force_refresh, [cloud_model], [cloud_model])
     engine.change(estimate_cost, [engine, cloud_model, plan], [cost])
     cloud_model.change(estimate_cost, [engine, cloud_model, plan], [cost])
     plan.change(estimate_cost, [engine, cloud_model, plan], [cost])
