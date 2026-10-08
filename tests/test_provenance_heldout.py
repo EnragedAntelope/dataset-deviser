@@ -128,6 +128,25 @@ def test_do_export_reports_the_holdout(tmp_path: Path) -> None:
     assert "Held out 1" in result
 
 
+def test_optimizer_reaches_the_config_and_fizgig_ignores_prodigy(tmp_path: Path) -> None:
+    folder = tmp_path / "d"
+    folder.mkdir()
+    for i in range(4):
+        Image.new("RGB", (64, 64)).save(folder / f"{i:02d}.png")
+    out = A.do_generate_train_config("kohya", "sdxl", str(folder), "", "lora", "trg",
+                                     1024, 16, 16, 10, 1e-4, 1, False, optimizer="prodigy")
+    assert "--optimizer_type Prodigy" in out and "pip install prodigyopt" in out
+    out = A.do_generate_train_config("fizgig", "krea2", str(folder), "", "lora", "trg",
+                                     1024, 8, 8, 30, 1e-4, 1, False, optimizer="prodigy")
+    assert "Prodigy" not in out and "--optimizer_type adamw8bit" in out
+    # The ⑤ dropdown is the last generate input and follows the trainer.
+    deps = [d for d in A.demo.fns.values()
+            if getattr(getattr(d, "fn", None), "__name__", "") == "do_generate_train_config"]
+    assert deps[0].inputs[-1].label == "Optimizer"
+    update = A.on_trainer_change("fizgig")[-1]
+    assert update["choices"] == [("AdamW8bit (recommended)", "adamw8bit")]
+
+
 def test_exposure_line_auto_repeats(tmp_path: Path) -> None:
     folder = tmp_path / "d"
     folder.mkdir()

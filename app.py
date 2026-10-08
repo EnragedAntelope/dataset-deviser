@@ -55,7 +55,7 @@ from studio.engines.gemini import (
 )
 from studio.jobs import JobControl
 from studio.shotplan import Shot, apply_prop_exclusion, apply_wardrobe, plan_for_type
-from studio.trainer_configs import TRAINER_MODELS, TRAINERS
+from studio.trainer_configs import TRAINER_MODELS, TRAINERS, optimizer_choices
 
 TRAINER_CHOICES = [(label, key) for key, label in TRAINERS.items()]
 
@@ -1409,7 +1409,8 @@ def on_trainer_change(trainer: str):
 
     p = TRAINER_MODELS[trainer][0]
     return (_model_dropdown(trainer), user_config.get_trainer_path(trainer),
-            p.resolution, p.rank, p.alpha, p.epochs, p.lr, p.batch_size)
+            p.resolution, p.rank, p.alpha, p.epochs, p.lr, p.batch_size,
+            gr.update(choices=optimizer_choices(trainer), value="adamw8bit"))
 
 
 def on_model_change(trainer: str, model_key: str):
@@ -1515,7 +1516,7 @@ def do_generate_train_config(trainer: str, model_key: str, dataset_dir: str,
                              multi_res: bool, dataset_type: str = "character",
                              style_key: str = shot_style.MATCH,
                              style_text: str = "", project_name: str = "",
-                             repeats=0) -> str:
+                             repeats=0, optimizer: str = "adamw8bit") -> str:
     # ⑤'s "LoRA name" is the trained file's name, not the subject's — the one
     # identity-ish field that is legitimately its own (people want "-v2"). Blank
     # means "follow the header name", which is why it is not auto-filled: an
@@ -1545,13 +1546,15 @@ def do_generate_train_config(trainer: str, model_key: str, dataset_dir: str,
     preset = _preset(trainer, model_key)
     buckets = stats.buckets_for(int(resolution)) if multi_res else []
     num_repeats = _repeats(trainer, stats, epochs, batch_size, repeats)
+    if optimizer not in {k for _, k in optimizer_choices(trainer)}:
+        optimizer = "adamw8bit"
     cfg = TrainConfig(
         trainer=trainer, model=preset, dataset_dir=ds,
         trigger=trigger.strip(), name=(name.strip() or "lora"),
         dataset_type=dataset_type,
         resolution=int(resolution), rank=int(rank), alpha=int(alpha),
         epochs=max(1, int(epochs)), num_repeats=num_repeats, n_images=stats.n_images,
-        lr=float(lr), batch_size=int(batch_size),
+        lr=float(lr), optimizer=optimizer, batch_size=int(batch_size),
         buckets=buckets, shot_style=style_key, shot_style_text=style_text)
     try:
         written, command = write_configs(cfg, install_path.strip())
@@ -1561,7 +1564,8 @@ def do_generate_train_config(trainer: str, model_key: str, dataset_dir: str,
     user_config.set_last_train_settings({
         "trainer": trainer, "model": model_key, "resolution": int(resolution),
         "rank": int(rank), "alpha": int(alpha), "epochs": cfg.epochs,
-        "repeats": int(repeats or 0), "lr": float(lr), "batch_size": int(batch_size)})
+        "repeats": int(repeats or 0), "lr": float(lr), "optimizer": optimizer,
+        "batch_size": int(batch_size)})
     files = "\n".join(str(p) for p in written)
     bucket_note = (f"\nBuckets: {buckets} (from the dataset's actual sizes)"
                    if buckets else f"\nSingle bucket at {int(resolution)}px")
@@ -1569,6 +1573,12 @@ def do_generate_train_config(trainer: str, model_key: str, dataset_dir: str,
     exposure = exposure_line(trainer, str(ds), cfg.epochs, num_repeats, batch_size)
     caveat = ("\n\n📋 validation/validation.md says how to pick the best epoch from "
               "the per-epoch samples.")
+    if optimizer == "prodigy":
+        caveat += ("\n\nProdigy finds its own step size, so the config uses learning rate "
+                   "1.0 and the Learning rate field is ignored.")
+        if trainer in ("musubi", "kohya"):
+            caveat += (f" {trainer} doesn't install Prodigy: run `pip install prodigyopt` in "
+                       "its environment first.")
     if trainer in ("musubi", "fizgig"):
         caveat += (f"\n\n⚠️ {trainer} needs your local model paths — fill the "
                    "<<FILL: …>> placeholders in the command before running.")
@@ -2247,8 +2257,14 @@ with _blocks as demo:
                         tr_repeats = gr.Number(value=0, precision=0, minimum=0,
                                                label="Repeats (0 = auto)",
                                                info="Auto sizes epochs to the target steps.")
-                    tr_lr = gr.Number(value=_ai_presets[0].lr, label="Learning rate",
-                                      info="1e-4 is a common starting point.")
+                    with gr.Row():
+                        tr_lr = gr.Number(value=_ai_presets[0].lr, label="Learning rate",
+                                          info="1e-4 is a common starting point.")
+                        tr_optimizer = gr.Dropdown(
+                            optimizer_choices("ai-toolkit"), value="adamw8bit",
+                            label="Optimizer",
+                            info="AdamW8bit is every trainer's tested default. Prodigy "
+                                 "picks its own step size and ignores the learning rate.")
                     tr_exposure = gr.Markdown()
                     tr_multi_res = gr.Checkbox(
                         value=True, label="Multi-resolution buckets",
@@ -2447,7 +2463,7 @@ with _blocks as demo:
 
     tr_hparams = [tr_res, tr_rank, tr_alpha, tr_epochs, tr_lr, tr_batch]
     tr_trainer.change(on_trainer_change, [tr_trainer],
-                      [tr_model, tr_path] + tr_hparams)
+                      [tr_model, tr_path] + tr_hparams + [tr_optimizer])
     tr_model.change(on_model_change, [tr_trainer, tr_model], tr_hparams)
     tr_save_path.click(save_trainer_path, [tr_trainer, tr_path], [tr_path_note])
     btn_inspect.click(inspect_dataset, [tr_dataset, dataset_type], [tr_stats])
@@ -2458,7 +2474,7 @@ with _blocks as demo:
     tr_gen.click(do_generate_train_config,
                  [tr_trainer, tr_model, tr_dataset, tr_path, tr_name, project_trigger]
                  + tr_hparams + [tr_multi_res, dataset_type, gen_style, gen_style_text,
-                                 project_name, tr_repeats],
+                                 project_name, tr_repeats, tr_optimizer],
                  [tr_result])
 
     demo.load(_check_for_update, None, update_notice)

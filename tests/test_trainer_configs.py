@@ -224,3 +224,37 @@ def test_validation_guide_lists_held_out_photos(tmp_path: Path) -> None:
     written, _ = write_configs(_cfg("ai-toolkit", tmp_path))
     guide = written[2].read_text(encoding="utf-8")
     assert "X-heldout" in guide and "01-a.png" in guide
+
+
+# ---------- 0.18.1: optimizer choice ----------
+
+def test_adamw8bit_is_the_default_everywhere(tmp_path: Path) -> None:
+    train = yaml.safe_load(render_aitoolkit_yaml(_cfg("ai-toolkit", tmp_path)))["config"][
+        "process"][0]["train"]
+    assert (train["optimizer"], train["lr"]) == ("adamw8bit", 1e-4)
+    for trainer, flag in (("musubi", "adamw8bit"), ("kohya", "AdamW8bit"), ("fizgig", "adamw8bit")):
+        cfg = _cfg(trainer, tmp_path / trainer).model_copy(
+            update={"model": TRAINER_MODELS[trainer][0]})
+        _, command = write_configs(cfg)
+        assert f"--optimizer_type {flag}" in command, trainer
+
+
+def test_prodigy_runs_at_lr_1_with_its_diffusion_args(tmp_path: Path) -> None:
+    cfg = _cfg("ai-toolkit", tmp_path).model_copy(update={"optimizer": "prodigy"})
+    train = yaml.safe_load(render_aitoolkit_yaml(cfg))["config"]["process"][0]["train"]
+    assert (train["optimizer"], train["lr"]) == ("prodigy", 1.0)
+    assert train["optimizer_params"] == {"weight_decay": 0.01, "use_bias_correction": True,
+                                         "safeguard_warmup": True}
+    for trainer, flag in (("musubi", "prodigyopt.Prodigy"), ("kohya", "Prodigy")):
+        cfg = _cfg(trainer, tmp_path / trainer).model_copy(update={"optimizer": "prodigy"})
+        _, command = write_configs(cfg)
+        assert f"--optimizer_type {flag} --learning_rate 1.0" in command, trainer
+        # musubi and sd-scripts literal_eval each "key=value".
+        assert '"use_bias_correction=True" "safeguard_warmup=True"' in command
+
+
+def test_fizgig_never_offers_prodigy() -> None:
+    from studio.trainer_configs import optimizer_choices
+
+    assert [k for _, k in optimizer_choices("fizgig")] == ["adamw8bit"]
+    assert [k for _, k in optimizer_choices("kohya")] == ["adamw8bit", "prodigy"]
