@@ -578,12 +578,14 @@ def _preprocess_note(reports, out_dir: Path, alpha_cutout: bool) -> str:
     if not ok:
         head = (f"❌ **No image could be preprocessed** — nothing was written to "
                 f"{out_dir}.")
-    elif alpha_cutout:
-        head = (f"✅ {len(ok)} image(s) preprocessed (transparent cutout) into "
-                f"{out_dir} — not auto-filled into ②/③, which expect a "
-                f"white-background reference.")
     else:
         head = f"✅ {len(ok)} image(s) preprocessed into {out_dir}"
+        refs = next((r.reference.parent for r in ok if r.reference), None)
+        if refs and alpha_cutout:
+            head += (f" — transparent cutouts in {refs}, not auto-filled into ②, "
+                     f"which expects a white-background reference.")
+        elif refs:
+            head += f" — isolated references for ② in {refs}."
     if not failed:
         return head
     lines = "\n".join(f"- `{r.source.name}` — {r.error}  \n  → {_failure_hint(r.error)}"
@@ -647,15 +649,15 @@ def do_preprocess(files: list[str], folder: str, target: int, restore_mode: str,
         # auto-filled folders all have to survive a partial failure.
         gr.Warning(f"Preprocessed {len(ok)} of {len(reports)} — "
                    f"{len(failed)} skipped, see the result note.")
-    if alpha_cutout:
-        # Alpha-cutout output isn't a drop-in reference for ②/③ (see the checkbox's
-        # info text) — leave whatever those fields already had alone instead of
-        # silently pointing them at an image most consumers will read as un-isolated.
-        gen_src, cap = gr.update(), gr.update()
+    # Auto-fill downstream tabs (they can still be pointed anywhere else). ③ gets
+    # the training copies; ② gets the isolated references when there are any.
+    # Alpha cutouts aren't a drop-in reference for ② (see the checkbox's info).
+    refs = [r.reference for r in ok if r.reference]
+    if alpha_cutout and refs:
+        gen_src = gr.update()
     else:
-        # Auto-fill downstream tabs (they can still be pointed anywhere else)
-        gen_src, cap = str(out_dir), str(out_dir)
-    return gallery, note, "\n".join(log), gen_src, cap
+        gen_src = str(refs[0].parent if refs else out_dir)
+    return gallery, note, "\n".join(log), gen_src, str(out_dir)
 
 
 # ---------- ② generate & curate ----------
@@ -1789,9 +1791,11 @@ with _blocks as demo:
                                                   info="Auto uses ComfyUI models if reachable, "
                                                        "else basic Lanczos resize.")
                     isolate = gr.Checkbox(value=True,
-                                          label="Isolate subject (cutout onto white background)",
-                                          info="Cuts the subject out onto white so background "
-                                               "and props aren't baked into the LoRA.")
+                                          label="Isolate subject for ② generation (training "
+                                                "copies keep their background)",
+                                          info="Also writes the subject cut out onto white to "
+                                               "refs/, as ②'s reference, so the old background "
+                                               "and props don't leak into generated shots.")
                     isolation_backend = gr.Dropdown(ISOLATION_CHOICES,
                                                     value=settings.isolation_backend,
                                                     label="Isolation backend",
@@ -1808,12 +1812,12 @@ with _blocks as demo:
                         info="Usually leave blank — SAM3 already excludes most props. Use only "
                              "for a prop fused into the subject.")
                     pre_tighten = gr.Checkbox(
-                        value=False, label="Tighten crop to subject (after isolation)",
-                        info="Crop out the white padding around the isolated subject so framing "
-                             "is consistent and less empty background is trained. Needs isolation on.")
+                        value=False, label="Tighten crop to subject (refs/ copy)",
+                        info="Crop out the white padding around the isolated reference so the "
+                             "subject fills more of what ② sees. Needs isolation on.")
                     pre_alpha_cutout = gr.Checkbox(
                         value=False, label="Transparent cutout (alpha) instead of white",
-                        info="Exports the isolated subject on a transparent background for your "
+                        info="Writes the refs/ copy on a transparent background for your "
                              "own compositing workflows. Builtin SAM3 backend only. Leave off "
                              "(default) if you're continuing to ② Generate — it expects a white "
                              "background reference. Needs isolation on.")

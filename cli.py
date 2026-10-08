@@ -1,7 +1,7 @@
 """Headless CLI. Every stage is its own subcommand and runs standalone:
 
   python cli.py preprocess ./sources --out ./prepped
-  python cli.py generate ./prepped --name "Sy Snootles" --engine comfyui
+  python cli.py generate ./prepped/refs --name "Sy Snootles" --engine comfyui
   python cli.py caption ./any/folder --trigger sysnootles      # .txt sidecars
   python cli.py export ./prepped ./generated --name "Sy Snootles"
   python cli.py build img.png --name "Sy Snootles" --trigger sysnootles  # all four
@@ -188,16 +188,17 @@ def preprocess(
                                  help="Force restoration on/off (default: auto)"),
     restore_backend: str = typer.Option(settings.restore_backend, help="auto | comfyui | basic"),
     isolate: bool = typer.Option(True, "--isolate/--no-isolate",
-                                 help="Cut out subject, drop background/props"),
+                                 help="Also write the subject cut out onto white to refs/, "
+                                      "for generate; training copies keep their background"),
     isolation_backend: str = typer.Option(settings.isolation_backend, help="builtin | comfyui"),
     subject_prompt: str = typer.Option("character", help="SAM3 prompt for what to keep"),
     exclude_prompt: str = typer.Option("", help="SAM3 prompt for held props to remove"),
     tighten: bool = typer.Option(
         False, "--tighten/--no-tighten",
-        help="Crop to the subject's bounding box after isolation (less white padding)"),
+        help="Crop the refs/ copy to the subject's bounding box"),
     alpha_cutout: bool = typer.Option(
         False, "--alpha-cutout/--no-alpha-cutout",
-        help="Export on a transparent background instead of white (builtin backend "
+        help="refs/ copy on a transparent background instead of white (builtin backend "
              "only; for your own compositing workflows — not meant to feed 'generate')"),
     front: bool = typer.Option(False, help="Jump ComfyUI's pending queue"),
 ):
@@ -215,6 +216,9 @@ def preprocess(
         typer.echo("No image could be preprocessed.")
         raise typer.Exit(1)
     typer.echo(f"Done: {out}")
+    refs = next((r.reference.parent for r in reports if r.reference), None)
+    if refs:
+        typer.echo(f"Isolated references for generate: {refs}")
 
 
 @app.command()
@@ -447,11 +451,15 @@ def build(
     max_shots: int = typer.Option(0, help="Limit number of shots (0 = full plan)"),
     isolate: bool = typer.Option(
         None, "--isolate/--no-isolate",
-        help="Cut out subject, drop background/props (default: on, except style — "
-             "a style is whole-image)"),
+        help="Cut the subject out onto white as ②'s reference; training copies keep "
+             "their background (default: on, except style — a style is whole-image)"),
     tighten: bool = typer.Option(
         False, "--tighten/--no-tighten",
-        help="Crop to the subject's bounding box after isolation (less white padding)"),
+        help="Crop the isolated reference to the subject's bounding box"),
+    isolate_angles: bool = typer.Option(
+        False, "--isolate-angles/--no-isolate-angles",
+        help="Also cut generated angle shots onto white (default off: a white "
+             "background trains in)"),
     subject_prompt: str = typer.Option("character", help="SAM3 prompt for what to keep"),
     exclude_prompt: str = typer.Option("", help="SAM3 prompt for held props to remove"),
     cloud_model: str = typer.Option("", help=f"Cloud image model (default {settings.gemini_image_model})"),
@@ -513,9 +521,11 @@ def build(
             shots = _dress(shots, dtype)
         _echo_cloud_estimate(engine, cloud_model, len(shots))
 
+        # Generate from the isolated references; caption the training copies.
+        refs = [r.reference or r.output for r in reports if r.output]
         results = pipeline.generate_shots(
-            prepped, shots, engine, run_dir / "generated",
-            cloud_model=cloud_model, isolate_angles=do_isolate, subject_prompt=subject_prompt,
+            refs, shots, engine, run_dir / "generated",
+            cloud_model=cloud_model, isolate_angles=isolate_angles, subject_prompt=subject_prompt,
             exclude_prompt=exclude_prompt,
             exclude_props=_props_default(exclude_props, dtype), front=front,
             progress=typer.echo)

@@ -69,9 +69,12 @@ def test_note_names_every_skipped_image_and_keeps_the_success_count() -> None:
 
 
 def test_note_for_alpha_cutout_still_explains_the_no_autofill_rule() -> None:
-    note = APP._preprocess_note([_ok("a.png")], Path("out"), True)
+    ok = _ok("a.png")
+    ok.reference = Path("out/refs/a.png")
+    note = APP._preprocess_note([ok], Path("out"), True)
     assert "transparent cutout" in note
     assert "not auto-filled" in note
+    assert "isolated references" in APP._preprocess_note([ok], Path("out"), False)
 
 
 def test_note_when_everything_failed_does_not_claim_a_success() -> None:

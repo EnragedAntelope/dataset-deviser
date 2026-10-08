@@ -17,7 +17,7 @@ from studio.config import settings
 from studio.engines.base import GenerationError
 from studio.jobs import ShouldStop, should_stop_now
 from studio.package import slugify
-from studio.preprocess import PreprocessReport, failed_report, preprocess
+from studio.preprocess import REFS_DIR, PreprocessReport, failed_report, preprocess
 from studio.shotplan import Shot, apply_prop_exclusion, apply_wardrobe
 
 ProgressFn = Callable[[str], None]
@@ -88,7 +88,7 @@ def preprocess_sources(
             progress(f"  SKIPPED {src.name}: {e}")
             reports.append(failed_report(src, str(e)))
             continue
-        extra = ", subject isolated" if rep.isolated else ""
+        extra = f", isolated reference in {REFS_DIR}/" if rep.reference else ""
         progress(
             f"  {src.name}: {rep.original_size[0]}x{rep.original_size[1]} -> "
             f"{rep.final_size[0]}x{rep.final_size[1]} ({rep.reason}{extra})"

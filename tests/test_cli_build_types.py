@@ -34,14 +34,17 @@ def stubs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         out_dir.mkdir(parents=True, exist_ok=True)
         prepped = out_dir / "ref_prepped.png"
         prepped.write_bytes(b"x")
+        ref = out_dir / "refs" / prepped.name if kw.get("isolate") else None
         return [PreprocessReport(source=sources[0], output=prepped,
                                  original_size=(1, 1), final_size=(1, 1),
-                                 restored=False, reason="ok")]
+                                 restored=False, reason="ok", reference=ref)]
 
     def fake_generate(sources, shots, engine, out_dir, **kw):
         calls["generated"] += 1
+        calls["sources"] = list(sources)
         calls["shots"] = shots
         calls["exclude_props"] = kw.get("exclude_props")
+        calls["isolate_angles"] = kw.get("isolate_angles")
         out_dir.mkdir(parents=True, exist_ok=True)
         results = []
         for shot in shots:
@@ -109,6 +112,16 @@ def test_character_build_is_unchanged(stubs: dict, tmp_path: Path) -> None:
     assert stubs["isolate"] is True
     assert stubs["metadata"]["dataset_type"] == "character"
     assert len(stubs["metadata"]["shots"]) == 24
+
+
+def test_build_generates_from_refs_and_captions_the_training_copy(
+        stubs: dict, tmp_path: Path) -> None:
+    _build(stubs, tmp_path)
+    assert [p.parent.name for p in stubs["sources"]] == ["refs"]
+    assert stubs["captioned"][0].parent.name == "prepped"
+    assert stubs["isolate_angles"] is False
+    _build(stubs, tmp_path, "--isolate-angles")
+    assert stubs["isolate_angles"] is True
 
 
 def test_explicit_flags_beat_the_type_defaults(stubs: dict, tmp_path: Path) -> None:
