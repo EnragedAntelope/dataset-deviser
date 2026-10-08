@@ -191,3 +191,153 @@ def generate_shots(
     ok = sum(1 for r in results if r.path)
     progress(f"Generation done: {ok} succeeded, {len(results) - ok} failed.")
     return results
+
+
+# ---------- full build: ①→② then ③→④(→⑤), shared by `cli build` and Quick build ----------
+
+# A source ① enlarged more than this starts unticked in Quick build: upscaling
+# invents detail, and the LoRA learns that as the subject's texture. It still
+# serves as a reference.
+UPSCALE_UNTICK = 1.33
+
+
+def upscale_factor(report: PreprocessReport) -> float:
+    """How much ① enlarged this source (1.0 = not at all, or shrunk)."""
+    return max(report.final_size) / max(1, *report.original_size)
+
+
+@dataclass
+class BuildStart:
+    """What ①→② made: the run folder, ①'s reports, ②'s references and results."""
+    run_dir: Path
+    reports: list[PreprocessReport]
+    refs: list[Path]
+    results: list[GenResult]
+
+    @property
+    def prepped(self) -> list[Path]:
+        """The training copies ① wrote (a skipped source has none)."""
+        return [r.output for r in self.reports if r.output]
+
+
+def build_start(
+    images: list[Path],
+    name: str,
+    engine_key: str,
+    *,
+    dataset_type: str = "character",
+    run_dir: Path | None = None,
+    cloud_model: str = "",
+    target: int | None = None,
+    restore: bool | None = None,
+    isolate: bool | None = None,
+    subject_prompt: str = "character",
+    exclude_prompt: str = "",
+    tighten: bool = False,
+    isolate_angles: bool = False,
+    shot_style: str = "match",
+    shot_style_text: str = "",
+    max_shots: int = 0,
+    identity: str = "identity",
+    exclude_props: bool | None = None,
+    anchor: bool = False,
+    front: bool = False,
+    should_stop: ShouldStop | None = None,
+    progress: ProgressFn = print,
+) -> BuildStart:
+    """① preprocess, then ② generate from the isolated references.
+
+    The highest-resolution source leads the references: the local engine takes
+    its output aspect from the first one, and at one reference it is the only one.
+    Style datasets stop after ① (an aesthetic can't be generated from a reference).
+    """
+    from studio.shotplan import plan_for_type
+    from studio.wardrobe import dress
+
+    run_dir = run_dir or new_run_dir(name)
+    reports = preprocess_sources(
+        images, run_dir / "prepped", target=target, force_restore=restore,
+        isolate=(dataset_type != "style") if isolate is None else isolate,
+        subject_prompt=subject_prompt, exclude_prompt=exclude_prompt, tighten_crop=tighten,
+        front=front, should_stop=should_stop, progress=progress)
+    ok = sorted((r for r in reports if r.output),
+                key=lambda r: r.original_size[0] * r.original_size[1], reverse=True)
+    start = BuildStart(run_dir, reports, [r.reference or r.output for r in ok], [])
+    if dataset_type == "style":
+        progress("Style dataset: skipping ② generation — captioning your own images.")
+        return start
+    if not start.refs or should_stop_now(should_stop):
+        return start
+    shots = plan_for_type(dataset_type, name, shot_style, shot_style_text)
+    if max_shots:
+        shots = shots[:max_shots]
+    if identity == "identity" and dataset_type == "character":
+        shots = dress(shots)
+    start.results = generate_shots(
+        start.refs, shots, engine_key, run_dir / "generated", cloud_model=cloud_model,
+        isolate_angles=isolate_angles, subject_prompt=subject_prompt,
+        exclude_prompt=exclude_prompt,
+        exclude_props=(dataset_type == "character") if exclude_props is None else exclude_props,
+        front=front, anchor=anchor, should_stop=should_stop, progress=progress)
+    return start
+
+
+def build_finish(
+    start: BuildStart,
+    images: list[Path],
+    *,
+    name: str,
+    trigger: str,
+    captioner: str,
+    output_root: Path,
+    dataset_type: str = "character",
+    identity: str = "identity",
+    engine_key: str = "",
+    shot_style: str = "match",
+    shot_style_text: str = "",
+    caption_style: str = "prose",
+    prefix: str = "",
+    suffix: str = "",
+    drop_tags: str = "",
+    sparse: bool = False,
+    holdout: int = 0,
+    trainer: str = "",
+    model_key: str = "",
+    progress: ProgressFn = print,
+) -> tuple[Path, str]:
+    """③ caption `images`, ④ export them, and (with `trainer`) ⑤ write its configs.
+
+    Returns the dataset folder and the train command ("" without a trainer).
+    """
+    from studio.captioner import caption_images
+    from studio.package import package_dataset
+
+    items = caption_images(images, captioner, name, trigger, progress=progress,
+                           style=caption_style, prefix=prefix, suffix=suffix,
+                           blacklist=drop_tags, dataset_type=dataset_type, sparse=sparse,
+                           identity=identity)
+    metadata: dict = {
+        "character_name": name,
+        "trigger": trigger,
+        "dataset_type": dataset_type,
+        "shot_style": shot_style,
+        "shot_style_text": shot_style_text,
+        "captioner": captioner,
+        "caption_style": caption_style,
+        "sources": [str(r.source) for r in start.reports],
+    }
+    if dataset_type == "character":
+        metadata["identity"] = identity
+    if start.results:  # generation ran (character/concept)
+        metadata["engine"] = engine_key
+        metadata["shots"] = [{"id": r.shot.id, "seed": r.seed, "error": r.error}
+                             for r in start.results]
+    ds = package_dataset(items, output_root, name, trigger, metadata, holdout=holdout)
+    command = ""
+    if trainer:
+        from studio.trainer_configs import default_config
+
+        _, command = default_config(ds, trainer, model_key, name=name, trigger=trigger,
+                                    dataset_type=dataset_type, shot_style=shot_style,
+                                    shot_style_text=shot_style_text)
+    return ds, command
