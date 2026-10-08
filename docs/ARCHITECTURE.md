@@ -53,15 +53,18 @@ studio/
   jobs.py               Cooperative cancellation: JobControl (a threading.Event stop
                         flag) + should_stop_now(). Checked BETWEEN items by the three
                         batch loops; UI-free so the CLI and tests drive it directly
-  preprocess.py         Restore (comfyui|basic|auto) + isolate + optional tighten-crop
-                        + resize, stamping a `dd_source` provenance PNG chunk.
-                        Atomic: any failure deletes the partial output.
-                        failed_report() turns a failure into data, not an exception
+  preprocess.py         Restore (comfyui|basic|auto) + resize, stamping a `dd_source`
+                        provenance PNG chunk. The training copy keeps its background;
+                        with isolation on, the cut-out (optionally tightened / alpha)
+                        goes to `refs/` as ②'s reference only, and `cut_off` records a
+                        subject touching the bottom edge. Atomic: any failure deletes
+                        both outputs. failed_report() turns a failure into data
   isolate.py            Subject isolation: builtin SAM3 (transformers) | comfyui.
                         crop_to_content() tightens the isolated (subject-on-white, or
                         subject-with-alpha) image to the subject's bounding box (opt-in,
-                        both backends). alpha_cutout composites onto transparency
-                        instead of white — builtin backend only, see the Gotcha
+                        both backends); touches_bottom() is the cut-off check. alpha_cutout
+                        composites onto transparency instead of white — builtin backend
+                        only, see the Gotcha
   tagger.py             ONNX booru-tagger backend: canonical tags straight from
                         image features — WD (Danbooru) and Z3D (e621) via one code
                         path, differing only in tag file + category SCHEMES. Pure
@@ -71,8 +74,9 @@ studio/
                         (Danbooru cat 9), format_tag(keep_underscores=) keeps raw
                         booru tokens
   dedupe.py             Advisory near-duplicate detection (perceptual dHash,
-                        numpy-only) surfaced in the ④ export preview; the Hamming
-                        distance (default 5) is a ④ slider
+                        numpy-only) surfaced in the ④ export preview and ②'s "Find
+                        near-duplicates"; the Hamming distance (default 5) is a ④
+                        slider. find_bursts() groups photos taken seconds apart
   quality.py            Advisory sharpness (blur) + exposure/contrast flags
                         (dark/bright/low-contrast) for the curate/export views
   caption_lint.py       Advisory caption analysis (pure string logic): health lint
@@ -115,10 +119,13 @@ studio/
                         emotion, no outfit). Same Shot model for both, so the ② table,
                         YAML plans and the pipeline need no special case.
                         plan_for_type()/plan_subject() are the single selection seam
-                        shared by UI + CLI (Style → empty plan). Plus apply_wardrobe()
-                        outfit injection + apply_prop_exclusion()
+                        shared by UI + CLI (Style → empty plan). Shot.framing (full /
+                        waist-up / close-up / tight-face); coverage() is ②'s
+                        requested-coverage panel. Plus apply_wardrobe() outfit
+                        injection + apply_prop_exclusion()
   wardrobe.py           Compositional unisex outfit pool for the outfit column
-                        (colour x garment; one pool, no gender picker)
+                        (colour x garment; one pool, no gender picker); dress() is the
+                        identity policy's default dressing
   plan_io.py            Save/load shot plans as YAML (user-editable prompt libraries)
   dataset_stats.py      Inspect a dataset folder (count/sizes/aspects/① provenance) ->
                         target steps, auto repeats + bucket ladder, so ⑤'s numbers are
@@ -154,8 +161,11 @@ studio/
                         cached, force-refreshable image- AND caption-model lists
                         (list_image_models / list_caption_models). Retries transient
                         statuses with backoff (GENERATE_RETRIES / GENERATE_BACKOFF_S)
-                        and reports failures through friendly_api_error()
-    comfyui.py          Local engine (Qwen-Image 2.1, one reference per shot)
+                        and reports failures through friendly_api_error().
+                        shot_aspect() sets 2:3 / 1:1 per shot; references are capped
+                        at the model's character limit (CHARACTER_REFS)
+    comfyui.py          Local engine (Qwen-Image 2.1): one LoadImage per reference up
+                        to LDS_QWEN21_MAX_REFS, at LDS_QWEN21_RESOLUTION
   comfy_workflows/*.json  API-format ComfyUI graphs (restore, isolate ×2, qwen21 edit)
   comfy_workflows/legacy/ The pre-0.17 Qwen-Image-Edit-2511 + Multiple-Angles graph, kept
                           for anyone who wants it; nothing loads it (see its README)
@@ -921,6 +931,37 @@ quietly gets someone else's value.
   them. Only photos with provenance qualify (a generated shot is no test of likeness) and at
   least one image always stays in training. The dataset naming loop skips a name whose
   `-heldout` sibling exists, so a stale held-out folder never pairs with a new dataset.
+- **Training copies keep their background; only ②'s reference is isolated (0.19.0).** Real
+  photos used to be cut onto white for training too, and a LoRA learns a white void as part of
+  the subject. ① now writes the training copy with its own background and, with isolation on,
+  an isolated copy to `prepped/refs/` that ② generates from. `list_images` is non-recursive, so
+  ③, ④, the ILB hand-off and dataset stats never see `refs/` (a test pins this). ②'s "isolate
+  generated angle shots" is a separate option, default off, for the same reason.
+- **Identity policy decides whether clothing is part of the subject (0.19.0).** "Identity only"
+  (default) dresses each character shot in a different random outfit and tells the captioner to
+  describe clothing, so the trigger learns the face and body, not one outfit. "Signature
+  costume" leaves outfits blank and tells the captioner not to describe the costume, so the
+  trigger carries it. The clause is appended in `CaptionerSpec.prompt_for` for characters only;
+  an empty policy keeps the tuned templates verbatim. Recorded in metadata.json.
+- **Framing is a Shot field, and coverage counts what was requested (0.19.0).** Two emotions
+  became tight face crops and two poses waist-up, so a default plan spans four framing tiers.
+  ②'s coverage panel counts the kept shots by framing, turnaround view, expression and outfit
+  from the plan's own fields, labelled "requested, not verified" (imported photos count as
+  unknown). Dominance is checked on the turnaround views and expressions only, and only for a
+  group of 5 or more: on a coarse view split every character plan is front-heavy by design.
+- **The full-body warning is a geometry check, not a model (0.19.0).** A subject mask touching
+  the bottom 2% of the isolated reference means the legs are off-frame; when every reference is
+  cut off, ① and the CLI warn that full-body shots will invent them. Without isolation there is
+  no mask, so no check.
+- **Gemini gets a per-shot aspect and at most its character-reference limit (0.19.0).** Standing
+  turnaround views ask for 2:3 and close-ups for 1:1; poses keep the reference's aspect (a
+  crouch or a lying pose squeezed into 2:3 loses the body). `image_size` is left at the 1K
+  default. References stop at 4 (5 for Pro): every reference is the same person, and past the
+  model's character limit more copies add cost, not likeness.
+- **The anchor shot is a chain root for the whole plan (0.19.0).** With "Anchor shot" on, the
+  front full-body view (`angle-front`) runs first from every reference, then leads each other
+  shot's references; a chained view still leads its own shot, followed by the anchor and the
+  originals. It reuses the chain mechanism; a plan without `angle-front` has no anchor.
 - **The optimizer defaults to AdamW8bit; Prodigy is the one alternative (0.18.1).** AdamW8bit is
   the default and the validated recipe in ai-toolkit's UI, musubi's examples, sd-scripts and
   Fizgig. Prodigy is offered because it removes the learning-rate guess: it runs at lr 1.0 with
@@ -1014,16 +1055,16 @@ quietly gets someone else's value.
   here instead of re-discovering it. **Caveat for anyone changing the pin by hand:** installing
   Gradio 5 can pull `pydantic` down to a version older than `google-genai`'s floor; reinstall
   `pydantic>=2.12.5` afterward if `import google.genai` breaks.
-- **Alpha cutout is builtin-backend-only and doesn't feed ② Generate.** `isolate_builtin`'s
+- **Alpha cutout is builtin-backend-only and is never auto-filled into ②.** `isolate_builtin`'s
   `alpha_cutout` flag composites the subject onto transparency (straight alpha = the mask)
   instead of white; `isolate_subject` raises `IsolationError` if asked for alpha cutout on
   the `comfyui` backend rather than silently returning white or ignoring the flag — the
   bundled ComfyUI isolation workflows composite via core nodes onto a solid `EmptyImage`
   and haven't been extended for transparency. `crop_to_content` dispatches on `image.mode`
   (alpha>0 bounding box for RGBA, non-white heuristic otherwise) so tighten-crop still works
-  on a cutout. This is a terminal output for the user's own compositing workflow — ②
-  Generate is unchanged and still expects (and gets, by default) a white-background
-  reference; turning alpha cutout on and continuing to ② is not supported.
+  on a cutout. Since 0.19.0 the cutout is the `refs/` copy (the training copy stays RGB with
+  its background); it is for the user's own compositing, so ① leaves ②'s source folder alone
+  when alpha is on — ② expects a white-background reference.
 
 ## Idiot LoRa Builder hand-off (④, 0.16.0)
 

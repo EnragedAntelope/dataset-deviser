@@ -215,7 +215,7 @@ def preprocess(
                                       "for generate; training copies keep their background"),
     isolation_backend: str = typer.Option(settings.isolation_backend, help="builtin | comfyui"),
     subject_prompt: str = typer.Option("character", help="SAM3 prompt for what to keep"),
-    exclude_prompt: str = typer.Option("", help="SAM3 prompt for held props to remove"),
+    exclude_prompt: str = typer.Option("", help="Objects the subject holds, to cut out (SAM3 keeps a held object otherwise)"),
     tighten: bool = typer.Option(
         False, "--tighten/--no-tighten",
         help="Crop the refs/ copy to the subject's bounding box"),
@@ -488,7 +488,7 @@ def build(
         help="Also cut generated angle shots onto white (default off: a white "
              "background trains in)"),
     subject_prompt: str = typer.Option("character", help="SAM3 prompt for what to keep"),
-    exclude_prompt: str = typer.Option("", help="SAM3 prompt for held props to remove"),
+    exclude_prompt: str = typer.Option("", help="Objects the subject holds, to cut out (SAM3 keeps a held object otherwise)"),
     cloud_model: str = typer.Option("", help=f"Cloud image model (default {settings.gemini_image_model})"),
     exclude_props: bool = typer.Option(
         None, "--exclude-props/--keep-props",

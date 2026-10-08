@@ -222,13 +222,22 @@ CLI: `--shot-style anime`, or `--shot-style custom --shot-style-text "a woodcut 
 
 ## Two things that ruin a character LoRA
 
-Both have a switch in ②, because both bit us:
+Both are handled by default, because both bit us:
 
-- **Same clothes in every image** → the LoRA learns the outfit as the character. Hit
-  **🎲 Randomize outfits** to dress each angle/pose shot differently.
+- **Same clothes in every image** → the LoRA learns the outfit as the character. The header's
+  **Identity policy** is *Identity only* by default: every angle/pose shot gets a different
+  outfit and the captions name the clothing. Pick *Signature costume* when the outfit **is** the
+  character (a superhero suit): outfits stay as drawn and captions leave them out.
 - **Props copied into every shot** (a backpack in the reference → the LoRA thinks the backpack
-  *is* the character). Best fix: **isolate the source in ①** — SAM3 keeps bags and held objects
-  out of the subject mask. The "Exclude props" toggle in ② helps too, especially on Gemini.
+  *is* the character). Best fix: **isolate the source in ①** and name anything held (a cup, a
+  plate) in **Objects to remove** — SAM3 counts a held object as part of the person. The
+  "Exclude props" toggle in ② helps too, on Gemini only.
+
+① keeps your photos' own backgrounds for training: the white cut-out it makes goes to
+`prepped/refs/` and is only ②'s reference. ② shows the coverage of the shots you keep (framing,
+turnaround, expressions, outfits) and can flag near-duplicates. If your only photos are cut off
+at the waist, ① says so: full-body shots will invent the legs, so add a full-body photo if you
+have one, or try ②'s **Anchor shot**, which builds every shot from one generated front view.
 
 ## Picking the best checkpoint
 
@@ -244,9 +253,10 @@ Every stage is a standalone subcommand; `--help` shows all options.
 
 ```bash
 python cli.py preprocess ./sources --out ./prepped
-python cli.py generate ./prepped --name "Sy Snootles" --engine comfyui --randomize-outfits
-python cli.py generate ./prepped --name "Sy Snootles" --shot-style anime  # keep an illustrated look
-python cli.py generate ./prepped --name "brass compass" --dataset-type concept  # 18-shot object set
+python cli.py generate ./prepped/refs --name "Sy Snootles" --engine comfyui
+python cli.py generate ./prepped/refs --name "Sy Snootles" --identity costume  # outfit is the character
+python cli.py generate ./prepped/refs --name "Sy Snootles" --shot-style anime  # keep an illustrated look
+python cli.py generate ./prepped/refs --name "brass compass" --dataset-type concept  # 18-shot object set
 python cli.py caption ./folder --trigger sysnootles                       # prose sidecars
 python cli.py caption ./folder --trigger sysnootles --caption-style tags  # Danbooru tags
 python cli.py caption ./folder --trigger mystyle --dataset-type style     # style-framed
@@ -283,9 +293,9 @@ Set or change any of them with `python cli.py keys` — they live only in a giti
   generation, built-in SAM3, local captioning and export all work without it. **No custom nodes
   required.** See [docs/comfyui-setup.md](docs/comfyui-setup.md).
 - **Sources are never modified**; every stage writes copies.
-- **Alpha cutout, on request.** ① Preprocess can export the isolated subject on a transparent
-  background instead of white (builtin SAM3 backend only) — for your own compositing workflows.
-  Leave it off (default) if you're continuing to ② Generate, which expects a white reference.
+- **Alpha cutout, on request.** ① Preprocess can make the `refs/` cut-out transparent instead
+  of white (builtin SAM3 backend only) — for your own compositing workflows. ② expects a white
+  reference, so ① then leaves ②'s source folder for you to fill.
 - The UI binds to `127.0.0.1` with **no authentication** — don't expose it. So galleries can
   preview images from any folder you point a tab at, the local file server can read any file the
   app process can while it's running; that's safe only behind the localhost bind, so never forward

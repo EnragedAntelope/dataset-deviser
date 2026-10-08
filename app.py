@@ -1906,9 +1906,10 @@ with _blocks as demo:
                                                      "for a Concept dataset ('radio', 'sword').")
                     exclude_prompt = gr.Textbox(
                         label="Objects to remove (props the subject holds/touches)",
-                        placeholder="microphone, microphone stand",
-                        info="Usually leave blank — SAM3 already excludes most props. Use only "
-                             "for a prop fused into the subject.")
+                        placeholder="cup, plate, microphone",
+                        info="Name anything the subject holds. SAM3 keeps a held object as "
+                             "part of the subject, and ② then redraws it in every shot. "
+                             "Background clutter needs no entry.")
                     pre_tighten = gr.Checkbox(
                         value=False, label="Tighten crop to subject (refs/ copy)",
                         info="Crop out the white padding around the isolated reference so the "
@@ -1995,9 +1996,11 @@ with _blocks as demo:
                              "the front view looks right before trusting the rest.")
                     gen_isolate = gr.Checkbox(value=False,
                                               label="Isolate generated angle shots (white background)",
-                                              info="Cut generated angle shots onto white too "
-                                                   "(replaces each angle shot's setting "
-                                                   "with a plain white background).")
+                                              info="Cut generated angle shots onto white too. "
+                                                   "Off by default: a white void in many "
+                                                   "training images trains into the LoRA. "
+                                                   "Remove held props with ①'s exclude "
+                                                   "prompt instead.")
                     gen_iso_backend = gr.Dropdown(ISOLATION_CHOICES,
                                                   value=settings.isolation_backend,
                                                   label="Isolation backend",
