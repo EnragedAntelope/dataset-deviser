@@ -1215,7 +1215,7 @@ def load_export_preview(folders_text: str, dup_distance: float = 5, carry=None):
 def do_export(selected: list[str], name: str, trigger: str, output_root: str,
               make_zip: bool = False, dataset_type: str = "character",
               style_key: str = shot_style.MATCH, style_text: str = "",
-              ilb_handoff: bool = False):
+              ilb_handoff: bool = False, holdout=0):
     if not selected:
         raise gr.Error("Click '📂 Load & preview', then keep at least one image checked.")
     from studio.package import package_dataset, resolve_export_items
@@ -1238,7 +1238,8 @@ def do_export(selected: list[str], name: str, trigger: str, output_root: str,
                 "skipped_empty_caption": res.empties}
     out_root = _validate_out_dir(output_root)
     try:
-        ds = package_dataset(res.items, out_root, name, trigger, metadata)
+        ds = package_dataset(res.items, out_root, name, trigger, metadata,
+                             holdout=int(holdout or 0))
     except OSError as e:
         raise gr.Error(f"Couldn't write the dataset to '{out_root}': {e}. Check the "
                        f"output folder path (valid drive, no forbidden characters, writable).") from e
@@ -1282,9 +1283,16 @@ def do_export(selected: list[str], name: str, trigger: str, output_root: str,
         identity += ("\n⚠️ No trigger word — captions have nothing to teach the LoRA "
                      "to respond to. Set one at the top and re-caption if that wasn't "
                      "deliberate.")
-    result = (f"✅ Dataset ready: {ds}  ({len(res.items)} image/caption pairs from the "
-              f"{checked} image(s) you checked)"
-              f"{identity}{skipped}{empty_note}{zip_note}{ilb_note}{sample_block}")
+    held_dir = ds.parent / f"{ds.name}-heldout"
+    held = list_images(held_dir)
+    held_note = (f"\n🔒 Held out {len(held)} photo(s) as a likeness test, never trained "
+                 f"on: {held_dir}" if held else "")
+    if int(holdout or 0) and not held:
+        held_note = ("\n⚠️ Nothing held out — only ①'s photos qualify, and none of the "
+                     "checked images came from ①.")
+    result = (f"✅ Dataset ready: {ds}  ({len(res.items) - len(held)} image/caption pairs "
+              f"from the {checked} image(s) you checked)"
+              f"{identity}{held_note}{skipped}{empty_note}{zip_note}{ilb_note}{sample_block}")
     # ds path auto-fills the ⑤ Train tab AND the HF-publish box below.
     return result, str(ds), str(ds)
 
@@ -1401,12 +1409,47 @@ def on_trainer_change(trainer: str):
 
     p = TRAINER_MODELS[trainer][0]
     return (_model_dropdown(trainer), user_config.get_trainer_path(trainer),
-            p.resolution, p.rank, p.alpha, p.steps, p.lr, p.batch_size)
+            p.resolution, p.rank, p.alpha, p.epochs, p.lr, p.batch_size)
 
 
 def on_model_change(trainer: str, model_key: str):
     p = _preset(trainer, model_key)
-    return p.resolution, p.rank, p.alpha, p.steps, p.lr, p.batch_size
+    return p.resolution, p.rank, p.alpha, p.epochs, p.lr, p.batch_size
+
+
+def _repeats(trainer: str, stats, epochs, batch_size, repeats) -> int:
+    """The typed repeats, or (0 = auto) the count that reaches the target steps."""
+    if int(repeats or 0) > 0:
+        return int(repeats)
+    if trainer == "fizgig":  # Fizgig's own guidance: repeats 1, more epochs
+        return 1
+    return stats.suggested_repeats(int(epochs or 1), int(batch_size or 1))
+
+
+def exposure_line(trainer: str, dataset_dir: str, epochs, repeats, batch_size) -> str:
+    """Live "how much training is this" line under ⑤'s epochs/repeats fields."""
+    from studio.dataset_stats import inspect
+    from studio.trainer_configs import exposure
+
+    ds = Path(dataset_dir.strip()) if dataset_dir.strip() else None
+    if not ds or not ds.is_dir():
+        return ""
+    stats = inspect(ds)
+    if not stats.n_images:
+        return ""
+    reps = _repeats(trainer, stats, epochs, batch_size, repeats)
+    batch, n_epochs = max(int(batch_size or 1), 1), max(int(epochs or 1), 1)
+    per_epoch, total = exposure(stats.n_images, reps, batch, n_epochs)
+    auto = " (auto)" if not int(repeats or 0) else ""
+    line = (f"**Exposure:** {stats.n_images} images × {reps} repeats{auto} ÷ batch {batch} "
+            f"= {per_epoch} steps/epoch × {n_epochs} epochs = **{total} steps**, saving "
+            f"{n_epochs} checkpoints with samples.")
+    # Fizgig's adaptive LR is tuned for small sets at repeats 1, so few steps is its norm.
+    if total < 400 and trainer != "fizgig":
+        line += " ⚠️ Few steps — likely undertrained; raise epochs or repeats."
+    elif total > 6000:
+        line += " ⚠️ Many steps — slow, and late epochs will likely overfit."
+    return line
 
 
 def save_trainer_path(trainer: str, path: str) -> str:
@@ -1448,31 +1491,31 @@ def dataset_type_note(ds: Path, selected_type: str) -> str:
     return line
 
 
-def inspect_dataset(dataset_dir: str, dataset_type: str = "character") -> tuple[str, gr.Number]:
-    """Read the dataset and suggest a step count derived from its image count."""
+def inspect_dataset(dataset_dir: str, dataset_type: str = "character") -> str:
+    """Summarize the dataset: count, sizes, captions and the target step count."""
     from studio.dataset_stats import inspect
 
     if not dataset_dir.strip():
-        return "", gr.Number()
+        return ""
     ds = Path(dataset_dir.strip())
     if not ds.is_dir():
-        return f"⚠️ Folder not found: {ds}", gr.Number()
+        return f"⚠️ Folder not found: {ds}"
     try:
         stats = inspect(ds)
     except Exception as e:  # unreadable/corrupt image headers — report, never crash
-        return f"⚠️ Couldn't inspect {ds}: {e}", gr.Number()
+        return f"⚠️ Couldn't inspect {ds}: {e}"
     if not stats.n_images:
-        return f"⚠️ No images in {ds}", gr.Number()
-    return stats.summary() + dataset_type_note(ds, dataset_type), \
-        gr.Number(value=stats.suggested_steps)
+        return f"⚠️ No images in {ds}"
+    return stats.summary() + dataset_type_note(ds, dataset_type)
 
 
 def do_generate_train_config(trainer: str, model_key: str, dataset_dir: str,
                              install_path: str, name: str, trigger: str,
-                             resolution, rank, alpha, steps, lr, batch_size,
+                             resolution, rank, alpha, epochs, lr, batch_size,
                              multi_res: bool, dataset_type: str = "character",
                              style_key: str = shot_style.MATCH,
-                             style_text: str = "", project_name: str = "") -> str:
+                             style_text: str = "", project_name: str = "",
+                             repeats=0) -> str:
     # ⑤'s "LoRA name" is the trained file's name, not the subject's — the one
     # identity-ish field that is legitimately its own (people want "-v2"). Blank
     # means "follow the header name", which is why it is not auto-filled: an
@@ -1501,33 +1544,36 @@ def do_generate_train_config(trainer: str, model_key: str, dataset_dir: str,
         raise gr.Error(f"No images found in {ds} — export a dataset first (④).")
     preset = _preset(trainer, model_key)
     buckets = stats.buckets_for(int(resolution)) if multi_res else []
+    num_repeats = _repeats(trainer, stats, epochs, batch_size, repeats)
     cfg = TrainConfig(
         trainer=trainer, model=preset, dataset_dir=ds,
         trigger=trigger.strip(), name=(name.strip() or "lora"),
         dataset_type=dataset_type,
         resolution=int(resolution), rank=int(rank), alpha=int(alpha),
-        steps=int(steps), lr=float(lr), batch_size=int(batch_size),
+        epochs=max(1, int(epochs)), num_repeats=num_repeats, n_images=stats.n_images,
+        lr=float(lr), batch_size=int(batch_size),
         buckets=buckets, shot_style=style_key, shot_style_text=style_text)
     try:
-        written, command = write_configs(cfg, install_path.strip(),
-                                         num_repeats=max(1, round(400 / stats.n_images)))
+        written, command = write_configs(cfg, install_path.strip())
     except OSError as e:
         raise gr.Error(f"Couldn't write the config into {ds}: {e}. Check the dataset "
                        f"folder is writable.") from e
     user_config.set_last_train_settings({
         "trainer": trainer, "model": model_key, "resolution": int(resolution),
-        "rank": int(rank), "alpha": int(alpha), "steps": int(steps),
-        "lr": float(lr), "batch_size": int(batch_size)})
+        "rank": int(rank), "alpha": int(alpha), "epochs": cfg.epochs,
+        "repeats": int(repeats or 0), "lr": float(lr), "batch_size": int(batch_size)})
     files = "\n".join(str(p) for p in written)
     bucket_note = (f"\nBuckets: {buckets} (from the dataset's actual sizes)"
                    if buckets else f"\nSingle bucket at {int(resolution)}px")
     bucket_note += stats.upscale_note(int(resolution))
-    caveat = ""
-    if trainer == "musubi":
-        caveat = ("\n\n⚠️ musubi needs your local DiT / VAE / text-encoder paths — "
-                  "fill the <<FILL: …>> placeholders in the command before running.")
+    exposure = exposure_line(trainer, str(ds), cfg.epochs, num_repeats, batch_size)
+    caveat = ("\n\n📋 validation/validation.md says how to pick the best epoch from "
+              "the per-epoch samples.")
+    if trainer in ("musubi", "fizgig"):
+        caveat += (f"\n\n⚠️ {trainer} needs your local model paths — fill the "
+                   "<<FILL: …>> placeholders in the command before running.")
     elif trainer == "kohya":
-        caveat = ("\n\n⚠️ kohya sd-scripts: SDXL base runs from the HF id shown; for a "
+        caveat += ("\n\n⚠️ kohya sd-scripts: SDXL base runs from the HF id shown; for a "
                   "Pony / Illustrious / NoobAI checkpoint, replace the <<FILL>> pretrained "
                   "path. Verify flags against the sd-scripts docs before a long run.")
     # Advisory ④→⑤ sanity check: do the dataset's captions fit this base model?
@@ -1538,7 +1584,8 @@ def do_generate_train_config(trainer: str, model_key: str, dataset_dir: str,
     if mismatch:
         caveat += f"\n\n{mismatch}"
     return (f"✅ Wrote:\n{files}\n\nDataset: {stats.n_images} images, "
-            f"{stats.min_long_side}-{stats.max_long_side}px long side{bucket_note}\n\n"
+            f"{stats.min_long_side}-{stats.max_long_side}px long side{bucket_note}\n"
+            f"{exposure.replace('**', '')}\n\n"
             f"Run it with:\n{command}{caveat}\n\n"
             f"⚠️ Configs are generated, not test-trained — verify keys against your "
             f"trainer's own docs before a long run.")
@@ -2118,6 +2165,11 @@ with _blocks as demo:
                 info="Writes a ratings sidecar into the dataset folder so Idiot LoRa "
                      "Builder's grid opens pre-triaged — blurry, over/under-exposed and "
                      "near-duplicate shots marked 'needs edit'. Nothing is launched.")
+            exp_holdout = gr.Number(
+                value=0, precision=0, minimum=0, label="Hold out N reference photos",
+                info="Keeps your N largest ① photos OUT of training, in a "
+                     "'-heldout' folder beside the dataset — a fair test of whether "
+                     "the LoRA learned the face. 0 trains on everything.")
             btn_export = gr.Button("④ Export dataset", variant="primary")
             exp_result = gr.Textbox(label="Result", lines=8)
             with gr.Accordion("Publish to Hugging Face (optional)", open=False):
@@ -2145,17 +2197,20 @@ with _blocks as demo:
             gr.Markdown(
                 "Generate a ready-to-edit LoRA training config for your dataset. "
                 "**ai-toolkit** produces a one-command `config.yaml` (`python run.py …`); "
-                "**musubi-tuner** produces a `dataset.toml` plus a command template where "
-                "you fill in your local model paths. Nothing is launched or executed here — "
-                "the config is written into the dataset folder and the run command is shown.")
+                "**musubi-tuner**, **kohya** and **Fizgig** produce a `dataset.toml` plus a "
+                "command template where you fill in your local model paths. Every trainer "
+                "saves a checkpoint and renders fixed validation prompts each epoch; "
+                "`validation/validation.md` explains how to pick the best one. Nothing is "
+                "launched here — the files are written into the dataset folder and the run "
+                "command is shown.")
             from studio import user_config as _uc
 
             _ai_presets = TRAINER_MODELS["ai-toolkit"]
             with gr.Row():
                 with gr.Column(scale=1):
                     tr_trainer = gr.Radio(TRAINER_CHOICES, value="ai-toolkit", label="Trainer",
-                                          info="ai-toolkit is one-command; musubi/kohya emit a "
-                                               "config plus a run-command template.")
+                                          info="ai-toolkit is one-command; musubi/kohya/Fizgig "
+                                               "emit a config plus a run-command template.")
                     tr_path = gr.Textbox(label="Trainer install path (saved on this machine)",
                                          value=_uc.get_trainer_path("ai-toolkit"),
                                          placeholder=r"C:\ai-toolkit",
@@ -2186,11 +2241,15 @@ with _blocks as demo:
                         tr_alpha = gr.Number(value=_ai_presets[0].alpha, precision=0,
                                              label="Alpha", info="Usually equal to rank.")
                     with gr.Row():
-                        tr_steps = gr.Number(value=_ai_presets[0].steps, precision=0,
-                                             label="Steps",
-                                             info="Auto-suggested from image count on Inspect.")
-                        tr_lr = gr.Number(value=_ai_presets[0].lr, label="Learning rate",
-                                          info="1e-4 is a common starting point.")
+                        tr_epochs = gr.Number(value=_ai_presets[0].epochs, precision=0,
+                                              label="Epochs",
+                                              info="One checkpoint + one sample set each.")
+                        tr_repeats = gr.Number(value=0, precision=0, minimum=0,
+                                               label="Repeats (0 = auto)",
+                                               info="Auto sizes epochs to the target steps.")
+                    tr_lr = gr.Number(value=_ai_presets[0].lr, label="Learning rate",
+                                      info="1e-4 is a common starting point.")
+                    tr_exposure = gr.Markdown()
                     tr_multi_res = gr.Checkbox(
                         value=True, label="Multi-resolution buckets",
                         info="Bucket by the dataset's real aspect ratios instead of "
@@ -2198,10 +2257,10 @@ with _blocks as demo:
                 with gr.Column(scale=2):
                     tr_dataset = gr.Textbox(
                         label="Dataset folder (auto-filled by ④ Export)",
-                        info="The config file is written INTO this folder, and the "
-                             "step count and buckets are derived from the images in "
-                             "it. Works on any dataset folder, not just ④'s.")
-                    btn_inspect = gr.Button("🔍 Inspect dataset & suggest steps")
+                        info="The config and a validation/ pack are written INTO this "
+                             "folder; repeats and buckets are derived from its images. "
+                             "Works on any dataset folder, not just ④'s.")
+                    btn_inspect = gr.Button("🔍 Inspect dataset")
                     tr_stats = gr.Markdown()
                     tr_gen = gr.Button("⑤ Generate training config", variant="primary")
                     tr_result = gr.Textbox(label="Result / run command", lines=14)
@@ -2380,22 +2439,26 @@ with _blocks as demo:
                            [exp_rows, exp_gallery, exp_select, exp_preview_note])
     btn_export.click(do_export,
                      [exp_select, project_name, project_trigger, output_root, exp_zip,
-                      dataset_type, gen_style, gen_style_text, exp_ilb],
+                      dataset_type, gen_style, gen_style_text, exp_ilb, exp_holdout],
                      [exp_result, tr_dataset, exp_ds_dir]) \
-              .then(inspect_dataset, [tr_dataset, dataset_type], [tr_stats, tr_steps])
+              .then(inspect_dataset, [tr_dataset, dataset_type], [tr_stats])
     btn_publish_hf.click(do_publish_hf, [exp_ds_dir, exp_hf_repo, exp_hf_private],
                          [exp_hf_note])
 
-    tr_hparams = [tr_res, tr_rank, tr_alpha, tr_steps, tr_lr, tr_batch]
+    tr_hparams = [tr_res, tr_rank, tr_alpha, tr_epochs, tr_lr, tr_batch]
     tr_trainer.change(on_trainer_change, [tr_trainer],
                       [tr_model, tr_path] + tr_hparams)
     tr_model.change(on_model_change, [tr_trainer, tr_model], tr_hparams)
     tr_save_path.click(save_trainer_path, [tr_trainer, tr_path], [tr_path_note])
-    btn_inspect.click(inspect_dataset, [tr_dataset, dataset_type], [tr_stats, tr_steps])
+    btn_inspect.click(inspect_dataset, [tr_dataset, dataset_type], [tr_stats])
+    # Epochs change with the trainer/model presets, so this follows them too.
+    for field in (tr_trainer, tr_dataset, tr_epochs, tr_repeats, tr_batch):
+        field.change(exposure_line, [tr_trainer, tr_dataset, tr_epochs, tr_repeats, tr_batch],
+                     [tr_exposure])
     tr_gen.click(do_generate_train_config,
                  [tr_trainer, tr_model, tr_dataset, tr_path, tr_name, project_trigger]
                  + tr_hparams + [tr_multi_res, dataset_type, gen_style, gen_style_text,
-                                 project_name],
+                                 project_name, tr_repeats],
                  [tr_result])
 
     demo.load(_check_for_update, None, update_notice)

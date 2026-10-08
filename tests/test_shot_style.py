@@ -145,15 +145,15 @@ def test_prompts_have_no_double_punctuation_or_dangling_commas() -> None:
 # ---------- ⑤ sample prompt ----------
 
 def test_sample_prompt_names_the_right_medium() -> None:
-    from studio.trainer_configs import TRAINER_MODELS, TrainConfig, _sample_prompt
+    from studio.trainer_configs import TRAINER_MODELS, TrainConfig, validation_prompts
 
     preset = TRAINER_MODELS["ai-toolkit"][0]
 
     def prompt(style: str, text: str = "", dtype: str = "character") -> str:
-        return _sample_prompt(TrainConfig(
+        return validation_prompts(TrainConfig(
             trainer="ai-toolkit", model=preset, dataset_dir=Path("."),
             trigger="trg", name="n", dataset_type=dtype,
-            shot_style=style, shot_style_text=text))
+            shot_style=style, shot_style_text=text))[0]
 
     # match keeps the historical wording — no regression for existing configs.
     assert prompt(MATCH) == "a photo of trg, standing outdoors in daylight"
@@ -165,12 +165,12 @@ def test_sample_prompt_names_the_right_medium() -> None:
 
 
 def test_sample_prompt_handles_a_custom_style() -> None:
-    from studio.trainer_configs import TRAINER_MODELS, TrainConfig, _sample_prompt
+    from studio.trainer_configs import TRAINER_MODELS, TrainConfig, validation_prompts
 
-    out = _sample_prompt(TrainConfig(
+    out = validation_prompts(TrainConfig(
         trainer="ai-toolkit", model=TRAINER_MODELS["ai-toolkit"][0],
         dataset_dir=Path("."), trigger="trg", name="n",
-        shot_style=CUSTOM, shot_style_text="a woodcut print"))
+        shot_style=CUSTOM, shot_style_text="a woodcut print"))[0]
     assert "woodcut print" in out and "trg" in out
 
 

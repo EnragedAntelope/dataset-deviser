@@ -370,6 +370,10 @@ def export(
         help="Publish to the HF Hub as this dataset id (needs a write HF_TOKEN)"),
     hf_private: bool = typer.Option(
         True, "--hf-private/--hf-public", help="Visibility of the published HF dataset"),
+    holdout: int = typer.Option(
+        0, "--holdout",
+        help="Keep the N largest preprocessed photos out of training, in a sibling "
+             "<dataset>-heldout folder (a likeness test)"),
 ):
     """Package captioned folders into a flat NN.png/NN.txt dataset (standalone)."""
     from studio.package import package_dataset, resolve_export_items
@@ -387,7 +391,7 @@ def export(
     metadata = {"character_name": name, "trigger": trigger, "dataset_type": dtype,
                 "source_folders": [str(f) for f in folders],
                 "skipped_uncaptioned": res.missing, "skipped_empty_caption": res.empties}
-    ds = package_dataset(res.items, output_root, name, trigger, metadata)
+    ds = package_dataset(res.items, output_root, name, trigger, metadata, holdout=holdout)
     typer.echo(f"Dataset written to {ds}")
     if zip_:
         from studio.package import zip_dataset

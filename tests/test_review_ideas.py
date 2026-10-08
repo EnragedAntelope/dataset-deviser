@@ -18,8 +18,8 @@ from studio.isolate import crop_to_content
 from studio.trainer_configs import (
     TRAINER_MODELS,
     TrainConfig,
-    _sample_prompt,
     caption_mismatch_warning,
+    validation_prompts,
 )
 
 # ---------- CLIP token estimate ----------
@@ -91,9 +91,9 @@ def test_sample_prompt_varies_by_dataset_type(tmp_path: Path) -> None:
         return TrainConfig(trainer="ai-toolkit", model=TRAINER_MODELS["ai-toolkit"][0],
                            dataset_dir=tmp_path, trigger="tok", dataset_type=dt)
 
-    char = _sample_prompt(cfg("character"))
-    style = _sample_prompt(cfg("style"))
-    concept = _sample_prompt(cfg("concept"))
+    char = validation_prompts(cfg("character"))[0]
+    style = validation_prompts(cfg("style"))[0]
+    concept = validation_prompts(cfg("concept"))[0]
     assert char != style != concept
     assert char.startswith("a photo of tok")
     assert style.startswith("tok,")  # style names content the trigger renders

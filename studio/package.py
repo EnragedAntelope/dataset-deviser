@@ -66,22 +66,78 @@ def resolve_export_items(image_paths: Iterable[Path]) -> ExportResolution:
     return ExportResolution(items=items, empties=empties, missing=missing)
 
 
+def _provenance(img: Path) -> dict:
+    """① provenance of an image file, or {} for generated shots / unreadables."""
+    from PIL import Image
+
+    from studio.dataset_stats import provenance
+
+    try:
+        with Image.open(img) as im:
+            return provenance(im)
+    except Exception:  # never fail an export over metadata
+        return {}
+
+
+def _heldout_dir(ds_dir: Path) -> Path:
+    return ds_dir.parent / f"{ds_dir.name}-heldout"
+
+
+def _area(origin: dict) -> int:
+    try:
+        return int(origin.get("w", 0)) * int(origin.get("h", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _hold_out(items: list[tuple[Path, str]], holdout: int, origins: dict[Path, dict]):
+    """Split off up to `holdout` real photos (largest originals first).
+
+    Only ①'s photos qualify — a generated shot is no test of likeness — and at
+    least one image always stays in the training set.
+    """
+    real = sorted((it for it in items if origins[it[0]]), key=lambda it: -_area(origins[it[0]]))
+    held = real[:max(0, min(holdout, len(items) - 1))]
+    return [it for it in items if it not in held], held
+
+
 def package_dataset(
     items: list[tuple[Path, str]],  # (image_path, final_caption)
     output_root: Path,
     character_name: str,
     trigger: str,
     metadata: dict,
+    holdout: int = 0,
 ) -> Path:
+    """Write the dataset folder; `holdout` real photos go to a sibling instead.
+
+    Held-out photos are copied to `<dataset>-heldout/`, outside the folder any
+    trainer reads, so they stay a fair likeness test for the finished LoRA.
+    """
     ds_name = f"{slugify(character_name or trigger or 'character')}-dataset"
     ds_dir = output_root / ds_name
     n = 1
-    while ds_dir.exists():  # never clobber an existing dataset
+    # Never clobber an existing dataset, nor a held-out folder whose dataset was deleted.
+    while ds_dir.exists() or _heldout_dir(ds_dir).exists():
         n += 1
         ds_dir = output_root / f"{ds_name}-{n}"
     ds_dir.mkdir(parents=True)
 
+    origins = {img: _provenance(img) for img, _ in items}
+    items, held = _hold_out(items, holdout, origins) if holdout else (items, [])
+    if held:
+        held_dir = _heldout_dir(ds_dir)
+        held_dir.mkdir()
+        names = []
+        for k, (img, caption) in enumerate(held, start=1):
+            name = f"{k:02d}-{img.name}"  # numbered: sources may share a name
+            shutil.copy2(img, held_dir / name)
+            (held_dir / name).with_suffix(".txt").write_text(caption, encoding="utf-8")
+            names.append(name)
+        metadata = {**metadata, "heldout": {"dir": str(held_dir), "files": names}}
+
     jsonl_lines: list[str] = []
+    sources: list[dict] = []
     for i, (img, caption) in enumerate(items, start=1):
         stem = f"{i:02d}"
         filename = f"{stem}{normalize_suffix(img.suffix)}"
@@ -91,7 +147,11 @@ def package_dataset(
         # directly via datasets.load_dataset("imagefolder", ...) with captions.
         # file_name is resolved literally, so it must be the name actually written.
         jsonl_lines.append(json.dumps({"file_name": filename, "text": caption}))
+        if origins[img]:
+            sources.append({"file": filename, **origins[img]})
     (ds_dir / "metadata.jsonl").write_text("\n".join(jsonl_lines) + "\n", encoding="utf-8")
+    if sources:  # which files are real photos, and how big they started
+        metadata = {**metadata, "provenance": sources}
     # Sources are copied verbatim, so a mixed-format folder exports mixed
     # extensions. ".png", or ".png/.jpg" when they differ.
     extensions = sorted({normalize_suffix(img.suffix) for img, _ in items})

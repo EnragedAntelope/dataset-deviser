@@ -122,7 +122,7 @@ def _dataset(folder: Path, n: int = 2) -> Path:
 def _train(tmp_path: Path, lora_name: str, project: str) -> str:
     return A.do_generate_train_config(
         "ai-toolkit", "flux-dev", str(_dataset(tmp_path / "ds")), "", lora_name,
-        "sysnootles", 512, 16, 16, 2000, 1e-4, 1, False, "character",
+        "sysnootles", 512, 16, 16, 16, 1e-4, 1, False, "character",
         A.shot_style.MATCH, "", project)
 
 

@@ -43,9 +43,10 @@ def test_the_handoff_checkbox_is_actually_wired() -> None:
         "the hand-off checkbox is in the layout but reaches do_export as nothing"
 
 
-def test_handoff_checkbox_is_the_last_input_matching_the_signature() -> None:
-    """`ilb_handoff` is do_export's last parameter, so it must be the last input."""
-    assert _export_inputs()[-1] == "Prepare for Idiot LoRa Builder"
+def test_export_inputs_end_in_signature_order() -> None:
+    """`ilb_handoff, holdout` end do_export's signature, so they end the inputs."""
+    assert _export_inputs()[-2:] == ["Prepare for Idiot LoRa Builder",
+                                     "Hold out N reference photos"]
 
 
 def test_export_with_the_box_ticked_writes_the_sidecar(tmp_path: Path) -> None:

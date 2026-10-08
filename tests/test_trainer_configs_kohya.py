@@ -21,11 +21,11 @@ def _cfg(tmp_path: Path, key: str = "sdxl") -> TrainConfig:
     preset = next(p for p in TRAINER_MODELS["kohya"] if p.key == key)
     return TrainConfig(trainer="kohya", model=preset, dataset_dir=tmp_path,
                        name="sy-lora", trigger="trig", resolution=1024, rank=16,
-                       alpha=16, steps=1500, lr=1e-4, batch_size=2)
+                       alpha=16, epochs=10, lr=1e-4, batch_size=2)
 
 
 def test_kohya_toml_parses_with_subsets(tmp_path: Path) -> None:
-    doc = tomllib.loads(render_kohya_toml(_cfg(tmp_path), num_repeats=5))
+    doc = tomllib.loads(render_kohya_toml(_cfg(tmp_path).model_copy(update={"num_repeats": 5})))
     assert doc["general"]["caption_extension"] == ".txt"
     ds = doc["datasets"][0]
     assert ds["resolution"] == [1024, 1024]
@@ -36,17 +36,18 @@ def test_kohya_toml_parses_with_subsets(tmp_path: Path) -> None:
 
 
 def test_kohya_command_threads_hparams_and_script(tmp_path: Path) -> None:
-    cmd = kohya_command("C:/sd-scripts", tmp_path / "kohya-dataset.toml", _cfg(tmp_path))
+    cmd = kohya_command("C:/sd-scripts", tmp_path / "kohya-dataset.toml", _cfg(tmp_path),
+                        tmp_path / "p.txt")
     assert "sdxl_train_network.py" in cmd
     assert "--network_dim 16" in cmd
     assert "--network_alpha 16" in cmd
-    assert "--max_train_steps 1500" in cmd
+    assert "--max_train_epochs 10" in cmd
     assert "stabilityai/stable-diffusion-xl-base-1.0" in cmd
     assert "C:/sd-scripts" in cmd
 
 
 def test_kohya_custom_preset_keeps_fill(tmp_path: Path) -> None:
-    cmd = kohya_command("", tmp_path / "d.toml", _cfg(tmp_path, "sdxl-custom"))
+    cmd = kohya_command("", tmp_path / "d.toml", _cfg(tmp_path, "sdxl-custom"), tmp_path / "p.txt")
     assert "<<FILL" in cmd  # honest about the user-local checkpoint
 
 

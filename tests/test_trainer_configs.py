@@ -24,7 +24,8 @@ from studio.trainer_configs import (
 def _cfg(trainer: str, tmp_path: Path) -> TrainConfig:
     return TrainConfig(trainer=trainer, model=TRAINER_MODELS[trainer][0],
                        dataset_dir=tmp_path, trigger="sysnootles", name="sy-lora",
-                       resolution=1024, rank=16, alpha=16, steps=1500, lr=1e-4)
+                       resolution=1024, rank=16, alpha=16, epochs=10, num_repeats=10,
+                       n_images=15, lr=1e-4)
 
 
 def test_aitoolkit_yaml_parses_and_has_keys(tmp_path: Path) -> None:
@@ -32,7 +33,7 @@ def test_aitoolkit_yaml_parses_and_has_keys(tmp_path: Path) -> None:
     proc = doc["config"]["process"][0]
     assert proc["type"] == "sd_trainer"
     assert proc["network"]["linear"] == 16
-    assert proc["train"]["steps"] == 1500
+    assert proc["train"]["steps"] == 1500  # 15 images x 10 repeats x 10 epochs
     assert proc["datasets"][0]["folder_path"] == tmp_path.as_posix()
     assert proc["model"]["name_or_path"]  # non-empty
 
@@ -157,14 +158,69 @@ def test_musubi_krea2_matches_its_reference_recipe(tmp_path: Path) -> None:
     preset = _preset("musubi", "krea2")
     assert (preset.rank, preset.alpha) == (32, 32)
     cfg = _cfg("musubi", tmp_path).model_copy(update={"model": preset})
-    _, command = write_configs(cfg)
+    written, command = write_configs(cfg)
     assert "--discrete_flow_shift 2.5" in command
     train = command.split("accelerate launch", 1)[1]
-    # Krea 2 trains from cached text-encoder outputs alone.
-    assert "--text_encoder" not in train
+    # Training reads cached text outputs; the encoder and Turbo DiT only render samples.
+    assert "--text_encoder" in train and "--turbo_dit" in train
+    assert "--l 1 --s 8" in written[1].read_text(encoding="utf-8")
 
 
-def test_aitoolkit_keeps_every_checkpoint(tmp_path: Path) -> None:
-    cfg = _cfg("ai-toolkit", tmp_path).model_copy(update={"steps": 3000})
-    save = yaml.safe_load(render_aitoolkit_yaml(cfg))["config"]["process"][0]["save"]
-    assert save["max_step_saves_to_keep"] * save["save_every"] >= 3000
+def test_aitoolkit_saves_and_samples_once_per_epoch(tmp_path: Path) -> None:
+    proc = yaml.safe_load(render_aitoolkit_yaml(_cfg("ai-toolkit", tmp_path)))["config"]["process"][0]
+    per_epoch = 150  # 15 images x 10 repeats / batch 1
+    assert proc["save"]["save_every"] == per_epoch
+    assert proc["save"]["max_step_saves_to_keep"] == 10  # every epoch kept
+    assert proc["sample"]["sample_every"] == per_epoch
+    assert proc["sample"]["seed"] == 42 and proc["sample"]["walk_seed"] is False
+    assert len(proc["sample"]["prompts"]) == 8
+
+
+@pytest.mark.parametrize("trainer", ["ai-toolkit", "musubi", "kohya", "fizgig"])
+def test_every_trainer_gets_the_validation_pack(trainer: str, tmp_path: Path) -> None:
+    written, _ = write_configs(_cfg(trainer, tmp_path))
+    names = [p.relative_to(tmp_path).as_posix() for p in written[1:]]
+    assert names == ["validation/validation_prompts.txt", "validation/validation.md",
+                     "validation/validation_scores.csv"]
+    prompts = [ln for ln in written[1].read_text(encoding="utf-8").splitlines()
+               if ln and not ln.startswith("#")]
+    assert len(prompts) == 8 and all("sysnootles" in p for p in prompts)
+    rows = written[3].read_text(encoding="utf-8").splitlines()
+    assert len(rows) == 1 + 10 * 8  # header + epochs x prompts
+    # No trainer may read a validation prompt as a caption.
+    assert not list(tmp_path.glob("*.txt"))
+
+
+def test_exposure_math() -> None:
+    from studio.trainer_configs import exposure
+
+    assert exposure(10, 3, 2, 12) == (15, 180)
+    assert exposure(7, 1, 2, 4) == (4, 16)  # a partial batch still costs a step
+    assert exposure(0, 0, 0, 5) == (1, 5)  # never zero
+
+
+@pytest.mark.parametrize("key,res", [("krea2", 1024), ("qwen_image21", 704), ("klein", 1024)])
+def test_fizgig_preset_toml_and_commands(key: str, res: int, tmp_path: Path) -> None:
+    preset = _preset("fizgig", key)
+    assert preset.resolution == res
+    cfg = _cfg("fizgig", tmp_path).model_copy(
+        update={"model": preset, "resolution": preset.resolution})
+    written, command = write_configs(cfg, install_path="C:/Fizgig")
+    assert written[0].name == "fizgig-dataset.toml"
+    assert tomllib.loads(written[0].read_text(encoding="utf-8"))["general"]["resolution"] == [res, res]
+    assert command.count(f"--family {preset.arch}") == 3
+    assert "--stage latents" in command and "--stage text" in command
+    assert "--max_train_epochs 10 --save_every_n_epochs 1" in command
+    assert "--sample_prompts" in command and "--sample_every_n_epochs 1" in command
+    # Fizgig's prompt file is plain prompts — no musubi per-line options.
+    assert " --w " not in written[1].read_text(encoding="utf-8")
+
+
+def test_validation_guide_lists_held_out_photos(tmp_path: Path) -> None:
+    import json
+
+    (tmp_path / "metadata.json").write_text(json.dumps(
+        {"heldout": {"dir": "X-heldout", "files": ["01-a.png"]}}), encoding="utf-8")
+    written, _ = write_configs(_cfg("ai-toolkit", tmp_path))
+    guide = written[2].read_text(encoding="utf-8")
+    assert "X-heldout" in guide and "01-a.png" in guide
