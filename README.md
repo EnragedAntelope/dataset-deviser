@@ -39,7 +39,15 @@ ai-toolkit, kohya, musubi or Fizgig, and a validation pack for picking the best 
 
 **① Preprocess → ② Generate & curate → ③ Caption → ④ Export → ⑤ Train config**
 
-Run them in order (each step auto-fills the next) or jump straight to the one you need.
+New to this? Use the **⚡ Quick build** tab: drop your images, type a name at the top, pick Cloud
+or Local and a trainer, press **Build**. Untick any shot that looks wrong and press **Finish**: you
+get the captioned dataset, the trainer config with its run command, and the validation pack.
+Name anything the subject is holding (*"cup, plate"*) so it isn't redrawn in every shot. Photos
+① had to enlarge a lot start unticked (they still guide generation). The trigger is made from
+the name if you leave it blank.
+
+The numbered tabs run the same steps one at a time, with every option. Run them in order (each
+step auto-fills the next) or jump straight to the one you need.
 
 | Stage | Local | Cloud |
 |---|---|---|
@@ -257,6 +265,8 @@ python cli.py generate ./prepped/refs --name "Sy Snootles" --engine comfyui
 python cli.py generate ./prepped/refs --name "Sy Snootles" --identity costume  # outfit is the character
 python cli.py generate ./prepped/refs --name "Sy Snootles" --shot-style anime  # keep an illustrated look
 python cli.py generate ./prepped/refs --name "brass compass" --dataset-type concept  # 18-shot object set
+python cli.py build ./photos --name "Ann Lee" --trigger annlee --exclude-prompt "cup" \
+  --trainer ai-toolkit --model krea                                       # everything, plus ⑤
 python cli.py caption ./folder --trigger sysnootles                       # prose sidecars
 python cli.py caption ./folder --trigger sysnootles --caption-style tags  # Danbooru tags
 python cli.py caption ./folder --trigger mystyle --dataset-type style     # style-framed

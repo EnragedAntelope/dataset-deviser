@@ -3,7 +3,8 @@
 Version: 0.19.0
 
 ```
-app.py                  Gradio UI — thin wiring over the stage functions (5 tabs).
+app.py                  Gradio UI — thin wiring over the stage functions (⚡ Quick
+                        build + the 5 stage tabs).
                         Owns the click-to-pick gallery helpers (_picker_*,
                         _PICKER_SCRIPT/PICKER_IDS — the only browser-side code in the
                         project) and the selection carried ②→③→④; see the
@@ -49,7 +50,9 @@ studio/
                         the SDK's misleading dual-key warning, see the Gotcha)
   pipeline.py           Stage orchestration: preprocess_sources(), generate_shots().
                         Both isolate per-item failures (one bad image never ends the
-                        batch) and honour the cooperative `should_stop` token
+                        batch) and honour the cooperative `should_stop` token.
+                        build_start() (①→②) and build_finish() (③→④→⑤) are the one
+                        full-build path behind `cli build` and ⚡ Quick build
   jobs.py               Cooperative cancellation: JobControl (a threading.Event stop
                         flag) + should_stop_now(). Checked BETWEEN items by the three
                         batch loops; UI-free so the CLI and tests drive it directly
@@ -982,6 +985,15 @@ quietly gets someone else's value.
     as part of the subject. Naming it in ①'s exclude prompt is the fix.
   - Neither input can supply what it never showed: everything below the hips and the shadowed
     eye are invented or copied, whatever the settings.
+- **Quick build is the stage functions with defaults, not a second pipeline (0.20.0).**
+  `pipeline.build_start` (① then ②) and `build_finish` (③, ④, and ⑤ through
+  `trainer_configs.default_config`) hold the whole orchestration; `cli build` and the ⚡ tab
+  both call them, so a fix lands in both. The split is the review point: the user unticks bad
+  shots between the two calls. Defaults chosen for poor inputs: the highest-resolution source
+  leads ②'s references (it sets the local output shape); a held-object field feeds ①'s exclude
+  prompt; a photo ① enlarged more than 1.33x starts unticked (`UPSCALE_UNTICK`, a LoRA learns
+  upscaling blur as texture) but still serves as a reference; a tag-trained base model gets tag
+  captions; a blank trigger is made from the name and written back to the header.
 - **The optimizer defaults to AdamW8bit; Prodigy is the one alternative (0.18.1).** AdamW8bit is
   the default and the validated recipe in ai-toolkit's UI, musubi's examples, sd-scripts and
   Fizgig. Prodigy is offered because it removes the learning-rate guess: it runs at lr 1.0 with
