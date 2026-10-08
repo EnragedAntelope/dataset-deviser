@@ -167,3 +167,37 @@ def test_without_anchor_shots_see_only_the_sources(
                             progress=lambda _m: None)
     assert seen["emotion-sad"] == ["ref.png"]
     assert seen["angle-back"] == ["angle-right.png", "ref.png"]
+
+
+def test_a_failed_processor_load_does_not_cache_a_half_loaded_sam3(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The model loaded, the processor 401'd: the next image must get the same
+    clear IsolationError, not "'NoneType' object is not callable"."""
+    import sys
+    import types
+
+    from studio import isolate
+
+    class Model:
+        @classmethod
+        def from_pretrained(cls, _id):
+            return cls()
+
+        def to(self, _device):
+            return self
+
+    class Processor:
+        @classmethod
+        def from_pretrained(cls, _id):
+            raise OSError("401 gated")
+
+    fake = types.ModuleType("transformers")
+    fake.Sam3Model, fake.Sam3Processor = Model, Processor
+    monkeypatch.setitem(sys.modules, "transformers", fake)
+    monkeypatch.setattr(isolate, "_model", None)
+    monkeypatch.setattr(isolate, "_processor", None)
+    monkeypatch.setenv("HF_TOKEN", "stale")
+
+    for _ in range(2):
+        with pytest.raises(isolate.IsolationError, match="HF_TOKEN is set"):
+            isolate._load_sam3()

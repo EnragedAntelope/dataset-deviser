@@ -13,6 +13,7 @@ local engine cannot be told to omit one (naming it makes Qwen draw it).
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -46,14 +47,23 @@ def _load_sam3():
             # device rather than handed to accelerate's "auto" — that sharded it
             # across cuda:0/cuda:1 on multi-GPU machines and the forward pass
             # died with a two-device tensor mismatch.
-            _model = Sam3Model.from_pretrained(settings.sam3_hf_id).to(config.torch_device())
-            _processor = Sam3Processor.from_pretrained(settings.sam3_hf_id)
+            # Both or neither: a processor that fails after the model loaded
+            # (a gated-repo 401 on one file) must not leave a half-cached pair
+            # that the next image calls as None.
+            model = Sam3Model.from_pretrained(settings.sam3_hf_id).to(config.torch_device())
+            processor = Sam3Processor.from_pretrained(settings.sam3_hf_id)
         except Exception as e:
+            # An HF_TOKEN (from .env or the environment) wins over `hf auth login`,
+            # so a stale one 401s even when the saved login would work.
+            hint = (" An HF_TOKEN is set (in .env or the environment) and is used "
+                    "instead of `hf auth login` — replace it (`python cli.py keys --set "
+                    "HF_TOKEN`) or remove it." if os.environ.get("HF_TOKEN") else "")
             raise IsolationError(
                 f"Could not load {settings.sam3_hf_id} — it is a gated model: accept the "
                 f"license at https://huggingface.co/{settings.sam3_hf_id} and authenticate "
-                f"(`hf auth login` or set HF_TOKEN). Original error: {e}"
+                f"(`hf auth login` or set HF_TOKEN).{hint} Original error: {e}"
             ) from e
+        _model, _processor = model, processor
     return _model, _processor
 
 
