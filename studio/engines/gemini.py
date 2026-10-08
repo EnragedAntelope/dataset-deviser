@@ -27,7 +27,10 @@ from studio.config import (
 from studio.engines.base import GenerationError
 from studio.shotplan import Shot
 
-MAX_REFERENCE_IMAGES = 14
+# Every reference shows the same character, and these models keep at most this
+# many people consistent (Pro: 5, the rest: 4). More copies add cost, not likeness.
+CHARACTER_REFS = {"gemini-3-pro-image": 5}
+DEFAULT_CHARACTER_REFS = 4
 # References are capped here before upload. ① already outputs 1024 px, but ②
 # also takes files straight from the user (a pasted 12 MP photo), and every
 # current Gemini image model works at 1-2K.
@@ -247,6 +250,17 @@ def list_caption_models(force_refresh: bool = False) -> list[tuple[str, str]]:
     return _plain(_CAPTION_FALLBACK)
 
 
+def shot_aspect(shot: Shot) -> str | None:
+    """Output aspect for a shot: portrait for a standing turnaround view, square
+    for a close-up. None (the model follows the reference) for anything else —
+    a lying or crouching pose would be squeezed by a fixed portrait frame."""
+    if shot.framing in ("close-up", "tight-face"):
+        return "1:1"
+    if shot.kind == "angle" and shot.framing == "full":
+        return "2:3"
+    return None
+
+
 class GeminiEngine:
     name = "gemini"
 
@@ -267,10 +281,13 @@ class GeminiEngine:
         from google.genai import types
 
         parts: list = []
-        for p in sources[:MAX_REFERENCE_IMAGES]:
+        cap = CHARACTER_REFS.get(self._model, DEFAULT_CHARACTER_REFS)
+        for p in list(dict.fromkeys(sources))[:cap]:
             data, mime = api_image(p, REFERENCE_MAX_SIDE)
             parts.append(types.Part.from_bytes(data=data, mime_type=mime))
         parts.append(shot.cloud_prompt)
+        aspect = shot_aspect(shot)
+        image_config = types.ImageConfig(aspect_ratio=aspect) if aspect else None
 
         last_err: Exception | None = None
         for attempt in range(GENERATE_RETRIES):
@@ -280,6 +297,7 @@ class GeminiEngine:
                     contents=parts,
                     config=types.GenerateContentConfig(
                         response_modalities=["TEXT", "IMAGE"],
+                        image_config=image_config,
                     ),
                 )
                 for cand in resp.candidates or []:

@@ -248,3 +248,62 @@ def test_api_image_keeps_16_bit_grey_and_palette_transparency(tmp_path: Path) ->
     assert mime == "image/png"
     with Image.open(io.BytesIO(data)) as im:
         assert im.mode == "RGBA" and im.getpixel((2, 2))[3] == 0
+
+
+def _engine_capturing(monkeypatch: pytest.MonkeyPatch, model: str) -> tuple[object, dict]:
+    """A GeminiEngine whose client records the last generate_content call."""
+    from studio import config as config_mod
+    from studio.engines import gemini
+
+    seen: dict = {}
+
+    class Models:
+        def generate_content(self, **kw: object) -> object:
+            seen.update(kw)
+            part = type("P", (), {"inline_data": type("D", (), {"data": b"png"})()})()
+            content = type("Ct", (), {"parts": [part]})()
+            return type("R", (), {"candidates": [type("Cd", (), {"content": content})()]})()
+
+    monkeypatch.setattr(config_mod.settings, "gemini_api_key", "k")
+    monkeypatch.setattr(gemini, "gemini_client", lambda key: type("C", (), {"models": Models()})())
+    return gemini.GeminiEngine(model=model), seen
+
+
+@pytest.mark.parametrize(("model", "cap"), [("gemini-3-pro-image", 5), ("gemini-nano-banana-2.1", 4)])
+def test_references_are_capped_at_the_models_character_limit(
+    model: str, cap: int, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from PIL import Image
+
+    from studio.shotplan import default_plan
+
+    engine, seen = _engine_capturing(monkeypatch, model)
+    refs = []
+    for i in range(7):
+        refs.append(tmp_path / f"r{i}.png")
+        Image.new("RGB", (8, 8)).save(refs[-1])
+
+    engine.generate(refs + [refs[0]], default_plan()[0], tmp_path / "o.png", seed=1)
+
+    assert len(seen["contents"]) == cap + 1  # references + the prompt
+
+
+def test_aspect_follows_the_shots_framing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from PIL import Image
+
+    from studio.engines.gemini import shot_aspect
+    from studio.shotplan import default_plan
+
+    by = {(s.kind, s.framing): shot_aspect(s) for s in default_plan()}
+    assert by[("angle", "full")] == "2:3"
+    assert by[("emotion", "close-up")] == by[("emotion", "tight-face")] == "1:1"
+    # A pose keeps the reference's aspect: a crouch squeezed into 2:3 loses the body.
+    assert by[("pose", "full")] is None and by[("pose", "waist-up")] is None
+
+    engine, seen = _engine_capturing(monkeypatch, "gemini-nano-banana-2.1")
+    ref = tmp_path / "r.png"
+    Image.new("RGB", (8, 8)).save(ref)
+    angle = default_plan()[0]
+    engine.generate([ref], angle, tmp_path / "o.png", seed=1)
+    assert seen["config"].image_config.aspect_ratio == "2:3"
+    assert seen["config"].image_config.image_size is None  # 1K stays the model default

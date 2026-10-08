@@ -38,11 +38,11 @@ def new_run_dir(name: str = "") -> Path:
     return run_dir
 
 
-def make_engine(engine_key: str, cloud_model: str = ""):
+def make_engine(engine_key: str, cloud_model: str = "", front: bool = False):
     if engine_key == "comfyui":
         from studio.engines.comfyui import ComfyUIEngine
 
-        return ComfyUIEngine()
+        return ComfyUIEngine(front=front)
     from studio.engines.gemini import GeminiEngine
 
     return GeminiEngine(model=cloud_model)
@@ -128,7 +128,7 @@ def generate_shots(
     """
     if not sources:
         raise GenerationError("No reference images given — nothing to generate from.")
-    engine = make_engine(engine_key, cloud_model)
+    engine = make_engine(engine_key, cloud_model, front=front)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     results = [r for r in (existing or []) if only_ids is None or r.shot.id not in only_ids]

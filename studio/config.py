@@ -534,6 +534,12 @@ class Settings(BaseSettings):
     # pointing at the Qwen2.5-VL file would otherwise be fed to the 2.1 graph.
     qwen21_text_encoder: str = "qwen3vl_8b_int8_convrot.safetensors"
     qwen21_vae: str = "qwen_image_2.1_vae_bf16.safetensors"
+    # References per local shot (the node takes up to 16), in order: the chained
+    # view when there is one, then the primary, then the rest.
+    qwen21_max_refs: int = 1
+    # Each reference is resized to about this many pixels squared; the output
+    # follows the first reference's aspect at about the same size.
+    qwen21_resolution: int = 1536
     upscale_model: str = "4xNomosWebPhoto_RealPLKSR.safetensors"
     dejpg_model: str = "1xDeJPG_OmniSR.pth"
     sam3_checkpoint: str = "sam3.1_multiplex_fp16.safetensors"

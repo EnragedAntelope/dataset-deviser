@@ -53,6 +53,37 @@ def test_the_graph_carries_the_shots_prompt_seed_and_reference(
     assert seen["2"]["inputs"]["unet_name"].endswith(".safetensors")
 
 
+def test_multi_reference_wires_one_loader_per_reference_in_order(
+    offline: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from studio.config import settings
+
+    seen: dict = {}
+    monkeypatch.setattr(comfy_api, "upload_image", lambda path: f"up-{path.name}")
+
+    def run_prompt(graph: dict, timeout: float = 0, front: bool = False) -> list[dict]:
+        seen.update(graph=graph, front=front)
+        return [{"filename": "o.png"}]
+
+    monkeypatch.setattr(comfy_api, "run_prompt", run_prompt)
+    monkeypatch.setattr(comfy_api, "fetch_image", lambda ref, out: out)
+    monkeypatch.setattr(settings, "qwen21_max_refs", 3)
+    monkeypatch.setattr(settings, "qwen21_resolution", 1024)
+    refs = []
+    for name in ("chain", "primary", "extra", "spare"):
+        refs.append(tmp_path / f"{name}.png")
+        refs[-1].write_bytes(b"x")
+
+    ComfyUIEngine(front=True).generate(refs + [refs[1]], default_plan()[0],
+                                       tmp_path / "o.png", seed=1)
+
+    g, enc = seen["graph"], seen["graph"]["5"]["inputs"]
+    loaded = [g[enc[f"images.image_{i}"][0]]["inputs"]["image"] for i in (1, 2, 3)]
+    assert loaded == ["up-chain.png", "up-primary.png", "up-extra.png"]
+    assert "images.image_4" not in enc and enc["resolution"] == 1024
+    assert seen["front"] is True
+
+
 @pytest.mark.parametrize("stage", ["upload_image", "run_prompt", "fetch_image"])
 def test_a_dead_comfyui_fails_the_shot_not_the_run(
     stage: str, offline: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
