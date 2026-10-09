@@ -335,9 +335,15 @@ def build_finish(
     ds = package_dataset(items, output_root, name, trigger, metadata, holdout=holdout)
     command = ""
     if trainer:
-        from studio.trainer_configs import default_config
+        from studio.dataset_stats import inspect
+        from studio.trainer_configs import TRAINER_MODELS, default_config
 
         _, command = default_config(ds, trainer, model_key, name=name, trigger=trigger,
                                     dataset_type=dataset_type, shot_style=shot_style,
                                     shot_style_text=shot_style_text)
+        preset = next((p for p in TRAINER_MODELS[trainer] if p.key == model_key),
+                      TRAINER_MODELS[trainer][0])
+        for line in inspect(ds).upscale_note(preset.resolution).splitlines():
+            if line:
+                progress(line)  # the ⑤ tab's undersized/upscaled warnings
     return ds, command

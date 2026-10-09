@@ -55,7 +55,8 @@ def _load_sam3():
         except Exception as e:
             # An HF_TOKEN (from .env or the environment) wins over `hf auth login`,
             # so a stale one 401s even when the saved login would work.
-            hint = (" An HF_TOKEN is set (in .env or the environment) and is used "
+            hint = (" An HF_TOKEN is set (in .env or the environment, or taken from "
+                    "HUGGINGFACE_API_KEY when there is no login) and is used "
                     "instead of `hf auth login` — replace it (`python cli.py keys --set "
                     "HF_TOKEN`) or remove it." if os.environ.get("HF_TOKEN") else "")
             raise IsolationError(

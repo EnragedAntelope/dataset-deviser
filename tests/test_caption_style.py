@@ -110,6 +110,15 @@ def test_finalize_prose_still_prepends_trigger_and_names() -> None:
     assert "Sy Snootles" in out  # alias replacement still runs in prose mode
 
 
+def test_finalize_prose_leads_with_the_triggers_exact_casing() -> None:
+    # Quick build makes the trigger from the name, so a one-word name differs only in case.
+    out = finalize_caption("The woman sits at a table.", "ann", "Ann", SUBJECT_ALIASES)
+    assert out == "ann sits at a table."
+    # A longer word that merely starts with the trigger is not the trigger.
+    assert finalize_caption("Annika sits.", "ann", "Annika", SUBJECT_ALIASES) == \
+        "ann, Annika sits."
+
+
 def test_finalize_default_style_is_prose() -> None:
     # No style arg → prose behaviour: the sentence's first letter is lowercased
     # after the trigger. The tags path would instead lowercase the whole thing.

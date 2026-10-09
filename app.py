@@ -1907,8 +1907,9 @@ def do_quick_finish(start, keep: list[str], name: str, trigger: str, dataset_typ
             progress=report)
     except Exception as e:
         raise gr.Error(f"Finish failed: {e}") from e
+    warnings_ = "".join(f"{m}\n\n" for m in log if m.startswith("⚠️"))
     note = (f"✅ **Dataset ready:** `{ds}` ({len(images)} images, trigger `{trigger}`).\n\n"
-            f"Train with:\n```\n{command}\n```\n`validation/validation.md` in the dataset "
+            f"{warnings_}Train with:\n```\n{command}\n```\n`validation/validation.md` in the dataset "
             f"says how to pick the best epoch.\n\n<sub>Configs are generated, not "
             f"test-trained. Fill any `<<FILL>>` placeholders first; ⑤ has every setting.</sub>")
     return note, "\n".join(log), str(ds)
@@ -2204,7 +2205,8 @@ with _blocks as demo:
                              "other shot's references with it. Helps when your sources "
                              "are partial or poor (face in shadow, body cut off). It "
                              "copies whatever the front view gets wrong (a held object, "
-                             "an outfit) into every shot, so check that view first.")
+                             "an outfit) into every shot, so check that view first, and "
+                             "check full-body shots did not just repeat its stance.")
                     gen_isolate = gr.Checkbox(value=False,
                                               label="Isolate generated angle shots (white background)",
                                               info="Cut generated angle shots onto white too. "

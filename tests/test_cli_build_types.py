@@ -175,6 +175,13 @@ def test_build_orders_references_largest_first_and_writes_train_config(
 
     monkeypatch.setattr(cli.pipeline, "preprocess_sources", fake_preprocess)
     monkeypatch.setattr(trainer_configs, "default_config", fake_default_config)
+    from studio import dataset_stats
+
+    class _Stats:
+        def upscale_note(self, resolution: int) -> str:
+            return f"\n⚠️ small_prepped was upscaled (bar {resolution})"
+
+    monkeypatch.setattr(dataset_stats, "inspect", lambda ds: _Stats())
     result = runner.invoke(cli.app, [
         "build", str(small), str(big), "--output-root", str(tmp_path / "out"),
         "--name", "Ann", "--trainer", "fizgig", "--model", "krea2"])
@@ -183,6 +190,7 @@ def test_build_orders_references_largest_first_and_writes_train_config(
     assert [p.name for p in stubs["sources"]] == ["big_prepped.png", "small_prepped.png"]
     assert written["trainer"] == "fizgig" and written["model"] == "krea2"
     assert "train.py --go" in result.output
+    assert "⚠️ small_prepped was upscaled" in result.output  # ⑤'s warning reaches the CLI
 
 
 def test_build_rejects_an_unknown_trainer(stubs: dict, tmp_path: Path) -> None:
