@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from studio.preprocess import preprocess
@@ -124,13 +125,12 @@ def test_preprocess_sources_forwards_alpha_cutout(tmp_path: Path, monkeypatch) -
 
 # ---------- a failed stage must leave nothing behind ----------
 
-def test_preprocess_removes_the_partial_output_when_isolation_fails(
+def test_preprocess_removes_the_partial_output_when_isolation_crashes(
         tmp_path: Path, monkeypatch) -> None:
     """Restoration writes out_path BEFORE isolation runs. When isolation then
-    fails, that restored-but-not-isolated, not-resized file must not survive —
+    crashes, that restored-but-not-resized file must not survive —
     `list_images` would serve it to ②/③ as a finished source."""
     import studio.preprocess as pp
-    from studio.isolate import IsolationError
 
     src_dir = tmp_path / "src"
     src_dir.mkdir()
@@ -143,26 +143,23 @@ def test_preprocess_removes_the_partial_output_when_isolation_fails(
         return out_path
 
     def fake_isolate(image_path, out_path, *a, **kw):
-        raise IsolationError("SAM3 found no 'character'")
+        raise RuntimeError("CUDA out of memory")
 
     monkeypatch.setattr(pp, "_restore_comfyui", fake_restore)
     monkeypatch.setattr(pp, "isolate_subject", fake_isolate)
 
-    try:
+    with pytest.raises(RuntimeError, match="out of memory"):
         pp.preprocess(src, out, target=256, force_restore=True, isolate=True,
                       restore_backend="comfyui")
-    except IsolationError:
-        pass
-    else:
-        raise AssertionError("expected the isolation failure to propagate")
 
     assert list(out.glob("*.png")) == [], "a half-processed file was left behind"
 
 
-def test_isolation_error_names_the_users_file_not_the_intermediate(
+def test_no_subject_keeps_the_photo_and_uses_it_whole_as_the_reference(
         tmp_path: Path, monkeypatch) -> None:
-    """preprocess passes the source name through: naming the deleted
-    'cat_prepped.png' intermediate sent users hunting for a file that is gone."""
+    """Isolation only makes ②'s reference, so SAM3 finding no subject must not
+    drop the photo (0.20.0 acceptance: it dropped the sharpest source). The
+    note names the user's file, not the 'cat_prepped.png' intermediate."""
     import studio.preprocess as pp
     from studio.isolate import IsolationError
 
@@ -175,13 +172,13 @@ def test_isolation_error_names_the_users_file_not_the_intermediate(
         raise IsolationError(f"SAM3 found no '{subject_prompt}' in {label}")
 
     monkeypatch.setattr(pp, "isolate_subject", fake_isolate)
-    try:
-        pp.preprocess(src, tmp_path / "out", target=64, force_restore=False, isolate=True)
-    except IsolationError as e:
-        assert "cat.png" in str(e)
-        assert "prepped" not in str(e)
-    else:
-        raise AssertionError("expected the isolation failure to propagate")
+    rep = pp.preprocess(src, tmp_path / "out", target=64, force_restore=False, isolate=True)
+    assert rep.output.exists() and rep.reference and rep.reference.exists()
+    assert not rep.isolated
+    assert "NOT isolated" in rep.reason and "cat.png" in rep.reason
+    assert "prepped" not in rep.reason
+    with Image.open(rep.reference) as ref, Image.open(rep.output) as out:
+        assert ref.size == out.size and ref.tobytes() == out.tobytes()
 
 
 # ---------- 0.17.3: phone photos (size, JPEG, EXIF rotation) ----------

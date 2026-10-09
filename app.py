@@ -622,6 +622,11 @@ def _preprocess_note(reports, out_dir: Path, alpha_cutout: bool) -> str:
     elif cut:
         head += (f"\n\n<sub>Cut off at the bottom: {', '.join(cut)} — the other "
                  f"reference(s) show more of the body.</sub>")
+    whole = [r.source.name for r in ok if r.reference and not r.isolated]
+    if whole:
+        head += (f"\n\n⚠️ **Not isolated:** {', '.join(whole)} — isolation failed (the Log "
+                 f"says why), so ② uses the whole photo, background and props included. "
+                 f"The training copy is unaffected.")
     if not failed:
         return head
     lines = "\n".join(f"- `{r.source.name}` — {r.error}  \n  → {_failure_hint(r.error)}"

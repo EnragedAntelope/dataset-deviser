@@ -177,6 +177,32 @@ def test_one_slow_poll_does_not_fail_a_running_job(monkeypatch: pytest.MonkeyPat
     assert comfy_api.run_prompt({}) == [{"filename": "o.png"}]
 
 
+def test_time_waiting_behind_another_job_does_not_count(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """A front job sat pending behind a long user job and timed out before it ran."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(comfy_api.time, "monotonic", lambda: clock["t"])
+    polls = {"n": 0}
+
+    def get(url, *a, **k):
+        req = httpx.Request("GET", url)
+        if url.endswith("/queue"):  # pending for the first 100 s, then running
+            pending = [[-1, "p1", {}]] if clock["t"] < 100 else []
+            return httpx.Response(200, json={"queue_pending": pending}, request=req)
+        polls["n"] += 1
+        clock["t"] += 5
+        done = {"p1": {"status": {"completed": True},
+                       "outputs": {"8": {"images": [{"filename": "o.png"}]}}}}
+        return httpx.Response(200, json=done if clock["t"] >= 130 else {}, request=req)
+
+    _queue_stubs(monkeypatch, get)
+    assert comfy_api.run_prompt({}, timeout=60) == [{"filename": "o.png"}]
+    with pytest.raises(comfy_api.ComfyError, match="did not finish within 60s"):
+        clock["t"] = 0.0
+        monkeypatch.setattr(comfy_api, "_is_pending", lambda pid: False)
+        comfy_api.run_prompt({}, timeout=60)
+
+
 def test_a_server_that_stays_silent_is_given_up_on(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = {"n": 0}
 

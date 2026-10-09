@@ -89,7 +89,7 @@ def preprocess_sources(
             progress(f"  SKIPPED {src.name}: {e}")
             reports.append(failed_report(src, str(e)))
             continue
-        extra = f", isolated reference in {REFS_DIR}/" if rep.reference else ""
+        extra = f", isolated reference in {REFS_DIR}/" if rep.isolated else ""
         progress(
             f"  {src.name}: {rep.original_size[0]}x{rep.original_size[1]} -> "
             f"{rep.final_size[0]}x{rep.final_size[1]} ({rep.reason}{extra})"

@@ -22,6 +22,8 @@ class ComfyError(Exception):
 # Consecutive failed /history polls before a running job is given up on (each poll
 # waits up to 30 s, so a stalled server gets minutes, not seconds).
 MAX_STALLED_POLLS = 5
+# Longest a queued job may wait for other jobs before its own timeout counts down.
+QUEUE_WAIT_S = 3600
 
 
 # Model filenames inside the bundled templates, remapped to whatever the user
@@ -261,6 +263,15 @@ def queue_backlog() -> int:
         return 0
 
 
+def _is_pending(prompt_id: str) -> bool:
+    """True while `prompt_id` is still waiting in ComfyUI's queue (not yet running)."""
+    try:
+        q = httpx.get(f"{settings.comfy_url}/queue", timeout=10).json()
+    except Exception:
+        return False
+    return any(len(j) > 1 and j[1] == prompt_id for j in q.get("queue_pending", []))
+
+
 def run_prompt(graph: dict, timeout: float = 600.0, front: bool = False) -> list[dict]:
     """Queue an API-format graph, wait for completion, return output image refs.
 
@@ -296,7 +307,9 @@ def run_prompt(graph: dict, timeout: float = 600.0, front: bool = False) -> list
         raise ComfyError(describe_rejection(r.text))
     prompt_id = r.json()["prompt_id"]
 
-    deadline = time.monotonic() + timeout
+    queued_at = time.monotonic()
+    deadline = queued_at + timeout
+    next_queue_check = queued_at
     stalled = 0
     while time.monotonic() < deadline:
         # ComfyUI stops answering HTTP for tens of seconds while it swaps models in
@@ -339,6 +352,16 @@ def run_prompt(graph: dict, timeout: float = 600.0, front: bool = False) -> list
                 return images
             if status.get("completed"):
                 raise ComfyError("run completed but produced no images")
+        else:
+            # Waiting in line behind someone else's job is not ours being slow: a
+            # front job sat behind a long user job and timed out before it started
+            # (0.20.0 acceptance). The clock restarts while ours is still pending,
+            # for up to QUEUE_WAIT_S in line.
+            now = time.monotonic()
+            if now >= next_queue_check and now - queued_at < QUEUE_WAIT_S:
+                next_queue_check = now + 10
+                if _is_pending(prompt_id):
+                    deadline = now + timeout
         time.sleep(1.5)
     raise ComfyError(
         f"ComfyUI did not finish within {timeout:g}s (prompt {prompt_id}). It may "

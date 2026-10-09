@@ -46,6 +46,13 @@ def test_an_upscaled_photo_starts_unticked_and_failures_are_named(tmp_path: Path
     assert "refused" in note and "Unticked: small.jpg" in note
 
 
+def test_a_failed_isolation_is_named_in_the_note(tmp_path: Path) -> None:
+    start = _start(tmp_path)
+    start.reports[0].reference = start.reports[0].output
+    start.reports[0].isolated = False
+    assert "Not isolated:** big.jpg" in A._quick_note(start)
+
+
 def test_build_derives_the_trigger_and_returns_the_picker(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict = {}

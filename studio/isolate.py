@@ -149,6 +149,10 @@ def isolate_builtin(image_path: Path, out_path: Path, subject_prompt: str = "cha
                     alpha_cutout: bool = False, label: str = "") -> Path:
     image = Image.open(image_path).convert("RGB")
     subject = _segment(image, subject_prompt)
+    if not subject.any() and subject_prompt == "character":
+        # SAM3 reads "character" as a drawn figure: on two real photos it scored
+        # 0.0 and 0.06 where "person" scored 0.98 (0.20.0 acceptance).
+        subject = _segment(image, "person")
     if not subject.any():
         # `label` names the file the USER recognises. By the time preprocess calls
         # this, `image_path` can be a restored intermediate ("cat_prepped.png")

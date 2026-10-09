@@ -20,7 +20,7 @@ from PIL.PngImagePlugin import PngInfo
 
 from studio.config import settings
 from studio.dataset_stats import PROVENANCE_KEY
-from studio.isolate import isolate_subject
+from studio.isolate import IsolationError, isolate_subject
 
 BLUR_THRESHOLD = 120.0  # Laplacian variance below this = soft/degraded image
 # Subfolder of ①'s output holding the isolated copies ② uses as references.
@@ -225,13 +225,23 @@ def preprocess(
                 "captured": captured, "restored": restore, "isolated": isolated}))
             img.save(path, "PNG", pnginfo=info)
 
+        isolated = False
         if ref_path:
             # The isolated copy is ②'s reference only: it keeps props and the
-            # old background out of the generated shots.
+            # old background out of the generated shots. So a failed isolation
+            # costs the reference its cut-out, never the photo: ② falls back to
+            # the whole image and the training copy is written as usual.
             refs_dir.mkdir(exist_ok=True)
-            isolate_subject(stage_path, ref_path, subject_prompt, exclude_prompt,
-                            backend=isolation_backend, progress=progress,
-                            alpha_cutout=alpha_cutout, label=source.name, front=front)
+            try:
+                isolate_subject(stage_path, ref_path, subject_prompt, exclude_prompt,
+                                backend=isolation_backend, progress=progress,
+                                alpha_cutout=alpha_cutout, label=source.name, front=front)
+                isolated = True
+            except IsolationError as e:
+                reason = (f"{reason}; " if reason else "") + (
+                    f"NOT isolated ({e}) — ② uses the whole photo, background and props "
+                    f"included")
+        if ref_path and isolated:
             with Image.open(ref_path) as im:
                 ref = im.copy() if alpha_cutout else im.convert("RGB")  # keep RGBA
             from studio.isolate import touches_bottom
@@ -248,6 +258,8 @@ def preprocess(
         with Image.open(stage_path) as im:
             img = _resize_to_target(im.convert("RGB"), target)
         save(img, out_path, False)
+        if ref_path and not isolated:
+            save(img, ref_path, False)
     except BaseException:
         out_path.unlink(missing_ok=True)
         if ref_path:
@@ -263,7 +275,7 @@ def preprocess(
         final_size=img.size,
         restored=restore,
         reason=reason or "clean source, resize only",
-        isolated=isolate,
+        isolated=isolated,
         reference=ref_path,
         cut_off=cut_off,
     )
