@@ -54,7 +54,13 @@ from studio.engines.gemini import (
     resolve_image_model,
 )
 from studio.jobs import JobControl
-from studio.shotplan import Shot, apply_prop_exclusion, apply_wardrobe, plan_for_type
+from studio.shotplan import (
+    Shot,
+    apply_prop_exclusion,
+    apply_wardrobe,
+    coverage,
+    plan_for_type,
+)
 from studio.trainer_configs import TRAINER_MODELS, TRAINERS, optimizer_choices
 
 TRAINER_CHOICES = [(label, key) for key, label in TRAINERS.items()]
@@ -140,7 +146,8 @@ _ISOLATE_SUBJECT = {"character": "character", "style": "character", "concept": "
 
 
 def on_dataset_type_change(dataset_type: str, name: str = "",
-                           style_key: str = shot_style.MATCH, style_text: str = ""):
+                           style_key: str = shot_style.MATCH, style_text: str = "",
+                           identity: str = "identity"):
     """Retune every type-dependent control across the tabs, and remember the
     choice for the next launch.
 
@@ -164,7 +171,7 @@ def on_dataset_type_change(dataset_type: str, name: str = "",
                     visible=bool(_TYPE_GUIDANCE.get(dataset_type, ""))),
         gr.Button(value=f"Rebuild default plan with {label.lower()}",
                   interactive=not is_style),                   # refresh plan
-        _plan_table(dataset_type, name, style_key, style_text),  # shot plan table
+        _plan_table(dataset_type, name, style_key, style_text, identity),  # shot plan
         gr.Button(interactive=not is_style),                   # generate
         gr.Button(interactive=not is_style),                   # regenerate
         gr.Button(visible=not (is_style or is_concept)),       # randomize outfits
@@ -264,20 +271,40 @@ def _allowed_media_paths() -> list[str]:
 # Human-editable columns lead; the long prompt cells trail. Column ORDER and
 # WIDTHS must be set explicitly: pydantic field order otherwise puts the two
 # ~200-char prompts in the middle, squeezing `outfit` to an unreadable sliver.
-PLAN_COLUMNS = ["id", "kind", "emotion", "setting", "outfit",
+PLAN_COLUMNS = ["id", "kind", "framing", "emotion", "setting", "outfit",
                 "local_prompt", "cloud_prompt", "chain_from"]
-PLAN_COLUMN_WIDTHS = ["110px", "70px", "110px", "200px", "220px",
+PLAN_COLUMN_WIDTHS = ["110px", "70px", "90px", "110px", "200px", "220px",
                       "260px", "260px", "100px"]
 
 
 def _plan_table(dataset_type: str, name: str = "", style_key: str = shot_style.MATCH,
-                style_text: str = "") -> pd.DataFrame:
-    """The ② table for a dataset type (empty for Style, which never generates)."""
-    return _shots_to_df(plan_for_type(dataset_type, name, style_key, style_text))
+                style_text: str = "", identity: str = "identity") -> pd.DataFrame:
+    """The ② table for a dataset type (empty for Style, which never generates).
+
+    A character under the "identity" policy starts dressed in varied outfits, so
+    the trigger learns the person rather than their clothes.
+    """
+    shots = plan_for_type(dataset_type, name, style_key, style_text)
+    if dataset_type == "character" and identity == "identity":
+        from studio.wardrobe import dress
+
+        shots = dress(shots)
+    return _shots_to_df(shots)
+
+
+def _identity_visible(dataset_type: str):
+    return gr.update(visible=dataset_type == "character")
+
+
+def on_identity_change(df: pd.DataFrame, identity: str, dataset_type: str):
+    """Dress or undress the current plan to match the identity policy."""
+    if dataset_type != "character":
+        return gr.skip(), gr.skip()
+    return randomize_outfits(df) if identity == "identity" else clear_outfits(df)
 
 
 def rebuild_plan_for_style(dataset_type: str, name: str, style_key: str,
-                           style_text: str):
+                           style_text: str, identity: str = "identity"):
     """Rebuild the ② table when the shot style changes, and remember the choice.
 
     The style is baked into the prompt cells at build time (so the table shows
@@ -298,7 +325,7 @@ def rebuild_plan_for_style(dataset_type: str, name: str, style_key: str,
         note = ("⚠️ Custom style selected but no description typed — falling back to "
                 "**matching the reference image**. Type a style below and the plan "
                 "rebuilds.")
-    return _plan_table(dataset_type, name, style_key, style_text), note
+    return _plan_table(dataset_type, name, style_key, style_text, identity), note
 
 
 def _toggle_style_text(style_key: str):
@@ -505,7 +532,7 @@ def _df_to_shots(df: pd.DataFrame) -> list[Shot]:
 
     cols = (
         "id", "kind", "local_prompt", "cloud_prompt",
-        "chain_from", "emotion", "setting", "outfit",
+        "chain_from", "emotion", "setting", "outfit", "framing",
     )
     return [Shot(**{k: val(row, k) for k in cols})
             for _, row in df.iterrows() if val(row, "id").strip()]
@@ -578,12 +605,22 @@ def _preprocess_note(reports, out_dir: Path, alpha_cutout: bool) -> str:
     if not ok:
         head = (f"❌ **No image could be preprocessed** — nothing was written to "
                 f"{out_dir}.")
-    elif alpha_cutout:
-        head = (f"✅ {len(ok)} image(s) preprocessed (transparent cutout) into "
-                f"{out_dir} — not auto-filled into ②/③, which expect a "
-                f"white-background reference.")
     else:
         head = f"✅ {len(ok)} image(s) preprocessed into {out_dir}"
+        refs = next((r.reference.parent for r in ok if r.reference), None)
+        if refs and alpha_cutout:
+            head += (f" — transparent cutouts in {refs}, not auto-filled into ②, "
+                     f"which expects a white-background reference.")
+        elif refs:
+            head += f" — isolated references for ② in {refs}."
+    cut = [r.source.name for r in ok if r.cut_off]
+    if cut and len(cut) == len(ok):
+        head += (f"\n\n⚠️ **Every reference is cut off at the bottom** "
+                 f"({', '.join(cut)}) — full-body shots will invent the legs. Add a "
+                 f"full-body photo as another reference if you have one.")
+    elif cut:
+        head += (f"\n\n<sub>Cut off at the bottom: {', '.join(cut)} — the other "
+                 f"reference(s) show more of the body.</sub>")
     if not failed:
         return head
     lines = "\n".join(f"- `{r.source.name}` — {r.error}  \n  → {_failure_hint(r.error)}"
@@ -647,15 +684,15 @@ def do_preprocess(files: list[str], folder: str, target: int, restore_mode: str,
         # auto-filled folders all have to survive a partial failure.
         gr.Warning(f"Preprocessed {len(ok)} of {len(reports)} — "
                    f"{len(failed)} skipped, see the result note.")
-    if alpha_cutout:
-        # Alpha-cutout output isn't a drop-in reference for ②/③ (see the checkbox's
-        # info text) — leave whatever those fields already had alone instead of
-        # silently pointing them at an image most consumers will read as un-isolated.
-        gen_src, cap = gr.update(), gr.update()
+    # Auto-fill downstream tabs (they can still be pointed anywhere else). ③ gets
+    # the training copies; ② gets the isolated references when there are any.
+    # Alpha cutouts aren't a drop-in reference for ② (see the checkbox's info).
+    refs = [r.reference for r in ok if r.reference]
+    if alpha_cutout and refs:
+        gen_src = gr.update()
     else:
-        # Auto-fill downstream tabs (they can still be pointed anywhere else)
-        gen_src, cap = str(out_dir), str(out_dir)
-    return gallery, note, "\n".join(log), gen_src, cap
+        gen_src = str(refs[0].parent if refs else out_dir)
+    return gallery, note, "\n".join(log), gen_src, str(out_dir)
 
 
 # ---------- ② generate & curate ----------
@@ -663,7 +700,7 @@ def do_preprocess(files: list[str], folder: str, target: int, restore_mode: str,
 def do_generate(files: list[str], folder: str, plan_df: pd.DataFrame, engine: str,
                 cloud_model: str, exclude_props: bool, isolate_angles: bool,
                 isolation_backend: str, subject_prompt: str, exclude_prompt: str,
-                front: bool, gen_dir_prev: str, results_state,
+                front: bool, anchor: bool, gen_dir_prev: str, results_state,
                 progress=gr.Progress()):
     sources = _inputs(files, folder)
     out_dir = _validate_out_dir(gen_dir_prev) if gen_dir_prev.strip() else _stamped("generated")
@@ -680,7 +717,7 @@ def do_generate(files: list[str], folder: str, plan_df: pd.DataFrame, engine: st
             sources, shots, engine, out_dir, cloud_model=cloud_model,
             isolate_angles=isolate_angles, subject_prompt=subject_prompt or "character",
             exclude_prompt=exclude_prompt, isolation_backend=isolation_backend,
-            exclude_props=exclude_props, front=front, should_stop=JOB, progress=report)
+            exclude_props=exclude_props, front=front, anchor=anchor, should_stop=JOB, progress=report)
     except OSError as e:
         raise gr.Error(f"Couldn't write to '{out_dir}': {e}. Check the output folder "
                        f"path (valid drive, no forbidden characters, writable).") from e
@@ -696,7 +733,7 @@ def do_generate(files: list[str], folder: str, plan_df: pd.DataFrame, engine: st
 def do_regenerate(files: list[str], folder: str, plan_df: pd.DataFrame, engine: str,
                   cloud_model: str, exclude_props: bool, isolate_angles: bool,
                   isolation_backend: str, subject_prompt: str, exclude_prompt: str,
-                  front: bool, gen_dir: str, results_state, keep_ids: list[str],
+                  front: bool, anchor: bool, gen_dir: str, results_state, keep_ids: list[str],
                   progress=gr.Progress()):
     if not results_state:
         raise gr.Error("Nothing generated yet.")
@@ -716,7 +753,7 @@ def do_regenerate(files: list[str], folder: str, plan_df: pd.DataFrame, engine: 
             sources, _df_to_shots(plan_df), engine, Path(gen_dir), cloud_model=cloud_model,
             isolate_angles=isolate_angles, subject_prompt=subject_prompt or "character",
             exclude_prompt=exclude_prompt, isolation_backend=isolation_backend,
-            exclude_props=exclude_props, front=front, existing=results_state,
+            exclude_props=exclude_props, front=front, anchor=anchor, existing=results_state,
             only_ids=redo, should_stop=JOB, progress=log.append)
     except OSError as e:
         raise gr.Error(f"Couldn't write to '{gen_dir}': {e}. Check the output folder "
@@ -740,6 +777,50 @@ def do_refresh_disk(results_state, gen_dir: str, keep_ids: list[str]):
     rows, gallery, keep = _gen_gallery(results, selected=keep_ids)
     note = f"Re-synced with {gen_dir}: {before - len(results)} externally deleted shot(s) dropped."
     return results, rows, gallery, keep, note
+
+
+def coverage_note(results_state, keep_ids: list[str], percent: float) -> str:
+    """② coverage line for the kept shots (see `shotplan.coverage`)."""
+    kept = set(keep_ids or [])
+    shots = [r.shot for r in results_state or [] if r.path and r.shot.id in kept]
+    return coverage(shots, (percent or 40) / 100)
+
+
+def primary_reference(files: list[str], folder: str) -> str | None:
+    """The reference ② leads with (it sets the local engine's output shape)."""
+    try:
+        return str(_inputs(files, folder)[0])
+    except gr.Error:
+        return None
+
+
+def find_gen_duplicates(results_state, keep_ids: list[str], files: list[str],
+                        folder: str, distance: float) -> str:
+    """Near-duplicate kept shots, and shots that just copied a reference.
+
+    Uses ④'s sensitivity slider so both scans agree on what "near" means.
+    """
+    from studio.dedupe import find_near_duplicate_groups
+
+    kept = {r.path for r in results_state or []
+            if r.path and r.path.exists() and r.shot.id in set(keep_ids or [])}
+    if not kept:
+        raise gr.Error("No kept shots to compare — generate first.")
+    refs = [] if primary_reference(files, folder) is None else _inputs(files, folder)
+    groups = find_near_duplicate_groups(refs + sorted(kept), max_distance=int(distance))
+    copies = [g for g in groups if any(p in refs for p in g)]
+    twins = [g for g in groups if g not in copies]
+    if not groups:
+        return f"🔁 No near-duplicates among {len(kept)} kept shot(s) (sensitivity {distance:g})."
+    note = ""
+    if copies:
+        note += (f"🔁 **{len(copies)} shot group(s) look like a copy of a reference** — "
+                 f"the generator ignored the prompt; regenerate them: {_groups_text(copies)}")
+    if twins:
+        note += ("\n\n" if note else "") + (
+            f"🔁 **{len(twins)} near-duplicate group(s)** among kept shots — keep one of "
+            f"each: {_groups_text(twins)}")
+    return note
 
 
 def send_kept_to_caption(results_state, keep_ids: list[str], gen_dir: str):
@@ -831,7 +912,8 @@ def do_test_caption(folder: str, selected: list[str], captioner_key: str,
                     name: str, trigger: str, gemini_model: str, style: str,
                     gen_thr: float, char_thr: float, prefix: str, suffix: str,
                     blacklist: str, rating: bool, underscores: bool,
-                    dataset_type: str = "character", sparse: bool = False):
+                    dataset_type: str = "character", sparse: bool = False,
+                    identity: str = "identity"):
     if not folder.strip() or not selected:
         raise gr.Error("Load a folder and select at least one image first.")
     path = Path(folder.strip()) / selected[0]
@@ -844,7 +926,7 @@ def do_test_caption(folder: str, selected: list[str], captioner_key: str,
     cap = Captioner(captioner_key, model_override=model_override, spec_overrides=spec_overrides)
     try:
         raw = cap.caption(path, subject=name or "the character", style=style,
-                          dataset_type=dataset_type, sparse=sparse)
+                          dataset_type=dataset_type, sparse=sparse, identity=identity)
     except Exception as e:
         raise gr.Error(str(e)) from e
     finally:
@@ -1007,7 +1089,8 @@ def do_caption(folder: str, selected: list[str], captioner_key: str,
                gen_thr: float, char_thr: float, prefix: str, suffix: str,
                blacklist: str, rating: bool, underscores: bool,
                skip_existing: bool, dataset_type: str, sparse: bool,
-               exp_folders_prev: str, carry_prev, progress=gr.Progress()):
+               exp_folders_prev: str, carry_prev, identity: str = "identity",
+               progress=gr.Progress()):
     if not folder.strip() or not selected:
         raise gr.Error("Load a folder and select the images to caption first.")
     base = Path(folder.strip())
@@ -1037,7 +1120,7 @@ def do_caption(folder: str, selected: list[str], captioner_key: str,
                        style=style, prefix=prefix, suffix=suffix,
                        skip_existing=skip_existing, blacklist=blacklist,
                        dataset_type=dataset_type, sparse=sparse, on_item=persist,
-                       should_stop=JOB)
+                       should_stop=JOB, identity=identity)
     except Exception as e:
         if not written:
             raise gr.Error(f"Captioning failed: {friendly_api_error(e)}") from e
@@ -1170,6 +1253,11 @@ def refresh_export_preview(folders_text: str, current_rows, current_selected):
     return rows, _picker_gallery(rows, values), gr.CheckboxGroup(choices=choices, value=values), note
 
 
+def _groups_text(groups: list[list[Path]], limit: int = 5) -> str:
+    shown = "; ".join("=".join(f"{p.parent.name}/{p.name}" for p in g) for g in groups[:limit])
+    return shown + (f" (+{len(groups) - limit} more)" if len(groups) > limit else "")
+
+
 def load_export_preview(folders_text: str, dup_distance: float = 5, carry=None):
     if not (folders_text or "").strip():
         raise gr.Error("Enter at least one folder of captioned images (one per line).")
@@ -1183,15 +1271,17 @@ def load_export_preview(folders_text: str, dup_distance: float = 5, carry=None):
             "Only checked images are exported; a checked image without a usable "
             "caption is skipped and called out in the result.")
     try:  # advisory near-duplicate scan — never blocks the preview
-        from studio.dedupe import find_near_duplicate_groups
+        from studio.dedupe import find_bursts, find_near_duplicate_groups
 
         groups = find_near_duplicate_groups(images, max_distance=int(dup_distance))
         if groups:
-            shown = "; ".join("=".join(f"{p.parent.name}/{p.name}" for p in g)
-                              for g in groups[:5])
-            more = f" (+{len(groups) - 5} more)" if len(groups) > 5 else ""
             note += (f"\n\n🔁 **{len(groups)} near-duplicate group(s)** — consider "
-                     f"unchecking extras so one shot isn't over-weighted: {shown}{more}")
+                     f"unchecking extras so one shot isn't over-weighted: "
+                     f"{_groups_text(groups)}")
+        bursts = find_bursts(images)
+        if bursts:
+            note += (f"\n\n📸 **{len(bursts)} burst(s)** — photos taken seconds apart "
+                     f"are one moment; keep the best of each: {_groups_text(bursts)}")
     except Exception:
         pass
     try:  # advisory caption health + tag frequency — never blocks the preview
@@ -1215,7 +1305,7 @@ def load_export_preview(folders_text: str, dup_distance: float = 5, carry=None):
 def do_export(selected: list[str], name: str, trigger: str, output_root: str,
               make_zip: bool = False, dataset_type: str = "character",
               style_key: str = shot_style.MATCH, style_text: str = "",
-              ilb_handoff: bool = False, holdout=0):
+              ilb_handoff: bool = False, holdout=0, identity: str = "identity"):
     if not selected:
         raise gr.Error("Click '📂 Load & preview', then keep at least one image checked.")
     from studio.package import package_dataset, resolve_export_items
@@ -1236,6 +1326,8 @@ def do_export(selected: list[str], name: str, trigger: str, output_root: str,
                 "source_folders": source_folders,
                 "skipped_uncaptioned": res.missing,
                 "skipped_empty_caption": res.empties}
+    if dataset_type == "character":
+        metadata["identity"] = identity
     out_root = _validate_out_dir(output_root)
     try:
         ds = package_dataset(res.items, out_root, name, trigger, metadata,
@@ -1332,8 +1424,8 @@ def do_publish_hf(ds_dir: str, repo_id: str, private: bool, progress=gr.Progress
 
 def refresh_plan(name: str, dataset_type: str = "character",
                  style_key: str = shot_style.MATCH,
-                 style_text: str = "") -> pd.DataFrame:
-    return _plan_table(dataset_type, name, style_key, style_text)
+                 style_text: str = "", identity: str = "identity") -> pd.DataFrame:
+    return _plan_table(dataset_type, name, style_key, style_text, identity)
 
 
 def do_save_plan(plan_df: pd.DataFrame, plan_name: str) -> str:
@@ -1725,6 +1817,14 @@ with _blocks as demo:
              "Concept generate a shot set in ②; Style brings its own images and starts "
              "at ③ Caption. Tunes caption framing, the ② shot plan, the ① isolation "
              "default, and the ⑤ sample prompt.")
+    identity_policy = gr.Radio(
+        [("Identity only — outfits vary", "identity"),
+         ("Signature costume — the outfit is part of the character", "costume")],
+        value="identity", label="Identity policy",
+        info="Identity only dresses ②'s angle/pose shots in varied outfits and has ③ "
+             "describe the clothing, so the trigger learns the person. Signature "
+             "costume keeps the reference's outfit and leaves it out of captions, so "
+             "the trigger carries it.")
     # The ONE place that owns "who is this dataset about". ②, ③, ④ and ⑤ all
     # read these two boxes directly instead of each keeping its own copy — see
     # the note above `type_outputs` for why copies were removed rather than kept
@@ -1789,9 +1889,11 @@ with _blocks as demo:
                                                   info="Auto uses ComfyUI models if reachable, "
                                                        "else basic Lanczos resize.")
                     isolate = gr.Checkbox(value=True,
-                                          label="Isolate subject (cutout onto white background)",
-                                          info="Cuts the subject out onto white so background "
-                                               "and props aren't baked into the LoRA.")
+                                          label="Isolate subject for ② generation (training "
+                                                "copies keep their background)",
+                                          info="Also writes the subject cut out onto white to "
+                                               "refs/, as ②'s reference, so the old background "
+                                               "and props don't leak into generated shots.")
                     isolation_backend = gr.Dropdown(ISOLATION_CHOICES,
                                                     value=settings.isolation_backend,
                                                     label="Isolation backend",
@@ -1804,16 +1906,17 @@ with _blocks as demo:
                                                      "for a Concept dataset ('radio', 'sword').")
                     exclude_prompt = gr.Textbox(
                         label="Objects to remove (props the subject holds/touches)",
-                        placeholder="microphone, microphone stand",
-                        info="Usually leave blank — SAM3 already excludes most props. Use only "
-                             "for a prop fused into the subject.")
+                        placeholder="cup, plate, microphone",
+                        info="Name anything the subject holds. SAM3 keeps a held object as "
+                             "part of the subject, and ② then redraws it in every shot. "
+                             "Background clutter needs no entry.")
                     pre_tighten = gr.Checkbox(
-                        value=False, label="Tighten crop to subject (after isolation)",
-                        info="Crop out the white padding around the isolated subject so framing "
-                             "is consistent and less empty background is trained. Needs isolation on.")
+                        value=False, label="Tighten crop to subject (refs/ copy)",
+                        info="Crop out the white padding around the isolated reference so the "
+                             "subject fills more of what ② sees. Needs isolation on.")
                     pre_alpha_cutout = gr.Checkbox(
                         value=False, label="Transparent cutout (alpha) instead of white",
-                        info="Exports the isolated subject on a transparent background for your "
+                        info="Writes the refs/ copy on a transparent background for your "
                              "own compositing workflows. Builtin SAM3 backend only. Leave off "
                              "(default) if you're continuing to ② Generate — it expects a white "
                              "background reference. Needs isolation on.")
@@ -1885,11 +1988,20 @@ with _blocks as demo:
                              "Qwen draw it) — isolate the source in ① instead, the more "
                              "reliable fix either way. Character-oriented wording — off "
                              "by default for Concept datasets.")
+                    gen_anchor = gr.Checkbox(
+                        value=False, label="Anchor shot: build every shot from the front view",
+                        info="Generates the front full-body view first, then leads every "
+                             "other shot's references with it. Helps when your sources "
+                             "are partial or poor (face in shadow, body cut off). It "
+                             "copies whatever the front view gets wrong (a held object, "
+                             "an outfit) into every shot, so check that view first.")
                     gen_isolate = gr.Checkbox(value=False,
                                               label="Isolate generated angle shots (white background)",
-                                              info="Cut generated angle shots onto white too "
-                                                   "(replaces each angle shot's setting "
-                                                   "with a plain white background).")
+                                              info="Cut generated angle shots onto white too. "
+                                                   "Off by default: a white void in many "
+                                                   "training images trains into the LoRA. "
+                                                   "Remove held props with ①'s exclude "
+                                                   "prompt instead.")
                     gen_iso_backend = gr.Dropdown(ISOLATION_CHOICES,
                                                   value=settings.isolation_backend,
                                                   label="Isolation backend",
@@ -1924,9 +2036,10 @@ with _blocks as demo:
                         "exact text a row will send.</sub>")
                     wardrobe_note = gr.Markdown(
                         "The **outfit** column varies wardrobe without breaking identity — "
-                        "leave blank to keep the reference's clothing. If your source images "
-                        "all show the same clothes, randomizing here stops the LoRA learning "
-                        "the outfit as part of the character. Save/load plans as reusable "
+                        "filled for you under **Identity only** (header), blank under "
+                        "**Signature costume** to keep the reference's clothing. Varied "
+                        "outfits stop the LoRA learning the clothes as part of the "
+                        "character. Save/load plans as reusable "
                         "prompt libraries under `shot_plans/`.")
                     with gr.Row():
                         btn_outfits = gr.Button("🎲 Randomize outfits", scale=1)
@@ -1953,18 +2066,30 @@ with _blocks as demo:
             gen_send_note = gr.Markdown()
             # allow_preview=False so a click TOGGLES the shot instead of opening a
             # lightbox; the Zoom checkbox flips it back when you want a closer look.
-            gen_gallery = gr.Gallery(
-                label="Generated shots — click a thumbnail to keep/reject it "
-                      "(shift-click for a range)",
-                columns=6, height=420, allow_preview=False, elem_id="dd-gallery-gen")
+            with gr.Row():
+                gen_gallery = gr.Gallery(
+                    label="Generated shots — click a thumbnail to keep/reject it "
+                          "(shift-click for a range)",
+                    columns=6, height=420, allow_preview=False, elem_id="dd-gallery-gen",
+                    scale=4)
+                gen_primary = gr.Image(label="Primary reference", height=420,
+                                       interactive=False, scale=1)
             with gr.Row():
                 btn_gen_all = gr.Button("Select all", size="sm")
                 btn_gen_none = gr.Button("Select none", size="sm")
+                btn_gen_dupes = gr.Button("🔁 Find near-duplicates", size="sm")
                 gen_zoom = gr.Checkbox(value=False, label="🔍 Zoom on click",
                                        elem_id="dd-zoom-gen",
                                        info="Clicks enlarge instead of selecting.")
             keep = gr.CheckboxGroup(label="✅ Kept shots — UNCHECK to reject", choices=[],
                                     elem_id="dd-picks-gen")
+            with gr.Row():
+                gen_coverage = gr.Markdown()
+                gen_dominance = gr.Number(
+                    value=40, minimum=10, maximum=100, step=5, scale=0,
+                    label="Dominance warning (%)",
+                    info="Warn when one view or expression is more than this share "
+                         "of the kept shots.")
 
         with gr.Tab("③ Caption", id="caption"):
             gr.Markdown("Tag any folder of images with caption `.txt` sidecars — the folder "
@@ -2322,15 +2447,21 @@ with _blocks as demo:
                     cap_sparse, project_name, project_trigger]
     # The style controls are INPUTS only — adding them to type_outputs would
     # change the handler's return arity, which a test pins on purpose.
-    type_inputs = [dataset_type, project_name, gen_style, gen_style_text]
+    type_inputs = [dataset_type, project_name, gen_style, gen_style_text, identity_policy]
     dataset_type.change(on_dataset_type_change, type_inputs, type_outputs)
     demo.load(on_dataset_type_change, type_inputs, type_outputs)
+    # Wardrobe is a character-only idea.
+    for _event in (dataset_type.change, demo.load):
+        _event(_identity_visible, [dataset_type], [identity_policy])
+    identity_policy.change(on_identity_change, [plan, identity_policy, dataset_type],
+                           [plan, plan_note])
 
-    refresh.click(refresh_plan, [project_name, dataset_type, gen_style, gen_style_text],
+    refresh.click(refresh_plan,
+                  [project_name, dataset_type, gen_style, gen_style_text, identity_policy],
                   [plan])
     # Rebuild on pick. The custom textbox applies on Enter/blur rather than per
     # keystroke — rebuilding 24 prompts on every character typed is pure churn.
-    _style_inputs = [dataset_type, project_name, gen_style, gen_style_text]
+    _style_inputs = [dataset_type, project_name, gen_style, gen_style_text, identity_policy]
     gen_style.change(_toggle_style_text, [gen_style], [gen_style_text])
     gen_style.change(rebuild_plan_for_style, _style_inputs, [plan, plan_note])
     gen_style_text.submit(rebuild_plan_for_style, _style_inputs, [plan, plan_note])
@@ -2353,7 +2484,7 @@ with _blocks as demo:
 
     gen_inputs = [gen_files, gen_src_folder, plan, engine, cloud_model,
                   gen_exclude_props, gen_isolate, gen_iso_backend, gen_subject,
-                  gen_exclude, gen_front]
+                  gen_exclude, gen_front, gen_anchor]
     btn_gen.click(do_generate, gen_inputs + [gen_out_dir, results_state],
                   [results_state, gen_rows, gen_gallery, keep, log_box, gen_out_dir,
                    cap_folder])
@@ -2374,6 +2505,13 @@ with _blocks as demo:
                                            (exp_gallery, exp_rows, exp_select, exp_zoom)):
         _boxes.change(_picker_mark, [_rows, _boxes], [_gallery])
         _zoom.change(_set_zoom, [_zoom], [_gallery])
+    for _event in (keep.change, gen_dominance.change):
+        _event(coverage_note, [results_state, keep, gen_dominance], [gen_coverage])
+    for _event in (gen_files.change, gen_src_folder.change):
+        _event(primary_reference, [gen_files, gen_src_folder], [gen_primary])
+    btn_gen_dupes.click(find_gen_duplicates,
+                        [results_state, keep, gen_files, gen_src_folder, exp_dup_dist],
+                        [gen_send_note])
     btn_gen_all.click(_pick_all, [gen_rows], [keep])
     btn_gen_none.click(_pick_none, [gen_rows], [keep])
     btn_cap_all.click(_pick_all, [cap_rows], [cap_select])
@@ -2434,7 +2572,8 @@ with _blocks as demo:
                    [cap_folder, cap_select, captioner, project_name, project_trigger,
                     cap_gemini_model,
                     cap_style, cap_gen_thr, cap_char_thr, cap_prefix, cap_suffix,
-                    cap_blacklist, cap_rating, cap_underscores, dataset_type, cap_sparse],
+                    cap_blacklist, cap_rating, cap_underscores, dataset_type, cap_sparse,
+                    identity_policy],
                    [test_caption])
     btn_caption.click(
         do_caption,
@@ -2442,7 +2581,7 @@ with _blocks as demo:
          cap_gemini_model, cap_style,
          cap_gen_thr, cap_char_thr, cap_prefix, cap_suffix,
          cap_blacklist, cap_rating, cap_underscores, cap_skip, dataset_type, cap_sparse,
-         exp_folders, cap_carry],
+         exp_folders, cap_carry, identity_policy],
         [cap_rows, cap_gallery, cap_select, cap_result, log_box, exp_folders,
          cap_analysis, cap_carry]) \
                .then(_editor_choices, [cap_folder], [cap_edit_file, cap_edit_names])
@@ -2455,7 +2594,8 @@ with _blocks as demo:
                            [exp_rows, exp_gallery, exp_select, exp_preview_note])
     btn_export.click(do_export,
                      [exp_select, project_name, project_trigger, output_root, exp_zip,
-                      dataset_type, gen_style, gen_style_text, exp_ilb, exp_holdout],
+                      dataset_type, gen_style, gen_style_text, exp_ilb, exp_holdout,
+                      identity_policy],
                      [exp_result, tr_dataset, exp_ds_dir]) \
               .then(inspect_dataset, [tr_dataset, dataset_type], [tr_stats])
     btn_publish_hf.click(do_publish_hf, [exp_ds_dir, exp_hf_repo, exp_hf_private],

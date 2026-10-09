@@ -1,7 +1,7 @@
 """Headless CLI. Every stage is its own subcommand and runs standalone:
 
   python cli.py preprocess ./sources --out ./prepped
-  python cli.py generate ./prepped --name "Sy Snootles" --engine comfyui
+  python cli.py generate ./prepped/refs --name "Sy Snootles" --engine comfyui
   python cli.py caption ./any/folder --trigger sysnootles      # .txt sidecars
   python cli.py export ./prepped ./generated --name "Sy Snootles"
   python cli.py build img.png --name "Sy Snootles" --trigger sysnootles  # all four
@@ -49,7 +49,12 @@ def _report_outputs(reports: list) -> list[Path]:
 
 
 def _echo_preprocess_failures(reports: list) -> int:
-    """Print the skipped sources; return how many there were."""
+    """Print the skipped sources (and a cropped-reference warning); return how
+    many were skipped."""
+    ok = [r for r in reports if r.output]
+    if ok and all(r.cut_off for r in ok):
+        typer.echo("WARNING: every reference is cut off at the bottom - full-body "
+                   "shots will invent the legs. Add a full-body photo if you have one.")
     failed = [r for r in reports if r.error]
     for r in failed:
         typer.echo(f"  SKIPPED {r.source.name}: {r.error}")
@@ -160,23 +165,42 @@ def _props_default(exclude_props: bool | None, dataset_type: str) -> bool:
     return exclude_props
 
 
+_ANCHOR_HELP = ("Generate the front full-body view first and lead every other "
+                "shot's references with it (helps partial or poor sources; it "
+                "copies the front view's mistakes too, so check it first)")
+_IDENTITY_HELP = ("Characters only: identity (default — angle/pose shots get varied "
+                  "outfits and captions describe the clothing, so the trigger learns "
+                  "the person) | costume (keep the reference's outfit, leave it out of "
+                  "captions, so the trigger carries it)")
+
+
+def _check_identity(identity: str) -> str:
+    from studio.config import IDENTITY_POLICIES
+
+    if identity not in IDENTITY_POLICIES:
+        raise typer.BadParameter(f"--identity must be one of {list(IDENTITY_POLICIES)}")
+    return identity
+
+
+def _wants_outfits(identity: str, randomize: bool, dataset_type: str) -> bool:
+    """--randomize-outfits is the pre-0.19 spelling of --identity identity."""
+    return randomize or (_check_identity(identity) == "identity"
+                         and dataset_type == "character")
+
+
 def _dress(shots: list, dataset_type: str = "character") -> list:
     """Fill angle/pose shots with random unisex outfits (close-ups stay blank).
 
     Wardrobe is a character-only idea — an object has no clothing — so it is a
     no-op (with a note) for any other dataset type.
     """
-    from studio.wardrobe import OUTFIT_SHOT_KINDS, random_outfits
+    from studio.wardrobe import dress
 
     if dataset_type != "character":
         typer.echo(f"Skipping outfit randomization: not applicable to a "
                    f"{dataset_type} dataset.")
         return shots
-    targets = [s for s in shots if s.kind in OUTFIT_SHOT_KINDS]
-    outfits = random_outfits(len(targets))
-    dressed = dict(zip((s.id for s in targets), outfits, strict=True))
-    return [s.model_copy(update={"outfit": dressed[s.id]}) if s.id in dressed else s
-            for s in shots]
+    return dress(shots)
 
 
 @app.command()
@@ -188,16 +212,17 @@ def preprocess(
                                  help="Force restoration on/off (default: auto)"),
     restore_backend: str = typer.Option(settings.restore_backend, help="auto | comfyui | basic"),
     isolate: bool = typer.Option(True, "--isolate/--no-isolate",
-                                 help="Cut out subject, drop background/props"),
+                                 help="Also write the subject cut out onto white to refs/, "
+                                      "for generate; training copies keep their background"),
     isolation_backend: str = typer.Option(settings.isolation_backend, help="builtin | comfyui"),
     subject_prompt: str = typer.Option("character", help="SAM3 prompt for what to keep"),
-    exclude_prompt: str = typer.Option("", help="SAM3 prompt for held props to remove"),
+    exclude_prompt: str = typer.Option("", help="Objects the subject holds, to cut out (SAM3 keeps a held object otherwise)"),
     tighten: bool = typer.Option(
         False, "--tighten/--no-tighten",
-        help="Crop to the subject's bounding box after isolation (less white padding)"),
+        help="Crop the refs/ copy to the subject's bounding box"),
     alpha_cutout: bool = typer.Option(
         False, "--alpha-cutout/--no-alpha-cutout",
-        help="Export on a transparent background instead of white (builtin backend "
+        help="refs/ copy on a transparent background instead of white (builtin backend "
              "only; for your own compositing workflows — not meant to feed 'generate')"),
     front: bool = typer.Option(False, help="Jump ComfyUI's pending queue"),
 ):
@@ -215,6 +240,9 @@ def preprocess(
         typer.echo("No image could be preprocessed.")
         raise typer.Exit(1)
     typer.echo(f"Done: {out}")
+    refs = next((r.reference.parent for r in reports if r.reference), None)
+    if refs:
+        typer.echo(f"Isolated references for generate: {refs}")
 
 
 @app.command()
@@ -248,8 +276,10 @@ def generate(
         None, "--exclude-props/--keep-props",
         help="Ask the generator to omit bags/held objects from the reference "
              "(default: on for character, off for concept — the clause is character-worded)"),
+    identity: str = typer.Option("identity", "--identity", help=_IDENTITY_HELP),
     randomize_outfits: bool = typer.Option(
-        False, help="Dress angle/pose shots in random unisex outfits (character only)"),
+        False, help="Same as --identity identity (kept for old scripts)"),
+    anchor: bool = typer.Option(False, "--anchor/--no-anchor", help=_ANCHOR_HELP),
     front: bool = typer.Option(False, help="Jump ComfyUI's pending queue"),
 ):
     """Generate the shot set from reference image(s) (standalone)."""
@@ -258,14 +288,14 @@ def generate(
     shots = _plan_for(dtype, name, _check_shot_style(shot_style), shot_style_text)
     if max_shots:
         shots = shots[:max_shots]
-    if randomize_outfits:
+    if _wants_outfits(identity, randomize_outfits, dtype):
         shots = _dress(shots, dtype)
     _echo_cloud_estimate(engine, cloud_model, len(shots))
     results = pipeline.generate_shots(
         _expand(references), shots, engine, out, cloud_model=cloud_model,
         isolate_angles=isolate_angles, subject_prompt=subject_prompt,
         exclude_prompt=exclude_prompt, exclude_props=_props_default(exclude_props, dtype),
-        front=front, progress=typer.echo)
+        front=front, anchor=anchor, progress=typer.echo)
     if not any(r.path for r in results):
         raise typer.Exit(1)
     typer.echo(f"Done: {out}")
@@ -304,6 +334,7 @@ def caption(
     skip_captioned: bool = typer.Option(
         False, "--skip-captioned",
         help="Leave images that already have a non-empty .txt caption untouched"),
+    identity: str = typer.Option("identity", "--identity", help=_IDENTITY_HELP),
 ):
     """Write .txt caption sidecars for every image in a folder (standalone).
 
@@ -330,7 +361,8 @@ def caption(
     caption_folder(folder, captioner, name, trigger, progress=typer.echo,
                    model_override=model_override, spec_overrides=spec_overrides, style=style,
                    prefix=prefix, suffix=suffix, skip_existing=skip_captioned,
-                   blacklist=drop_tags, dataset_type=dtype, sparse=sparse)
+                   blacklist=drop_tags, dataset_type=dtype, sparse=sparse,
+                   identity=_check_identity(identity))
 
 
 @app.command()
@@ -447,20 +479,25 @@ def build(
     max_shots: int = typer.Option(0, help="Limit number of shots (0 = full plan)"),
     isolate: bool = typer.Option(
         None, "--isolate/--no-isolate",
-        help="Cut out subject, drop background/props (default: on, except style — "
-             "a style is whole-image)"),
+        help="Cut the subject out onto white as ②'s reference; training copies keep "
+             "their background (default: on, except style — a style is whole-image)"),
     tighten: bool = typer.Option(
         False, "--tighten/--no-tighten",
-        help="Crop to the subject's bounding box after isolation (less white padding)"),
+        help="Crop the isolated reference to the subject's bounding box"),
+    isolate_angles: bool = typer.Option(
+        False, "--isolate-angles/--no-isolate-angles",
+        help="Also cut generated angle shots onto white (default off: a white "
+             "background trains in)"),
     subject_prompt: str = typer.Option("character", help="SAM3 prompt for what to keep"),
-    exclude_prompt: str = typer.Option("", help="SAM3 prompt for held props to remove"),
+    exclude_prompt: str = typer.Option("", help="Objects the subject holds, to cut out (SAM3 keeps a held object otherwise)"),
     cloud_model: str = typer.Option("", help=f"Cloud image model (default {settings.gemini_image_model})"),
     exclude_props: bool = typer.Option(
         None, "--exclude-props/--keep-props",
         help="Ask the generator to omit bags/held objects from the reference "
              "(default: on for character, off for concept)"),
+    identity: str = typer.Option("identity", "--identity", help=_IDENTITY_HELP),
     randomize_outfits: bool = typer.Option(
-        False, help="Dress angle/pose shots in random unisex outfits (character only)"),
+        False, help="Same as --identity identity (kept for old scripts)"),
     zip_: bool = typer.Option(False, "--zip", help="Also write a .zip of the dataset"),
     prefix: str = typer.Option(
         "", help="Fixed text added before every caption (e.g. Pony 'score_9, score_8_up')"),
@@ -468,6 +505,7 @@ def build(
     drop_tags: str = typer.Option(
         "", "--drop-tags",
         help="Comma-separated tags to strip from tag captions (e.g. 'watermark, signature')"),
+    anchor: bool = typer.Option(False, "--anchor/--no-anchor", help=_ANCHOR_HELP),
     front: bool = typer.Option(False, help="Jump ComfyUI's pending queue"),
 ):
     """Full pipeline: preprocess -> generate -> caption -> export."""
@@ -476,6 +514,7 @@ def build(
 
     style = _check_caption_style(caption_style)
     dtype = _check_dataset_type(dataset_type)
+    identity = _check_identity(identity)
     # Check the generation backend before spending a preprocess pass on images
     # it would then refuse to use. Style never generates, so it never needs one.
     if dtype != "style":
@@ -509,16 +548,18 @@ def build(
         shots = _plan_for(dtype, name, _check_shot_style(shot_style), shot_style_text)
         if max_shots:
             shots = shots[:max_shots]
-        if randomize_outfits:
+        if _wants_outfits(identity, randomize_outfits, dtype):
             shots = _dress(shots, dtype)
         _echo_cloud_estimate(engine, cloud_model, len(shots))
 
+        # Generate from the isolated references; caption the training copies.
+        refs = [r.reference or r.output for r in reports if r.output]
         results = pipeline.generate_shots(
-            prepped, shots, engine, run_dir / "generated",
-            cloud_model=cloud_model, isolate_angles=do_isolate, subject_prompt=subject_prompt,
+            refs, shots, engine, run_dir / "generated",
+            cloud_model=cloud_model, isolate_angles=isolate_angles, subject_prompt=subject_prompt,
             exclude_prompt=exclude_prompt,
             exclude_props=_props_default(exclude_props, dtype), front=front,
-            progress=typer.echo)
+            anchor=anchor, progress=typer.echo)
         kept = [r.path for r in results if r.path]
         if not kept:
             typer.echo("No shots succeeded; aborting before captioning.")
@@ -527,7 +568,7 @@ def build(
     all_images = prepped + kept
     items = caption_images(all_images, captioner, name, trigger, progress=typer.echo,
                            style=style, prefix=prefix, suffix=suffix, blacklist=drop_tags,
-                           dataset_type=dtype, sparse=sparse)
+                           dataset_type=dtype, sparse=sparse, identity=identity)
     metadata = {
         "character_name": name,
         "trigger": trigger,
@@ -538,6 +579,8 @@ def build(
         "caption_style": style,
         "sources": [str(s) for s in images],
     }
+    if dtype == "character":
+        metadata["identity"] = identity
     if results:  # generation ran (character/concept)
         metadata["engine"] = engine
         metadata["shots"] = [{"id": r.shot.id, "seed": r.seed, "error": r.error}

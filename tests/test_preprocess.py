@@ -58,7 +58,34 @@ def test_preprocess_alpha_cutout_skips_rgb_flatten(tmp_path: Path, monkeypatch) 
     monkeypatch.setattr(pp, "isolate_subject", fake_isolate)
     r = pp.preprocess(src, out, target=32, force_restore=False, isolate=True,
                       alpha_cutout=True)
-    assert Image.open(r.output).mode == "RGBA"
+    assert Image.open(r.reference).mode == "RGBA"
+    assert Image.open(r.output).mode == "RGB"
+
+
+def test_training_copy_keeps_its_background_and_refs_hold_the_cutout(
+        tmp_path: Path, monkeypatch) -> None:
+    """0.19.0: a dataset of subjects on white teaches the LoRA white backgrounds,
+    so isolation only feeds ②'s reference in `refs/`."""
+    import studio.preprocess as pp
+    from studio.config import list_images
+
+    src = tmp_path / "cat.png"
+    _img(src, color=(10, 120, 30))
+
+    def fake_isolate(image_path, out_path, *a, **kw):
+        Image.new("RGB", Image.open(image_path).size, "white").save(out_path, "PNG")
+        return out_path
+
+    monkeypatch.setattr(pp, "isolate_subject", fake_isolate)
+    out = tmp_path / "out"
+    r = pp.preprocess(src, out, target=32, force_restore=False, isolate=True)
+    assert r.reference == out / pp.REFS_DIR / "cat_prepped.png"
+    assert Image.open(r.output).getpixel((0, 0)) == (10, 120, 30)
+    assert Image.open(r.reference).getpixel((0, 0)) == (255, 255, 255)
+    assert list_images(out) == [r.output]  # ③ never sees the refs
+    # A second run must not reuse a name taken in refs/ either.
+    assert pp.preprocess(src, out, target=32, force_restore=False,
+                         isolate=True).output.name == "cat_prepped_2.png"
 
 
 def test_preprocess_alpha_cutout_ignored_without_isolate(tmp_path: Path) -> None:

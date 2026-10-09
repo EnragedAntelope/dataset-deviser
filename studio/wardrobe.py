@@ -87,3 +87,11 @@ def random_outfits(n: int, seed: int | None = None) -> list[str]:
 # frame; describing a full outfit there invites the model to widen the shot and
 # defeat the close-up. Wardrobe variety is carried by the angle/pose shots.
 OUTFIT_SHOT_KINDS = ("angle", "pose")
+
+
+def dress(shots: list) -> list:
+    """`shots` with distinct random outfits on the angle/pose rows."""
+    targets = [s.id for s in shots if s.kind in OUTFIT_SHOT_KINDS]
+    outfits = dict(zip(targets, random_outfits(len(targets)), strict=True))
+    return [s.model_copy(update={"outfit": outfits[s.id]}) if s.id in outfits else s
+            for s in shots]

@@ -154,6 +154,18 @@ _FORMAT_DIRECTIVE = {
     "e621": "Output a single comma-separated list of concise lowercase e621-style tags "
             "(one attribute per tag), no sentences. Output only the tags.",
 }
+# Character identity policy: what the trigger owns. "identity" = the person only,
+# so the varied outfits must be captioned or the trigger absorbs them; "costume"
+# = the outfit is part of the character, so it is left to the trigger.
+IDENTITY_POLICIES = ("identity", "costume")
+_IDENTITY_CLAUSE = {
+    ("identity", "prose"): " Describe the clothing and the facial expression.",
+    ("identity", "tags"): " Include tags for the clothing and the facial expression.",
+    ("costume", "prose"): " Do not describe the clothing or costume; it is part of the "
+                          "subject's fixed look.",
+    ("costume", "tags"): " Do not tag the clothing or costume; it is part of the "
+                         "subject's fixed look.",
+}
 _PLAINNESS_DIRECTIVE = {
     "prose": " If the content is explicit, describe it plainly without euphemism.",
     "tags": " If the content is explicit, tag it plainly without euphemism.",
@@ -200,7 +212,7 @@ class CaptionerSpec(BaseModel):
     cost_note: str = "free"
 
     def prompt_for(self, style: str, dataset_type: str = "character",
-                   sparse: bool = False) -> str:
+                   sparse: bool = False, identity: str = "") -> str:
         """The instruction template for the requested caption style + dataset type.
 
         `style="tags"` selects the Danbooru-tag template, `style="e621"` the
@@ -214,14 +226,16 @@ class CaptionerSpec(BaseModel):
         format directive, so a Style/Concept dataset is captioned about its content/
         context rather than its (trigger-learned) look. `sparse` is a Style-only
         minimal-caption variant; it is ignored for the other types.
+
+        `identity` (character only) appends the identity-policy clause — see
+        IDENTITY_POLICIES; "" leaves the template untouched.
         """
         if dataset_type in ("style", "concept"):
             return self._compose_prompt(style, dataset_type, sparse)
-        if style == "tags":
-            return self.tags_template
-        if style == "e621":
-            return self.e621_template
-        return self.prompt_template
+        template = {"tags": self.tags_template,
+                    "e621": self.e621_template}.get(style, self.prompt_template)
+        fmt = "prose" if template is self.prompt_template else "tags"
+        return template + _IDENTITY_CLAUSE.get((identity, fmt), "")
 
     def _compose_prompt(self, style: str, dataset_type: str, sparse: bool) -> str:
         """Framing (per type) + format directive (per style), lightly per-model.
@@ -520,6 +534,13 @@ class Settings(BaseSettings):
     # pointing at the Qwen2.5-VL file would otherwise be fed to the 2.1 graph.
     qwen21_text_encoder: str = "qwen3vl_8b_int8_convrot.safetensors"
     qwen21_vae: str = "qwen_image_2.1_vae_bf16.safetensors"
+    # References per local shot (the node takes up to 16), in order: the chained
+    # view when there is one, then the primary, then the rest. 1 and 1536 won the
+    # 0.19.0 A/B (docs/ARCHITECTURE.md).
+    qwen21_max_refs: int = 1
+    # Each reference is resized to about this many pixels squared; the output
+    # follows the first reference's aspect at about the same size.
+    qwen21_resolution: int = 1536
     upscale_model: str = "4xNomosWebPhoto_RealPLKSR.safetensors"
     dejpg_model: str = "1xDeJPG_OmniSR.pth"
     sam3_checkpoint: str = "sam3.1_multiplex_fp16.safetensors"

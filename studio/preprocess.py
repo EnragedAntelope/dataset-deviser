@@ -23,6 +23,8 @@ from studio.dataset_stats import PROVENANCE_KEY
 from studio.isolate import isolate_subject
 
 BLUR_THRESHOLD = 120.0  # Laplacian variance below this = soft/degraded image
+# Subfolder of ①'s output holding the isolated copies ② uses as references.
+REFS_DIR = "refs"
 
 
 @dataclass
@@ -35,6 +37,10 @@ class PreprocessReport:
     restored: bool
     reason: str
     isolated: bool = False
+    # The isolated copy in `refs/` — ②'s reference, never a training image.
+    reference: Path | None = None
+    # The isolated subject runs off the bottom edge (needs isolation to know).
+    cut_off: bool = False
     # Empty on success. When set, this source was skipped and nothing was
     # written for it; the batch carried on with the remaining images.
     error: str = ""
@@ -146,14 +152,15 @@ def preprocess(
     """Copy + clean one source image into `work_dir` at target resolution.
 
     force_restore: True = always restore, False = never, None = auto-decide.
-    isolate: cut out the subject so backgrounds and props don't leak into
-    generations or the dataset.
-    tighten_crop: after isolation, crop to the subject's bounding box (less white
+    isolate: also write the subject cut out onto white to `refs/`, as ②'s
+    reference, so backgrounds and props don't leak into generations. The
+    training copy in `work_dir` always keeps its background.
+    tighten_crop: crop the isolated copy to the subject's bounding box (less white
     padding, more consistent framing). No effect unless `isolate` is on.
-    alpha_cutout: export the isolated subject on a transparent background instead
-    of white (builtin SAM3 backend only — see `isolate_subject`). No effect
-    unless `isolate` is on. This is a terminal output for the caller's own
-    compositing workflow, not a new reference format for ② Generate.
+    alpha_cutout: the isolated copy goes on a transparent background instead of
+    white (builtin SAM3 backend only — see `isolate_subject`). No effect unless
+    `isolate` is on. A terminal output for the caller's own compositing
+    workflow, not a reference format for ② Generate.
     """
     target = target or settings.target_long_side
     restore_backend = restore_backend or settings.restore_backend
@@ -178,16 +185,19 @@ def preprocess(
     # so two sources sharing a stem (e.g. cat.jpg + cat.png, in one folder or
     # across merged inputs) would otherwise both map to `cat_prepped.png` and the
     # second would silently overwrite the first — quietly dropping an image.
+    refs_dir = work_dir / REFS_DIR
     out_path = work_dir / f"{source.stem}_prepped.png"
     n = 2
-    while out_path.exists():
+    while out_path.exists() or (refs_dir / out_path.name).exists():
         out_path = work_dir / f"{source.stem}_prepped_{n}.png"
         n += 1
-    # Every write below lands on `out_path`, and restoration writes it BEFORE
-    # isolation runs. A failure after that point used to leave the restored (not
-    # isolated, not resized) image behind, where `list_images` happily served it
-    # to ②/③ as a finished source — a silent half-processed file in the dataset.
-    # The stage is therefore atomic: complete output, or none at all.
+    ref_path = refs_dir / out_path.name if isolate else None
+    cut_off = False
+    # Restoration writes `out_path` BEFORE isolation runs. A failure after that
+    # point used to leave the restored (not isolated, not resized) image behind,
+    # where `list_images` happily served it to ②/③ as a finished source — a
+    # silent half-processed file in the dataset. The stage is therefore atomic:
+    # complete output, or none at all.
     # 2x the target is all a resize needs, but tighten-crop keeps only the
     # subject's box: shrinking first would upscale a small subject back up.
     staged = _stage_copy(oriented, rotated,
@@ -208,29 +218,40 @@ def preprocess(
                 # damage stays (note it so the user knows what they're getting).
                 reason += " (basic Lanczos only — ComfyUI restore not used)"
 
-        if isolate:
-            isolate_subject(stage_path, out_path, subject_prompt, exclude_prompt,
+        def save(img: Image.Image, path: Path, isolated: bool) -> None:
+            info = PngInfo()
+            info.add_text(PROVENANCE_KEY, json.dumps({
+                "name": source.name, "w": original_size[0], "h": original_size[1],
+                "captured": captured, "restored": restore, "isolated": isolated}))
+            img.save(path, "PNG", pnginfo=info)
+
+        if ref_path:
+            # The isolated copy is ②'s reference only: it keeps props and the
+            # old background out of the generated shots.
+            refs_dir.mkdir(exist_ok=True)
+            isolate_subject(stage_path, ref_path, subject_prompt, exclude_prompt,
                             backend=isolation_backend, progress=progress,
                             alpha_cutout=alpha_cutout, label=source.name, front=front)
-            stage_path = out_path
+            with Image.open(ref_path) as im:
+                ref = im.copy() if alpha_cutout else im.convert("RGB")  # keep RGBA
+            from studio.isolate import touches_bottom
 
-        if isolate and alpha_cutout:
-            img = Image.open(stage_path)  # keep RGBA — no forced flatten
-        else:
-            img = Image.open(stage_path).convert("RGB")
-        if isolate and tighten_crop:
-            # Crop the subject-on-white composite to its bounding box before resizing.
-            from studio.isolate import crop_to_content
+            cut_off = touches_bottom(ref)
+            if tighten_crop:
+                # Crop the subject-on-white composite to its bounding box before resizing.
+                from studio.isolate import crop_to_content
 
-            img = crop_to_content(img)
-        img = _resize_to_target(img, target)
-        info = PngInfo()
-        info.add_text(PROVENANCE_KEY, json.dumps({
-            "name": source.name, "w": original_size[0], "h": original_size[1],
-            "captured": captured, "restored": restore, "isolated": isolate}))
-        img.save(out_path, "PNG", pnginfo=info)
+                ref = crop_to_content(ref)
+            save(_resize_to_target(ref, target), ref_path, True)
+        # The training copy keeps its background: a dataset of subjects on white
+        # teaches the LoRA white backgrounds and cut-out edges.
+        with Image.open(stage_path) as im:
+            img = _resize_to_target(im.convert("RGB"), target)
+        save(img, out_path, False)
     except BaseException:
         out_path.unlink(missing_ok=True)
+        if ref_path:
+            ref_path.unlink(missing_ok=True)
         raise
     finally:
         if staged:
@@ -243,4 +264,6 @@ def preprocess(
         restored=restore,
         reason=reason or "clean source, resize only",
         isolated=isolate,
+        reference=ref_path,
+        cut_off=cut_off,
     )

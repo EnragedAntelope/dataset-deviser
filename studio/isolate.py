@@ -13,6 +13,7 @@ local engine cannot be told to omit one (naming it makes Qwen draw it).
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -46,14 +47,23 @@ def _load_sam3():
             # device rather than handed to accelerate's "auto" — that sharded it
             # across cuda:0/cuda:1 on multi-GPU machines and the forward pass
             # died with a two-device tensor mismatch.
-            _model = Sam3Model.from_pretrained(settings.sam3_hf_id).to(config.torch_device())
-            _processor = Sam3Processor.from_pretrained(settings.sam3_hf_id)
+            # Both or neither: a processor that fails after the model loaded
+            # (a gated-repo 401 on one file) must not leave a half-cached pair
+            # that the next image calls as None.
+            model = Sam3Model.from_pretrained(settings.sam3_hf_id).to(config.torch_device())
+            processor = Sam3Processor.from_pretrained(settings.sam3_hf_id)
         except Exception as e:
+            # An HF_TOKEN (from .env or the environment) wins over `hf auth login`,
+            # so a stale one 401s even when the saved login would work.
+            hint = (" An HF_TOKEN is set (in .env or the environment) and is used "
+                    "instead of `hf auth login` — replace it (`python cli.py keys --set "
+                    "HF_TOKEN`) or remove it." if os.environ.get("HF_TOKEN") else "")
             raise IsolationError(
                 f"Could not load {settings.sam3_hf_id} — it is a gated model: accept the "
                 f"license at https://huggingface.co/{settings.sam3_hf_id} and authenticate "
-                f"(`hf auth login` or set HF_TOKEN). Original error: {e}"
+                f"(`hf auth login` or set HF_TOKEN).{hint} Original error: {e}"
             ) from e
+        _model, _processor = model, processor
     return _model, _processor
 
 
@@ -183,6 +193,22 @@ def isolate_builtin(image_path: Path, out_path: Path, subject_prompt: str = "cha
     return out_path
 
 
+def _subject_mask(image: Image.Image, bg_tolerance: int = 8) -> np.ndarray:
+    """Subject pixels of an isolated image: alpha > 0, else anything darker than white."""
+    if image.mode == "RGBA":
+        return np.asarray(image.getchannel("A")) > 0
+    arr = np.asarray(image.convert("RGB")).astype(np.int16)
+    return np.any(255 - arr > bg_tolerance, axis=-1)
+
+
+def touches_bottom(image: Image.Image, frac: float = 0.02) -> bool:
+    """True when the isolated subject reaches the bottom `frac` of the frame —
+    the photo cut it off, so a full-body shot has to invent what's missing."""
+    mask = _subject_mask(image)
+    edge = max(1, round(image.height * frac))
+    return bool(mask[-edge:].any())
+
+
 def crop_to_content(image: Image.Image, bg_tolerance: int = 8,
                     margin_frac: float = 0.02) -> Image.Image:
     """Crop an isolated (subject-on-white, or subject-with-alpha) image to the
@@ -195,11 +221,7 @@ def crop_to_content(image: Image.Image, bg_tolerance: int = 8,
     A small margin (fraction of the long side) is left around the subject.
     If the image is effectively empty (nothing found), it is returned unchanged.
     """
-    if image.mode == "RGBA":
-        nonbg = np.asarray(image.getchannel("A")) > 0
-    else:
-        arr = np.asarray(image.convert("RGB")).astype(np.int16)
-        nonbg = np.any(255 - arr > bg_tolerance, axis=-1)  # anything darker than white
+    nonbg = _subject_mask(image, bg_tolerance)
     if not nonbg.any():
         return image
     rows = np.where(nonbg.any(axis=1))[0]

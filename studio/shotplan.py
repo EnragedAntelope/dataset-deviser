@@ -46,6 +46,16 @@ class Shot(BaseModel):
     # (no identity drift). When set, "wearing {outfit}" is injected into both
     # the local and cloud prompts so clothing can vary across the dataset.
     outfit: str = ""
+    # "full" | "waist-up" | "close-up" | "tight-face"; "" = unknown (concept
+    # plans, older saved plans). Requested, not verified — the generator decides.
+    framing: str = ""
+
+
+# Framing per kind, with the rows that break the pattern. Tight face crops carry
+# the most likeness signal; waist-up fills the gap between full body and close-up.
+_KIND_FRAMING = {"angle": "full", "pose": "full", "emotion": "close-up"}
+_FRAMING = {"pose-arms-raised": "waist-up", "pose-looking-back": "waist-up",
+            "emotion-smiling": "tight-face", "emotion-confident": "tight-face"}
 
 
 # Each tuple is: (id_suffix, kind, local phrase for Qwen-Image 2.1, plain-English
@@ -57,6 +67,8 @@ class Shot(BaseModel):
 # - 8 poses: each pose is paired with a setting and emotion; lighting is part
 #   of the setting rather than a separate repeated pose.
 # - 7 emotions: close-up expression shots with varied angles and settings.
+# - Framing tiers: two poses are waist-up and two close-ups are tight face crops
+#   (see _FRAMING), so the set isn't only full body plus one close-up distance.
 # - Total: 24 shots (down from 28) while improving per-shot diversity.
 #
 # Settings are written as "natural" lighting/environment phrases so both the
@@ -184,8 +196,8 @@ _SHOTS = [
     (
         "arms-raised",
         "pose",
-        "with both arms raised overhead",
-        "with both arms raised overhead",
+        "framed from the waist up, with both arms raised overhead",
+        "framed from the waist up, with both arms raised overhead",
         "",
         "triumphant",
         "lit by dramatic hard side lighting against a dark background",
@@ -211,8 +223,8 @@ _SHOTS = [
     (
         "looking-back",
         "pose",
-        "standing and looking back over one shoulder",
-        "standing and looking back over one shoulder",
+        "framed from the waist up, looking back over one shoulder",
+        "framed from the waist up, looking back over one shoulder",
         "",
         "playful",
         "outdoors at golden hour with warm backlighting",
@@ -221,8 +233,8 @@ _SHOTS = [
     (
         "smiling",
         "emotion",
-        "a close-up of the face and upper shoulders, smiling warmly",
-        "a close-up of the face and upper shoulders, smiling warmly",
+        "a tight close-up of the face filling the frame, smiling warmly",
+        "a tight close-up of the face filling the frame, smiling warmly",
         "",
         "smiling",
         "against a soft neutral studio background",
@@ -266,8 +278,8 @@ _SHOTS = [
     (
         "confident",
         "emotion",
-        "a close-up of the face and upper shoulders, with a confident look and a slight smirk",
-        "a close-up of the face and upper shoulders, confident expression",
+        "a tight close-up of the face filling the frame, with a confident look and a slight smirk",
+        "a tight close-up of the face filling the frame, confident expression",
         "",
         "confident",
         "outdoors at golden hour with warm backlighting",
@@ -606,9 +618,57 @@ def default_plan(subject: str = "the character",
                 emotion=emotion,
                 setting=setting,
                 outfit="",
+                framing=_FRAMING.get(f"{kind}-{suffix}", _KIND_FRAMING[kind]),
             )
         )
     return shots
+
+
+FRAMING_TIERS = ("full", "waist-up", "close-up", "tight-face")
+# Turnaround direction of an angle shot, by id suffix.
+_VIEW = {"front": "front", "front-left": "front", "front-right": "front",
+         "left": "side", "right": "side", "back": "back", "back-left": "back",
+         "back-right": "back", "low": "low"}
+
+
+def coverage(shots: list[Shot], threshold: float = 0.4) -> str:
+    """Markdown summary of what a kept set covers — from the plan, not the pixels.
+
+    Warns on an empty framing tier or turnaround direction, and on any view or
+    expression above `threshold` of its group: the LoRA leans toward whatever
+    dominates the set.
+    """
+    if not shots:
+        return ""
+    from collections import Counter
+
+    framing = Counter(s.framing or "unknown" for s in shots)
+    views = Counter(_VIEW.get(s.id.removeprefix("angle-"), "other")
+                    for s in shots if s.kind == "angle")
+    moods = Counter(s.emotion or "neutral" for s in shots)
+    dressed = sum(1 for s in shots if s.outfit)
+
+    def line(name: str, counts: Counter) -> str:
+        top = counts.most_common(4)
+        rest = sum(counts.values()) - sum(n for _, n in top)
+        more = f", {rest} across {len(counts) - 4} more" if rest else ""
+        return f"**{name}:** " + ", ".join(f"{k} {n}" for k, n in top) + more
+
+    lines = [f"**Coverage of {len(shots)} kept shot(s)** — requested, not verified",
+             line("Framing", framing), line("Turnaround", views) if views else "",
+             line("Expression", moods), f"**Outfit:** {dressed} varied, "
+             f"{len(shots) - dressed} as in the reference"]
+    warn = [f"no {t} shots" for t in FRAMING_TIERS if any(s.framing for s in shots)
+            and not framing[t]]
+    if views:
+        warn += [f"no {v} views" for v in ("front", "side", "back") if not views[v]]
+    for name, counts in (("view", views), ("expression", moods)):
+        total = sum(counts.values())
+        warn += [f"{name} '{k}' {n}/{total} = {n / total:.0%}"
+                 for k, n in counts.items() if total >= 5 and n / total > threshold]
+    if warn:
+        lines.append("⚠️ " + "; ".join(warn))
+    return "  \n".join(x for x in lines if x)
 
 
 def plan_subject(name: str, dataset_type: str = "character") -> str:
