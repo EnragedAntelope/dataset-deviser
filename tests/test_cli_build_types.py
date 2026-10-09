@@ -57,7 +57,7 @@ def stubs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
         calls["captioned"] = list(images)
         return [(p, "caption") for p in images]
 
-    def fake_package(items, output_root, name, trigger, metadata):
+    def fake_package(items, output_root, name, trigger, metadata, holdout=0):
         calls["metadata"] = metadata
         ds = Path(output_root) / "ds"
         ds.mkdir(parents=True, exist_ok=True)
@@ -145,3 +145,54 @@ def test_generate_command_builds_a_concept_set(stubs: dict, tmp_path: Path) -> N
         "--out", str(tmp_path / "gen")])
     assert result.exit_code == 0, result.output
     assert len(stubs["shots"]) == 18
+
+
+def test_build_orders_references_largest_first_and_writes_train_config(
+        stubs: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The highest-resolution source leads ②'s references; --trainer writes ⑤."""
+    from studio import trainer_configs
+
+    small, big = tmp_path / "small.png", tmp_path / "big.png"
+    for p in (small, big):
+        p.write_bytes(b"x")
+
+    def fake_preprocess(sources, out_dir, **kw):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        reps = []
+        for src, size in zip(sources, [(580, 580), (3000, 4000)], strict=True):
+            out = out_dir / f"{src.stem}_prepped.png"
+            out.write_bytes(b"x")
+            reps.append(PreprocessReport(source=src, output=out, original_size=size,
+                                         final_size=(1024, 1024), restored=False,
+                                         reason="ok", reference=out_dir / "refs" / out.name))
+        return reps
+
+    written: dict = {}
+
+    def fake_default_config(ds, trainer, model_key, **kw):
+        written.update(trainer=trainer, model=model_key, **kw)
+        return [], "train.py --go"
+
+    monkeypatch.setattr(cli.pipeline, "preprocess_sources", fake_preprocess)
+    monkeypatch.setattr(trainer_configs, "default_config", fake_default_config)
+    from studio import dataset_stats
+
+    class _Stats:
+        def upscale_note(self, resolution: int) -> str:
+            return f"\n⚠️ small_prepped was upscaled (bar {resolution})"
+
+    monkeypatch.setattr(dataset_stats, "inspect", lambda ds: _Stats())
+    result = runner.invoke(cli.app, [
+        "build", str(small), str(big), "--output-root", str(tmp_path / "out"),
+        "--name", "Ann", "--trainer", "fizgig", "--model", "krea2"])
+
+    assert result.exit_code == 0, result.output
+    assert [p.name for p in stubs["sources"]] == ["big_prepped.png", "small_prepped.png"]
+    assert written["trainer"] == "fizgig" and written["model"] == "krea2"
+    assert "train.py --go" in result.output
+    assert "⚠️ small_prepped was upscaled" in result.output  # ⑤'s warning reaches the CLI
+
+
+def test_build_rejects_an_unknown_trainer(stubs: dict, tmp_path: Path) -> None:
+    result = runner.invoke(cli.app, ["build", str(stubs["src"]), "--trainer", "nope"])
+    assert result.exit_code != 0 and stubs["generated"] == 0

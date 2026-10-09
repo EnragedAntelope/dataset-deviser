@@ -258,3 +258,17 @@ def test_fizgig_never_offers_prodigy() -> None:
 
     assert [k for _, k in optimizer_choices("fizgig")] == ["adamw8bit"]
     assert [k for _, k in optimizer_choices("kohya")] == ["adamw8bit", "prodigy"]
+
+
+def test_default_config_writes_the_presets_defaults(tmp_path: Path) -> None:
+    from PIL import Image
+
+    from studio.trainer_configs import default_config
+
+    for i in range(3):
+        Image.new("RGB", (64, 96)).save(tmp_path / f"{i:02d}.png")
+    written, command = default_config(tmp_path, "fizgig", "krea2", name="Ann Lee",
+                                      trigger="annlee")
+    names = {p.name for p in written}
+    assert "fizgig-dataset.toml" in names and "validation_prompts.txt" in names
+    assert "--max_train_epochs 30" in command and "ann-lee" in command

@@ -24,6 +24,7 @@ import typer
 from studio import env_keys, pipeline
 from studio.config import CAPTIONERS, list_images, settings
 from studio.shotplan import plan_for_type
+from studio.trainer_configs import TRAINER_MODELS
 
 app = typer.Typer(add_completion=False, help=__doc__)
 
@@ -507,90 +508,63 @@ def build(
         help="Comma-separated tags to strip from tag captions (e.g. 'watermark, signature')"),
     anchor: bool = typer.Option(False, "--anchor/--no-anchor", help=_ANCHOR_HELP),
     front: bool = typer.Option(False, help="Jump ComfyUI's pending queue"),
+    holdout: int = typer.Option(
+        0, help="Keep N real photos out of training, in a -heldout folder, as a likeness test"),
+    trainer: str = typer.Option(
+        "", help="Also write ⑤ configs for this trainer (ai-toolkit | kohya | musubi | fizgig)"),
+    model: str = typer.Option(
+        "", help="Base model key for --trainer (default: its first). "
+                 + "; ".join(f"{t}: " + ", ".join(m.key for m in ms)
+                             for t, ms in TRAINER_MODELS.items())),
 ):
-    """Full pipeline: preprocess -> generate -> caption -> export."""
-    from studio.captioner import caption_images
-    from studio.package import package_dataset
-
+    """Full pipeline: preprocess -> generate -> caption -> export (-> train config)."""
     style = _check_caption_style(caption_style)
     dtype = _check_dataset_type(dataset_type)
-    identity = _check_identity(identity)
+    identity = "identity" if randomize_outfits else _check_identity(identity)
+    if trainer and trainer not in TRAINER_MODELS:
+        raise typer.BadParameter(f"--trainer must be one of {list(TRAINER_MODELS)}")
     # Check the generation backend before spending a preprocess pass on images
     # it would then refuse to use. Style never generates, so it never needs one.
     if dtype != "style":
         _preflight_comfyui(engine)
+        n = len(_plan_for(dtype, name, _check_shot_style(shot_style), shot_style_text))
+        _echo_cloud_estimate(engine, cloud_model, min(n, max_shots) if max_shots else n)
     run_dir = pipeline.new_run_dir(name or trigger)
     typer.echo(f"Run dir: {run_dir}")
 
-    # Isolation defaults follow the dataset type (a style is whole-image), the
-    # same rule the ① tab applies when the header type changes.
-    do_isolate = (dtype != "style") if isolate is None else isolate
-    reports = pipeline.preprocess_sources(
-        _expand(images), run_dir / "prepped", target=target, force_restore=restore,
-        isolate=do_isolate, subject_prompt=subject_prompt, exclude_prompt=exclude_prompt,
-        tighten_crop=tighten, front=front, progress=typer.echo)
-    _echo_preprocess_failures(reports)
+    start = pipeline.build_start(
+        _expand(images), name, engine, dataset_type=dtype, run_dir=run_dir,
+        cloud_model=cloud_model, target=target, restore=restore, isolate=isolate,
+        subject_prompt=subject_prompt, exclude_prompt=exclude_prompt, tighten=tighten,
+        isolate_angles=isolate_angles, shot_style=_check_shot_style(shot_style),
+        shot_style_text=shot_style_text, max_shots=max_shots, identity=identity,
+        exclude_props=exclude_props, anchor=anchor, front=front, progress=typer.echo)
+    _echo_preprocess_failures(start.reports)
     # A per-image failure is reported, not raised, so `output` can be None —
-    # everything downstream must run on the images that actually exist.
-    prepped = _report_outputs(reports)
-    if not prepped:
+    # everything downstream runs on the images that actually exist.
+    if not start.prepped:
         typer.echo("No source image could be preprocessed; aborting.")
         raise typer.Exit(1)
+    kept = [r.path for r in start.results if r.path]
+    if dtype != "style" and not kept:
+        typer.echo("No shots succeeded; aborting before captioning.")
+        raise typer.Exit(1)
 
-    # Style has no synthetic generation — go straight from the preprocessed
-    # sources to captioning instead of running (and billing) a character
-    # turnaround the user can't use.
-    results = []
-    kept: list[Path] = []
-    if dtype == "style":
-        typer.echo("Style dataset: skipping ② generation — captioning your own images.")
-    else:
-        shots = _plan_for(dtype, name, _check_shot_style(shot_style), shot_style_text)
-        if max_shots:
-            shots = shots[:max_shots]
-        if _wants_outfits(identity, randomize_outfits, dtype):
-            shots = _dress(shots, dtype)
-        _echo_cloud_estimate(engine, cloud_model, len(shots))
-
-        # Generate from the isolated references; caption the training copies.
-        refs = [r.reference or r.output for r in reports if r.output]
-        results = pipeline.generate_shots(
-            refs, shots, engine, run_dir / "generated",
-            cloud_model=cloud_model, isolate_angles=isolate_angles, subject_prompt=subject_prompt,
-            exclude_prompt=exclude_prompt,
-            exclude_props=_props_default(exclude_props, dtype), front=front,
-            anchor=anchor, progress=typer.echo)
-        kept = [r.path for r in results if r.path]
-        if not kept:
-            typer.echo("No shots succeeded; aborting before captioning.")
-            raise typer.Exit(1)
-
-    all_images = prepped + kept
-    items = caption_images(all_images, captioner, name, trigger, progress=typer.echo,
-                           style=style, prefix=prefix, suffix=suffix, blacklist=drop_tags,
-                           dataset_type=dtype, sparse=sparse, identity=identity)
-    metadata = {
-        "character_name": name,
-        "trigger": trigger,
-        "dataset_type": dtype,
-        "shot_style": shot_style,
-        "shot_style_text": shot_style_text,
-        "captioner": captioner,
-        "caption_style": style,
-        "sources": [str(s) for s in images],
-    }
-    if dtype == "character":
-        metadata["identity"] = identity
-    if results:  # generation ran (character/concept)
-        metadata["engine"] = engine
-        metadata["shots"] = [{"id": r.shot.id, "seed": r.seed, "error": r.error}
-                             for r in results]
-    ds = package_dataset(items, output_root, name, trigger, metadata)
+    # Caption the training copies (not the isolated refs/) and the generated shots.
+    ds, command = pipeline.build_finish(
+        start, start.prepped + kept, name=name, trigger=trigger, captioner=captioner,
+        output_root=output_root, dataset_type=dtype, identity=identity, engine_key=engine,
+        shot_style=shot_style, shot_style_text=shot_style_text, caption_style=style,
+        prefix=prefix, suffix=suffix, drop_tags=drop_tags, sparse=sparse, holdout=holdout,
+        trainer=trainer, model_key=model, progress=typer.echo)
     if zip_:
         from studio.package import zip_dataset
 
         typer.echo(f"Zipped: {zip_dataset(ds)}")
     typer.echo(f"\nDone: {ds}")
+    if command:
+        typer.echo(f"\nTrain with ({ds / 'validation' / 'validation.md'} says how to pick "
+                   f"the best epoch):\n{command}")
 
 
 # --- setup / diagnostics ---------------------------------------------------

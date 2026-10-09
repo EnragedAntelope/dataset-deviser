@@ -8,6 +8,7 @@ printing a whole secret.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -251,3 +252,20 @@ def test_settings_reads_an_lds_prefixed_hf_token(tmp_path: Path) -> None:
 
     s = Settings(_env_file=None, hf_token="hf_aliased")
     assert s.resolved_key("HF_TOKEN") == "hf_aliased"
+
+
+# --- HUGGINGFACE_API_KEY alias ---------------------------------------------
+
+@pytest.mark.parametrize("login, expected", [(None, "alias"), ("saved", None)])
+def test_hf_alias_never_overrides_a_saved_login(monkeypatch: pytest.MonkeyPatch,
+                                                login: str | None,
+                                                expected: str | None) -> None:
+    import huggingface_hub
+
+    from studio import config
+
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setenv("HUGGINGFACE_API_KEY", "alias")
+    monkeypatch.setattr(huggingface_hub, "get_token", lambda: login)
+    config._alias_hf_token()
+    assert os.environ.get("HF_TOKEN") == expected

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -20,6 +21,21 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Load .env into the process environment so unprefixed keys (GEMINI_API_KEY,
 # GROQ_API_KEY, HF_TOKEN for the gated SAM3 download) work from there too.
 load_dotenv(REPO_ROOT / ".env")
+
+
+def _alias_hf_token() -> None:
+    """Hugging Face's libraries read HF_TOKEN, then the `hf auth login` file. Take the
+    other common name only when neither exists: an env token overrides the login, so a
+    stale HUGGINGFACE_API_KEY would otherwise break a login that works."""
+    if os.environ.get("HF_TOKEN") or not os.environ.get("HUGGINGFACE_API_KEY"):
+        return
+    from huggingface_hub import get_token
+
+    if not get_token():
+        os.environ["HF_TOKEN"] = os.environ["HUGGINGFACE_API_KEY"]
+
+
+_alias_hf_token()
 
 # Base captioning instruction, tuned for LoRA training captions: describe what
 # VARIES between images (pose/angle/setting/lighting), not the subject's fixed

@@ -132,6 +132,22 @@ def test_missing_prop_reports_rather_than_silently_passing(
     assert any("not found" in m for m in log)
 
 
+def test_a_photo_with_no_character_falls_back_to_person(
+    scene: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lookup = _masks()
+    asked: list[str] = []
+
+    def segment(i, p, threshold=0.5):
+        asked.append(p)
+        return np.zeros((40, 40), dtype=bool) if p == "character" else lookup["character"]
+
+    monkeypatch.setattr(iso, "_segment", segment)
+    out = tmp_path / "out.png"
+    iso.isolate_builtin(scene, out, subject_prompt="character")
+    assert asked == ["character", "person"] and _kept(out) == 800
+
+
 def test_no_subject_raises_actionable_error(scene: Path, tmp_path: Path,
                                             monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(iso, "_segment",

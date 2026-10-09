@@ -428,6 +428,7 @@ PICKER_IDS = [
     ("dd-gallery-gen", "dd-picks-gen", "dd-zoom-gen"),
     ("dd-gallery-cap", "dd-picks-cap", "dd-zoom-cap"),
     ("dd-gallery-exp", "dd-picks-exp", "dd-zoom-exp"),
+    ("dd-gallery-quick", "dd-picks-quick", "dd-zoom-quick"),
 ]
 
 # Clicking a thumbnail must toggle it, and Gradio's own `Gallery.select` event cannot
@@ -537,6 +538,21 @@ def _df_to_shots(df: pd.DataFrame) -> list[Shot]:
     return [Shot(**{k: val(row, k) for k in cols})
             for _, row in df.iterrows() if val(row, "id").strip()]
 
+def _flagged(path: Path, label: str) -> str:
+    """`label` plus this image's advisory quality flags (blurry, dark, …)."""
+    try:
+        from studio.quality import composition_flags, is_blurry
+
+        flags: list[str] = []
+        blurry, score = is_blurry(path)
+        if blurry:
+            flags.append(f"blurry ({score:.0f})")
+        flags += composition_flags(path)
+    except Exception:
+        return label  # quality checks are advisory — never block the gallery on them
+    return f"{label}  ⚠ {', '.join(flags)}" if flags else label
+
+
 def _gen_gallery(results: list[pipeline.GenResult], selected=None):
     """Picker rows + gallery + CheckboxGroup for ②'s kept-shot list.
 
@@ -544,22 +560,7 @@ def _gen_gallery(results: list[pipeline.GenResult], selected=None):
     existing pick across a re-sync instead of silently re-checking rejected shots.
     """
     ok = [r for r in results if r.path and r.path.exists()]
-    rows: list[tuple[str, str, str]] = []
-    for r in ok:
-        label = r.shot.id
-        try:
-            from studio.quality import composition_flags, is_blurry
-
-            flags: list[str] = []
-            blurry, score = is_blurry(r.path)
-            if blurry:
-                flags.append(f"blurry ({score:.0f})")
-            flags += composition_flags(r.path)
-            if flags:
-                label = f"{r.shot.id}  ⚠ {', '.join(flags)}"
-        except Exception:
-            pass  # quality checks are advisory — never block the gallery on them
-        rows.append((str(r.path), r.shot.id, label))
+    rows = [(str(r.path), r.shot.id, _flagged(r.path, r.shot.id)) for r in ok]
     ids = [r.shot.id for r in ok]
     keep = ids if selected is None else _picker_order(rows, selected)
     return rows, _picker_gallery(rows, keep), gr.CheckboxGroup(choices=ids, value=keep)
@@ -621,6 +622,11 @@ def _preprocess_note(reports, out_dir: Path, alpha_cutout: bool) -> str:
     elif cut:
         head += (f"\n\n<sub>Cut off at the bottom: {', '.join(cut)} — the other "
                  f"reference(s) show more of the body.</sub>")
+    whole = [r.source.name for r in ok if r.reference and not r.isolated]
+    if whole:
+        head += (f"\n\n⚠️ **Not isolated:** {', '.join(whole)} — isolation failed (the Log "
+                 f"says why), so ② uses the whole photo, background and props included. "
+                 f"The training copy is unaffected.")
     if not failed:
         return head
     lines = "\n".join(f"- `{r.source.name}` — {r.error}  \n  → {_failure_hint(r.error)}"
@@ -1749,6 +1755,166 @@ def _check_for_update():
         text = ""
     return gr.Markdown(value=text, visible=bool(text))
 
+# ---------- ⚡ Quick build ----------
+
+QUICK_ENGINES = [("Cloud — Gemini, billed to your Google key", "gemini"),
+                 ("Local — ComfyUI, free", "comfyui")]
+
+
+def quick_trigger(name: str, trigger: str) -> str:
+    """The header trigger, or one made from the name ("Sy Snootles" → "sysnootles")."""
+    from studio.package import slugify
+
+    return trigger.strip() or slugify(name).replace("-", "")
+
+
+def quick_engine_note(engine: str, dataset_type: str) -> str:
+    """What Build will cost (cloud) or whether it can run at all (local)."""
+    if dataset_type == "style":
+        return "Style datasets generate nothing: Build prepares and Finish captions your own images."
+    n = len(plan_for_type(dataset_type, ""))
+    if engine == "gemini":
+        if not settings.resolved_gemini_key():
+            return ("⚠️ No Gemini key yet: run `python cli.py keys --set GEMINI_API_KEY` "
+                    "and restart, or pick Local.")
+        model, price = image_price(AUTO_MODEL)
+        cost = f"~${n * price:.2f}" if price else "price unknown"
+        return f"Auto → `{model}`: {cost} for {n} shots (estimate, billed to your Google key)."
+    from studio.doctor import check_comfyui, check_comfyui_models
+
+    up = check_comfyui()
+    if up.warn:
+        return f"⚠️ ComfyUI: {up.detail}"
+    models = check_comfyui_models()
+    if models and not models.ok:
+        return f"⚠️ {models.detail}"
+    return f"✅ ComfyUI is ready: {n} shots, $0."
+
+
+def _quick_rows(start: pipeline.BuildStart) -> tuple[list[tuple[str, str, str]], list[str]]:
+    """Picker rows (your photos first, then the shots) and what starts ticked:
+    everything except a photo ① enlarged a lot — a LoRA learns upscaling blur as
+    the subject's texture. That photo still served as a reference."""
+    rows: list[tuple[str, str, str]] = []
+    keep: list[str] = []
+    for r in start.reports:
+        if not r.output:
+            continue
+        label = f"📷 {r.source.name}"
+        factor = pipeline.upscale_factor(r)
+        if factor > pipeline.UPSCALE_UNTICK:
+            label += f"  ⚠ upscaled ×{factor:.1f} from {max(r.original_size)}px"
+        else:
+            keep.append(str(r.output))
+        rows.append((str(r.output), str(r.output), _flagged(r.output, label)))
+    for g in start.results:
+        if g.path and g.path.exists():
+            rows.append((str(g.path), str(g.path), _flagged(g.path, g.shot.id)))
+            keep.append(str(g.path))
+    return rows, keep
+
+
+def _quick_note(start: pipeline.BuildStart) -> str:
+    note = _preprocess_note(start.reports, start.run_dir / "prepped", alpha_cutout=False)
+    failed = [g for g in start.results if not g.path]
+    if failed:
+        note += ("\n\n❌ **Failed shots** (the rest carried on; the ② tab can regenerate "
+                 "them):\n" + "\n".join(f"- `{g.shot.id}`: {g.error}" for g in failed))
+    big = [r.source.name for r in start.reports
+           if r.output and pipeline.upscale_factor(r) > pipeline.UPSCALE_UNTICK]
+    if big:
+        note += (f"\n\n<sub>Unticked: {', '.join(big)}. ① enlarged them, and a LoRA "
+                 f"learns the upscaling blur as texture. They were still used as "
+                 f"references; tick them to train on them anyway.</sub>")
+    if start.results:
+        note += "\n\nUntick anything that looks wrong, then press **Finish**."
+    return note
+
+
+def quick_review(start, keep: list[str]) -> str:
+    """Coverage of the kept shots and any near-duplicates among everything kept."""
+    if not start:
+        return ""
+    kept = set(keep or [])
+    shots = [g.shot for g in start.results if g.path and str(g.path) in kept]
+    note = coverage(shots) if shots else ""
+    try:
+        from studio.dedupe import find_near_duplicate_groups
+
+        groups = find_near_duplicate_groups(sorted(Path(k) for k in kept), max_distance=5)
+    except Exception:
+        groups = []  # advisory
+    if groups:
+        note += ("\n\n" if note else "") + (
+            f"🔁 **{len(groups)} near-duplicate group(s)**, keep one of each: "
+            f"{_groups_text(groups)}")
+    return note
+
+
+def do_quick_build(files: list[str], name: str, trigger: str, dataset_type: str,
+                   identity: str, engine: str, held: str, front: bool,
+                   progress=gr.Progress()):
+    if not files:
+        raise gr.Error("Drop one or more images of your subject first.")
+    if not name.strip():
+        raise gr.Error("Type a name at the top first: it names the dataset and goes into "
+                       "every prompt.")
+    trigger = quick_trigger(name, trigger)
+    log: list[str] = []
+    total = len(files) + (0 if dataset_type == "style" else
+                          len(plan_for_type(dataset_type, ""))) + 2
+
+    def report(msg: str):
+        log.append(msg)
+        progress((min(len(log), total), total), desc=msg)
+
+    JOB.start()
+    try:
+        start = pipeline.build_start(
+            [Path(f) for f in files], name.strip(), engine, dataset_type=dataset_type,
+            exclude_prompt=held.strip(), identity=identity, front=front, should_stop=JOB,
+            progress=report)
+    except Exception as e:
+        raise gr.Error(f"Build failed: {e}") from e
+    rows, keep = _quick_rows(start)
+    boxes = gr.CheckboxGroup(choices=[(Path(v).name, v) for _, v, _ in rows], value=keep)
+    return (start, rows, _picker_gallery(rows, keep), boxes, _quick_note(start),
+            "\n".join(log), trigger)
+
+
+def do_quick_finish(start, keep: list[str], name: str, trigger: str, dataset_type: str,
+                    identity: str, engine: str, captioner: str, trainer: str,
+                    model_key: str, progress=gr.Progress()):
+    if not start:
+        raise gr.Error("Press Build first.")
+    images = [Path(k) for k in keep or [] if Path(k).exists()]
+    if not images:
+        raise gr.Error("Tick at least one image to keep.")
+    trigger = quick_trigger(name, trigger)
+    log: list[str] = []
+
+    def report(msg: str):
+        log.append(msg)
+        progress((min(len(log), len(images) + 2), len(images) + 2), desc=msg)
+
+    # A tag-trained base model (SDXL family) wants tag captions.
+    style = "tags" if _preset(trainer, model_key).expects_tags else "prose"
+    try:
+        ds, command = pipeline.build_finish(
+            start, images, name=name.strip(), trigger=trigger, captioner=captioner,
+            output_root=settings.output_root, dataset_type=dataset_type, identity=identity,
+            engine_key=engine, caption_style=style, trainer=trainer, model_key=model_key,
+            progress=report)
+    except Exception as e:
+        raise gr.Error(f"Finish failed: {e}") from e
+    warnings_ = "".join(f"{m}\n\n" for m in log if m.startswith("⚠️"))
+    note = (f"✅ **Dataset ready:** `{ds}` ({len(images)} images, trigger `{trigger}`).\n\n"
+            f"{warnings_}Train with:\n```\n{command}\n```\n`validation/validation.md` in the dataset "
+            f"says how to pick the best epoch.\n\n<sub>Configs are generated, not "
+            f"test-trained. Fill any `<<FILL>>` placeholders first; ⑤ has every setting.</sub>")
+    return note, "\n".join(log), str(ds)
+
+
 # ---------- layout ----------
 
 # Gradio 5 warns that `head=` moves to `launch()` in Gradio 6 — but `launch()` does not
@@ -1863,6 +2029,51 @@ with _blocks as demo:
     cap_edit_names = gr.State([])
 
     with gr.Tabs() as tabs:
+        with gr.Tab("⚡ Quick build", id="quick"):
+            gr.Markdown(
+                "Drop a few images, type a name at the top, press **Build**. Untick "
+                "anything that looks wrong, then **Finish** captions the dataset and "
+                "writes the trainer config. The numbered tabs run the same steps one "
+                "at a time, with every option.")
+            with gr.Row():
+                with gr.Column(scale=1):
+                    qb_files = gr.File(label="Images of your subject", file_count="multiple",
+                                       file_types=["image"], height=160)
+                    qb_held = gr.Textbox(
+                        label="Anything held to remove?", placeholder="cup, plate",
+                        info="Name objects the subject is holding, so they are cut out "
+                             "and not redrawn in every shot.")
+                    qb_engine = gr.Radio(QUICK_ENGINES, value=settings.default_engine,
+                                         label="Generate with")
+                    qb_engine_note = gr.Markdown()
+                    with gr.Row():
+                        qb_trainer = gr.Dropdown(TRAINER_CHOICES, value="ai-toolkit",
+                                                 label="Trainer")
+                        qb_model = gr.Dropdown(
+                            [(m.label, m.key) for m in TRAINER_MODELS["ai-toolkit"]],
+                            value=TRAINER_MODELS["ai-toolkit"][0].key, label="Base model")
+                    qb_captioner = gr.Dropdown(CAPTIONER_CHOICES,
+                                               value=settings.default_captioner,
+                                               label="Captioner")
+                    qb_front = gr.Checkbox(value=False,
+                                           label="Prioritize this app's ComfyUI jobs")
+                    btn_qb_build = gr.Button("⚡ Build", variant="primary")
+                with gr.Column(scale=2):
+                    qb_note = gr.Markdown()
+                    qb_gallery = gr.Gallery(
+                        label="Click a thumbnail to untick/tick it", columns=6, height=420,
+                        allow_preview=False, elem_id="dd-gallery-quick")
+                    qb_zoom = gr.Checkbox(value=False, label="🔍 Zoom on click",
+                                          elem_id="dd-zoom-quick")
+                    qb_keep = gr.CheckboxGroup(label="✅ Kept: UNCHECK to leave out",
+                                               choices=[], elem_id="dd-picks-quick")
+                    qb_review = gr.Markdown()
+                    btn_qb_finish = gr.Button("✅ Finish: caption, export, write configs",
+                                              variant="primary")
+                    qb_result = gr.Markdown()
+            qb_state = gr.State(None)
+            qb_rows = gr.State([])
+
         with gr.Tab("① Preprocess (optional)", id="preprocess"):
             gr.Markdown("Restore / upscale / isolate source images. Skip this tab entirely "
                         "if your images are already clean.")
@@ -1994,7 +2205,8 @@ with _blocks as demo:
                              "other shot's references with it. Helps when your sources "
                              "are partial or poor (face in shadow, body cut off). It "
                              "copies whatever the front view gets wrong (a held object, "
-                             "an outfit) into every shot, so check that view first.")
+                             "an outfit) into every shot, so check that view first, and "
+                             "check full-body shots did not just repeat its stance.")
                     gen_isolate = gr.Checkbox(value=False,
                                               label="Isolate generated angle shots (white background)",
                                               info="Cut generated angle shots onto white too. "
@@ -2502,9 +2714,25 @@ with _blocks as demo:
     # button or a reload — re-marks the gallery labels.
     for _gallery, _rows, _boxes, _zoom in ((gen_gallery, gen_rows, keep, gen_zoom),
                                            (cap_gallery, cap_rows, cap_select, cap_zoom),
-                                           (exp_gallery, exp_rows, exp_select, exp_zoom)):
+                                           (exp_gallery, exp_rows, exp_select, exp_zoom),
+                                           (qb_gallery, qb_rows, qb_keep, qb_zoom)):
         _boxes.change(_picker_mark, [_rows, _boxes], [_gallery])
         _zoom.change(_set_zoom, [_zoom], [_gallery])
+    btn_qb_build.click(
+        do_quick_build,
+        [qb_files, project_name, project_trigger, dataset_type, identity_policy, qb_engine,
+         qb_held, qb_front],
+        [qb_state, qb_rows, qb_gallery, qb_keep, qb_note, log_box, project_trigger])
+    qb_keep.change(quick_review, [qb_state, qb_keep], [qb_review])
+    btn_qb_finish.click(
+        do_quick_finish,
+        [qb_state, qb_keep, project_name, project_trigger, dataset_type, identity_policy,
+         qb_engine, qb_captioner, qb_trainer, qb_model],
+        [qb_result, log_box, tr_dataset])
+    qb_trainer.change(_model_dropdown, [qb_trainer], [qb_model])
+    for _event in (qb_engine.change, dataset_type.change):
+        _event(quick_engine_note, [qb_engine, dataset_type], [qb_engine_note])
+    demo.load(quick_engine_note, [qb_engine, dataset_type], [qb_engine_note])
     for _event in (keep.change, gen_dominance.change):
         _event(coverage_note, [results_state, keep, gen_dominance], [gen_coverage])
     for _event in (gen_files.change, gen_src_folder.change):

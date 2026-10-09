@@ -55,7 +55,8 @@ def _load_sam3():
         except Exception as e:
             # An HF_TOKEN (from .env or the environment) wins over `hf auth login`,
             # so a stale one 401s even when the saved login would work.
-            hint = (" An HF_TOKEN is set (in .env or the environment) and is used "
+            hint = (" An HF_TOKEN is set (in .env or the environment, or taken from "
+                    "HUGGINGFACE_API_KEY when there is no login) and is used "
                     "instead of `hf auth login` — replace it (`python cli.py keys --set "
                     "HF_TOKEN`) or remove it." if os.environ.get("HF_TOKEN") else "")
             raise IsolationError(
@@ -149,6 +150,10 @@ def isolate_builtin(image_path: Path, out_path: Path, subject_prompt: str = "cha
                     alpha_cutout: bool = False, label: str = "") -> Path:
     image = Image.open(image_path).convert("RGB")
     subject = _segment(image, subject_prompt)
+    if not subject.any() and subject_prompt == "character":
+        # SAM3 reads "character" as a drawn figure: on two real photos it scored
+        # 0.0 and 0.06 where "person" scored 0.98 (0.20.0 acceptance).
+        subject = _segment(image, "person")
     if not subject.any():
         # `label` names the file the USER recognises. By the time preprocess calls
         # this, `image_path` can be a restored intermediate ("cat_prepped.png")

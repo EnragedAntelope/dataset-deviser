@@ -727,3 +727,32 @@ def write_configs(cfg: TrainConfig, install_path: str = "") -> tuple[list[Path],
         command = fizgig_command(install_path, path, cfg, prompts_path)
     return [path, prompts_path, _write(val / "validation.md", _guide(cfg, prompts)),
             _write(val / "validation_scores.csv", _score_sheet(cfg, len(prompts)))], command
+
+
+def default_config(dataset_dir: Path, trainer: str, model_key: str, *, name: str,
+                   trigger: str, dataset_type: str = "character",
+                   shot_style: str = "match", shot_style_text: str = "",
+                   install_path: str = "") -> tuple[list[Path], str]:
+    """⑤ with every field at the preset's default: Quick build and `cli build --trainer`.
+
+    Same derivation ⑤ makes on its own: buckets from the dataset's real sizes,
+    repeats sized to the step target (Fizgig: 1, its own guidance).
+    """
+    from studio.dataset_stats import inspect
+    from studio.package import slugify
+
+    if trainer not in TRAINER_MODELS:
+        raise ValueError(f"Unknown trainer: {trainer}")
+    preset = next((p for p in TRAINER_MODELS[trainer] if p.key == model_key),
+                  TRAINER_MODELS[trainer][0])
+    stats = inspect(dataset_dir)
+    repeats = 1 if trainer == "fizgig" else stats.suggested_repeats(preset.epochs,
+                                                                    preset.batch_size)
+    cfg = TrainConfig(
+        trainer=trainer, model=preset, dataset_dir=dataset_dir, trigger=trigger,
+        name=slugify(name) or "lora", dataset_type=dataset_type,
+        resolution=preset.resolution, rank=preset.rank, alpha=preset.alpha,
+        epochs=preset.epochs, num_repeats=repeats, n_images=stats.n_images, lr=preset.lr,
+        batch_size=preset.batch_size, buckets=stats.buckets_for(preset.resolution),
+        shot_style=shot_style, shot_style_text=shot_style_text)
+    return write_configs(cfg, install_path)

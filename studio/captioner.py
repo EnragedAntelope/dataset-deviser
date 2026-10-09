@@ -473,7 +473,12 @@ def finalize_caption(raw: str, trigger: str, character_name: str, aliases: list[
         # Replace generic nouns the VLM used for the subject with the real name
         for alias in aliases:
             caption = re.sub(rf"\bthe {re.escape(alias)}\b", character_name, caption, flags=re.I)
-    if trigger and not caption.lower().startswith(trigger.lower()):
+    lead = re.match(rf"{re.escape(trigger)}(?!\w)", caption, flags=re.I) if trigger else None
+    if lead:
+        # The trigger's exact casing is the token the LoRA learns and the validation
+        # prompts use: name "Ann" with trigger "ann" must not lead with "Ann".
+        caption = trigger + caption[lead.end():]
+    elif trigger:
         keep_name = (dataset_type == "character" and character_name
                      and caption.startswith(character_name.split()[0]))
         if caption and not keep_name:
