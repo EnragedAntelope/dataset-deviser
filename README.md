@@ -42,7 +42,9 @@ ai-toolkit, kohya, musubi or Fizgig, and a validation pack for picking the best 
 New to this? Use the **⚡ Quick build** tab: drop your images, type a name at the top, pick Cloud
 or Local and a trainer, press **Build**. Untick any shot that looks wrong and press **Finish**: you
 get the captioned dataset, the trainer config with its run command, and the validation pack.
-Name anything the subject is holding (*"cup, plate"*) so it isn't redrawn in every shot. Photos
+Name anything the subject is holding (*"cup, plate"*) so it isn't redrawn in every shot. If a
+shadow or object crosses the face in your best photo, pick Cloud: Local tends to copy it into
+the generated shots, Cloud draws a clean face. Photos
 ① had to enlarge a lot start unticked (they still guide generation). The trigger is made from
 the name if you leave it blank.
 
@@ -288,7 +290,7 @@ Set or change any of them with `python cli.py keys` — they live only in a giti
 
 - **Gemini** — image generation and/or captioning: <https://aistudio.google.com/apikey>
 - **Groq** — free-tier captioning: <https://console.groq.com/keys>
-- **Hugging Face** (`HF_TOKEN`, or `HUGGINGFACE_API_KEY` in the environment) — two uses:
+- **Hugging Face** (`HF_TOKEN`, or `HUGGINGFACE_API_KEY` in the environment when you have no `hf auth login`) — two uses:
   - **Built-in SAM3 isolation.** `facebook/sam3` is **gated**: accept the licence on the
     [model page](https://huggingface.co/facebook/sam3), wait for approval, then add a **read**
     token. Weights (~3.4 GB) download once.

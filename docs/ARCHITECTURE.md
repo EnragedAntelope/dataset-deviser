@@ -1,6 +1,6 @@
 # Architecture
 
-Version: 0.19.0
+Version: 0.20.0
 
 ```
 app.py                  Gradio UI — thin wiring over the stage functions (⚡ Quick
@@ -644,7 +644,10 @@ quietly gets someone else's value.
   `prompt_id`, so another client's jobs are never mistaken for ours. Every stage that
   queues ComfyUI work carries the flag: ① and ② each have a "Prioritize" checkbox, and
   `preprocess`/`generate`/`build` take `--front`. Until 0.17.3 ① had none, so a busy
-  queue refused every ComfyUI restore/isolation with advice that only worked on ②.
+  queue refused every ComfyUI restore/isolation with advice that only worked on ②. A job's
+  timeout restarts while it is still pending (checked every 10 s, for up to `QUEUE_WAIT_S`, an
+  hour): a front job waits out whatever is running, and before 0.20.0 a restore queued behind
+  a long user job timed out before it started.
 - **The bundled workflows use ONLY core nodes.** `isolate_*.json` previously needed
   `MaskPreview+` from the third-party `ComfyUI_essentials` pack — used purely as a hack to
   render a white backdrop — which silently broke the workflows for anyone who didn't
@@ -940,6 +943,14 @@ quietly gets someone else's value.
   an isolated copy to `prepped/refs/` that ② generates from. `list_images` is non-recursive, so
   ③, ④, the ILB hand-off and dataset stats never see `refs/` (a test pins this). ②'s "isolate
   generated angle shots" is a separate option, default off, for the same reason.
+- **A failed isolation costs the reference its cut-out, never the photo (0.20.0).** Before,
+  SAM3 finding no subject skipped the image outright, training copy included; on the
+  acceptance pair it dropped the sharpest photo. Now ① writes the training copy as usual and
+  puts the whole photo in `refs/`, so ② still uses it (background and props included), and ①'s
+  and ⚡'s notes name it. Other errors (a crash, ComfyUI down) still fail the image. The builtin
+  backend also retries `person` when the default `character` finds nothing: SAM3 reads
+  "character" as a drawn figure and scored 0.0 and 0.06 on two real photos where "person"
+  scored 0.98.
 - **Identity policy decides whether clothing is part of the subject (0.19.0).** "Identity only"
   (default) dresses each character shot in a different random outfit and tells the captioner to
   describe clothing, so the trigger learns the face and body, not one outfit. "Signature
@@ -985,6 +996,19 @@ quietly gets someone else's value.
     as part of the subject. Naming it in ①'s exclude prompt is the fix.
   - Neither input can supply what it never showed: everything below the hips and the shadowed
     eye are invented or copied, whatever the settings.
+  - Local Qwen-Image 2.1 copies a shadow across the face: 10 of a 24-shot acceptance
+    set (0.20.0) carried the spoon's shadow over one eye, where the 0.17.3 cloud runs on the same
+    photos showed it in none. Two follow-up probes, same seeds: a positive phrase ("her face is
+    evenly and softly lit, with both eyes clearly visible") cleared it on one of two shots, so it
+    was not added to the prompts; anchoring on that clean front view cleared it on a close-up
+    but collapsed all three full-body shots onto the front view's stance over a garbled
+    background (the 0.19.0 anchored angle-low did the same). So the advice for an obscured face
+    is Cloud, not a setting. The 0.20.0 cloud acceptance run (Auto → Nano Banana 2.1, same two
+    photos, identity policy, "plate, spoon" held) bore it out: 24 of 24 generated, no shadow,
+    plate or spoon in any shot, glasses on every visible face, back and low views recognisable,
+    all four framing tiers present. Its one weakness: close-ups get no outfit by design
+    (`wardrobe.OUTFIT_SHOT_KINDS`), and all seven came back in the same black top. The captions
+    name the top, which keeps it off the trigger.
 - **Quick build is the stage functions with defaults, not a second pipeline (0.20.0).**
   `pipeline.build_start` (① then ②) and `build_finish` (③, ④, and ⑤ through
   `trainer_configs.default_config`) hold the whole orchestration; `cli build` and the ⚡ tab
