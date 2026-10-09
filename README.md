@@ -288,7 +288,7 @@ Set or change any of them with `python cli.py keys` — they live only in a giti
 
 - **Gemini** — image generation and/or captioning: <https://aistudio.google.com/apikey>
 - **Groq** — free-tier captioning: <https://console.groq.com/keys>
-- **Hugging Face** (`HF_TOKEN`) — two uses:
+- **Hugging Face** (`HF_TOKEN`, or `HUGGINGFACE_API_KEY` in the environment) — two uses:
   - **Built-in SAM3 isolation.** `facebook/sam3` is **gated**: accept the licence on the
     [model page](https://huggingface.co/facebook/sam3), wait for approval, then add a **read**
     token. Weights (~3.4 GB) download once.
