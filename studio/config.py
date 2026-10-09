@@ -535,7 +535,8 @@ class Settings(BaseSettings):
     qwen21_text_encoder: str = "qwen3vl_8b_int8_convrot.safetensors"
     qwen21_vae: str = "qwen_image_2.1_vae_bf16.safetensors"
     # References per local shot (the node takes up to 16), in order: the chained
-    # view when there is one, then the primary, then the rest.
+    # view when there is one, then the primary, then the rest. 1 and 1536 won the
+    # 0.19.0 A/B (docs/ARCHITECTURE.md).
     qwen21_max_refs: int = 1
     # Each reference is resized to about this many pixels squared; the output
     # follows the first reference's aspect at about the same size.

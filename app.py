@@ -1992,8 +1992,9 @@ with _blocks as demo:
                         value=False, label="Anchor shot: build every shot from the front view",
                         info="Generates the front full-body view first, then leads every "
                              "other shot's references with it. Helps when your sources "
-                             "are partial or poor (face in shadow, body cut off). Check "
-                             "the front view looks right before trusting the rest.")
+                             "are partial or poor (face in shadow, body cut off). It "
+                             "copies whatever the front view gets wrong (a held object, "
+                             "an outfit) into every shot, so check that view first.")
                     gen_isolate = gr.Checkbox(value=False,
                                               label="Isolate generated angle shots (white background)",
                                               info="Cut generated angle shots onto white too. "

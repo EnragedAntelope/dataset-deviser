@@ -166,7 +166,8 @@ def _props_default(exclude_props: bool | None, dataset_type: str) -> bool:
 
 
 _ANCHOR_HELP = ("Generate the front full-body view first and lead every other "
-                "shot's references with it (helps partial or poor sources)")
+                "shot's references with it (helps partial or poor sources; it "
+                "copies the front view's mistakes too, so check it first)")
 _IDENTITY_HELP = ("Characters only: identity (default — angle/pose shots get varied "
                   "outfits and captions describe the clothing, so the trigger learns "
                   "the person) | costume (keep the reference's outfit, leave it out of "

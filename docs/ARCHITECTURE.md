@@ -1,6 +1,6 @@
 # Architecture
 
-Version: 0.18.1
+Version: 0.19.0
 
 ```
 app.py                  Gradio UI — thin wiring over the stage functions (5 tabs).
@@ -962,6 +962,26 @@ quietly gets someone else's value.
   front full-body view (`angle-front`) runs first from every reference, then leads each other
   shot's references; a chained view still leads its own shot, followed by the anchor and the
   originals. It reuses the chain mechanism; a plan without `angle-front` has no anchor.
+- **Local ② defaults to one reference at 1536, anchor off (0.19.0 A/B).** RTX 5090, eight of
+  the hardest character shots (back, front, low and right views, two expressions, seated,
+  walking) from two poor phone photos: a 3000×4000 one with a spoon's shadow over one eye and a
+  plate in hand, and a 580 px JPEG cut at the hips. No held-object exclusion, same seeds. Median
+  ComfyUI time per shot: 11.6 s at 1024 with one reference, 27.2 s at 1536 with one, 48.5 s at
+  1536 with two.
+  - A second reference cost 1.8x and made the set worse: the low-resolution photo pulled the
+    outfit around (a grey top on the back view) and the plate came back in two shots, not one.
+    An extra reference helps only when it adds information at comparable quality.
+  - 1024 is 2.3x faster but redrew the plate in two shots and changed the outfit on the front
+    view. 1536 follows the reference more closely, so it stays the default.
+  - The anchor gave the most consistent set (one outfit throughout, no plate anywhere) because
+    that run's front view came out clean. It copies whatever the front view gets, though: the
+    1024 run's front view held the plate, and anchoring on it would have put the plate in every
+    shot. The eye shadow carried through with or without it. So it stays opt-in and its tooltip
+    says to check the front view first.
+  - Re-isolating angle shots would not have removed the leaked plate: SAM3 keeps a held object
+    as part of the subject. Naming it in ①'s exclude prompt is the fix.
+  - Neither input can supply what it never showed: everything below the hips and the shadowed
+    eye are invented or copied, whatever the settings.
 - **The optimizer defaults to AdamW8bit; Prodigy is the one alternative (0.18.1).** AdamW8bit is
   the default and the validated recipe in ai-toolkit's UI, musubi's examples, sd-scripts and
   Fizgig. Prodigy is offered because it removes the learning-rate guess: it runs at lr 1.0 with
