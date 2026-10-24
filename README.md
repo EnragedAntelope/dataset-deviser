@@ -26,7 +26,7 @@ ai-toolkit, kohya, musubi or Fizgig, and a validation pack for picking the best 
 - **Curate by clicking the images.** Toggle any shot straight from the gallery, with a ✅/⬜ mark
   on each thumbnail. Your pick follows you: what you keep in ② is what ③ captions, and what ③
   captions is what ④ preselects for export — nothing is silently re-added behind you.
-- **Trainer-ready output.** Flat `NN.png` + `NN.txt` (JPEG/WEBP sources keep their own extension),
+- **Trainer-ready output.** Flat `NN.png` + `NN.txt` (JPEG/WEBP sources keep their own extension; BMP/TIFF become PNG),
   `metadata.json`/`metadata.jsonl`, optional `.zip` and Hugging Face publish, and a generated config
   for Flux / SDXL / Qwen-Image / Krea / Pony and more.
 - **Interruptible, and hard to derail.** **⏹ Stop** ends a long run after the current image and
@@ -254,7 +254,7 @@ have one, or try ②'s **Anchor shot**, which builds every shot from one generat
 ⑤ sets training in **epochs**: every epoch saves a checkpoint and renders the same 8 test
 prompts at the same seed. Leave **Repeats** at 0 and it sizes each epoch for you; the exposure
 line shows the total. The `validation/` folder it writes holds the prompts, a short guide and a
-score sheet. To test likeness fairly, set **Hold out N reference photos** in ④: those photos
+score sheet; the guide ends with a LoRA-strength sweep (0.6 to 1.4) for the epoch you pick. To test likeness fairly, set **Hold out N reference photos** in ④: those photos
 stay out of training, in a `-heldout` folder beside the dataset, to compare samples against.
 
 ## CLI

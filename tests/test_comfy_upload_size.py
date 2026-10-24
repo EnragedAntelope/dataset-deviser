@@ -47,3 +47,17 @@ def test_small_source_sent_as_is(tmp_path, monkeypatch):
     monkeypatch.setattr(comfy_api.httpx, "post", fake_post)
     comfy_api.upload_image(src)
     assert sent["path"] == str(src)
+
+
+def test_jfif_source_is_uploaded_with_a_jpg_name(tmp_path, monkeypatch):
+    src = tmp_path / "download.jfif"
+    Image.new("RGB", (8, 8)).save(src, "JPEG")
+    sent = {}
+
+    def fake_post(url, files, data, timeout):
+        sent["name"] = files["image"][0]
+        return _Resp()
+
+    monkeypatch.setattr(comfy_api.httpx, "post", fake_post)
+    comfy_api.upload_image(src)
+    assert sent["name"].endswith(".jpg")

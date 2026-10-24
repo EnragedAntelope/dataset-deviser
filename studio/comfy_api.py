@@ -239,7 +239,9 @@ def upload_image(path: Path) -> str:
     tmp = _shrink_for_upload(path) if path.stat().st_size > MAX_UPLOAD_BYTES else None
     send = tmp or path
     try:
-        name = f"lds_{uuid.uuid4().hex[:10]}{send.suffix.lower()}"
+        ext = send.suffix.lower()
+        # ComfyUI lists input files by mimetype; Linux has none for .jfif (a JPEG).
+        name = f"lds_{uuid.uuid4().hex[:10]}{'.jpg' if ext == '.jfif' else ext}"
         with send.open("rb") as f:
             r = httpx.post(
                 f"{settings.comfy_url}/upload/image",

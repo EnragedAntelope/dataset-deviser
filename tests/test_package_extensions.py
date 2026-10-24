@@ -105,3 +105,24 @@ def test_readme_reports_the_extensions_present(tmp_path: Path) -> None:
     ds = _export(tmp_path, [a, b])
     body = (ds / "README.txt").read_text(encoding="utf-8")
     assert "NN.txt" in body
+
+
+def test_bmp_and_tiff_sources_are_reencoded_to_png(tmp_path: Path) -> None:
+    """ai-toolkit reads only jpg/jpeg/png/webp; a copied .bmp would be skipped."""
+    a = _img(tmp_path / "src", "a.bmp", "trig, one", "BMP")
+    b = _img(tmp_path / "src", "b.tif", "trig, two", "TIFF")
+    ds = _export(tmp_path, [a, b])
+    for name in ("01.png", "02.png"):
+        with Image.open(ds / name) as im:
+            assert im.format == "PNG"
+    assert not list(ds.glob("*.bmp")) and not list(ds.glob("*.tif"))
+
+
+def test_a_jfif_source_is_listed_and_exports_as_jpg(tmp_path: Path) -> None:
+    from studio.config import list_images
+
+    src = _img(tmp_path / "src", "download.jfif", "trig, a red square", "JPEG")
+    assert list_images(tmp_path / "src") == [src]
+    ds = _export(tmp_path, [src])
+    with Image.open(ds / "01.jpg") as im:
+        assert im.format == "JPEG"

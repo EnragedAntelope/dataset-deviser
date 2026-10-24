@@ -80,7 +80,7 @@ def _needs_restoration(img: Image.Image, path: Path, target: int) -> str:
     long_side = max(img.size)
     if long_side < target:
         return f"long side {long_side}px < target {target}px"
-    if path.suffix.lower() in (".jpg", ".jpeg", ".webp") and long_side < 2 * target:
+    if path.suffix.lower() in (".jpg", ".jpeg", ".jfif", ".webp") and long_side < 2 * target:
         return "lossy source format"
     if _laplacian_variance(_resize_to_target(img, target)) < BLUR_THRESHOLD:
         return "low sharpness (blur/grain)"

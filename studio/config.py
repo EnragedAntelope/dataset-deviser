@@ -471,7 +471,8 @@ def save_caption_model_cache(models: list[dict]) -> None:
     """Persist the live Gemini caption-model list with a timestamp."""
     _save_model_cache_file(CAPTION_MODEL_CACHE_FILE, models)
 
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+# .jfif is a JPEG; Chrome on Windows saves downloads with it.
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".jfif", ".webp", ".bmp", ".tif", ".tiff"}
 
 
 class Settings(BaseSettings):
