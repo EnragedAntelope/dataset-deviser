@@ -677,6 +677,13 @@ def _guide(cfg: TrainConfig, prompts: list[str]) -> str:
         "3. Keep the earliest epoch where likeness stops improving. When adherence "
         "drops or unwanted traits climb, later epochs are overfitting.\n"
         f"{held_block}\n"
+        "## Then sweep the strength\n\n"
+        f"Render prompts 1 and 2 with the chosen checkpoint at LoRA strength 0.6, 0.8, "
+        f"1.0, 1.2 and 1.4, seed {VALIDATION_SEED} each time. A good LoRA looks right "
+        "near 1.0. Likeness only arriving at 1.2 or more means undertrained: take a later "
+        "epoch. Likeness already there at 0.6-0.8 while 1.0 breaks the prompt means "
+        "overtrained: take an earlier one. If you will use the LoRA on a finetune or "
+        "merge of the base, run the same sweep there too.\n\n"
         f"## Inference settings\n\n{settings}\n\n"
         f"## Prompts (seed {VALIDATION_SEED})\n\n{numbered}")
 

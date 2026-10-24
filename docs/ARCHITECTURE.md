@@ -1,6 +1,6 @@
 # Architecture
 
-Version: 0.20.0
+Version: 0.20.1
 
 ```
 app.py                  Gradio UI — thin wiring over the stage functions (⚡ Quick
@@ -556,6 +556,9 @@ quietly gets someone else's value.
   folder. `package.py` now preserves the (normalised, lowercased, `.jpeg`→`.jpg`) suffix and
   `metadata.jsonl`'s `file_name` is the name actually written, which HF `imagefolder`
   resolves literally. Captions still pair by stem, so a mixed-format folder is fine.
+  The exceptions are BMP and TIFF, which are re-encoded to `NN.png`: ai-toolkit's loader
+  reads only jpg/jpeg/png/webp and silently skips the rest, leaving an orphan caption.
+  `.jfif` (Chrome's name for a downloaded JPEG on Windows) is listed and exports as `.jpg`.
 - **Caption sidecars are user files; read them forgivingly.** Every read used strict
   `encoding="utf-8"`, so a cp1252 `.txt` from another tool raised `UnicodeDecodeError` and
   killed the whole stage, and a UTF-8 BOM silently prefixed `﻿` to the trigger word in

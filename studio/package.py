@@ -27,10 +27,28 @@ def normalize_suffix(suffix: str) -> str:
     Export copies source bytes verbatim, so the extension it writes has to be the
     source's real one — it used to hard-code `.png`, which mislabelled every JPEG
     and WEBP source as PNG. Normalising keeps a folder from ending up half `.JPG`
-    and half `.jpeg` for the same format.
+    and half `.jpeg` for the same format. BMP and TIFF map to `.png`: export
+    re-encodes them, because ai-toolkit reads only jpg/jpeg/png/webp and skips
+    anything else without a word.
     """
     suffix = (suffix or "").lower()
-    return ".jpg" if suffix == ".jpeg" else suffix or ".png"
+    if suffix in (".jpeg", ".jfif"):
+        return ".jpg"
+    return ".png" if suffix in _REENCODE or not suffix else suffix
+
+
+_REENCODE = {".bmp", ".tif", ".tiff"}
+
+
+def _write_image(src: Path, dst: Path) -> None:
+    """Copy the source bytes, or re-encode a BMP/TIFF to PNG."""
+    if src.suffix.lower() not in _REENCODE:
+        shutil.copy2(src, dst)
+        return
+    from PIL import Image
+
+    with Image.open(src) as im:
+        im.convert("RGBA" if "A" in im.getbands() else "RGB").save(dst, "PNG")
 
 
 @dataclass
@@ -141,7 +159,7 @@ def package_dataset(
     for i, (img, caption) in enumerate(items, start=1):
         stem = f"{i:02d}"
         filename = f"{stem}{normalize_suffix(img.suffix)}"
-        shutil.copy2(img, ds_dir / filename)
+        _write_image(img, ds_dir / filename)
         (ds_dir / f"{stem}.txt").write_text(caption, encoding="utf-8")
         # HuggingFace `imagefolder` caption metadata, so the dataset also loads
         # directly via datasets.load_dataset("imagefolder", ...) with captions.
