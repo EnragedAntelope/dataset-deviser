@@ -523,6 +523,15 @@ def build(
     identity = "identity" if randomize_outfits else _check_identity(identity)
     if trainer and trainer not in TRAINER_MODELS:
         raise typer.BadParameter(f"--trainer must be one of {list(TRAINER_MODELS)}")
+    # An unconfigured custom endpoint would otherwise fail only after generation.
+    from studio.captioner import CAPTIONERS_BY_KEY, CaptionerConfigError, resolve_captioner_config
+    if captioner not in CAPTIONERS_BY_KEY:
+        raise typer.BadParameter(f"--captioner must be one of {list(CAPTIONERS_BY_KEY)}")
+    try:
+        resolve_captioner_config(captioner)
+    except CaptionerConfigError as e:
+        typer.echo(str(e))
+        raise typer.Exit(1) from e
     # Check the generation backend before spending a preprocess pass on images
     # it would then refuse to use. Style never generates, so it never needs one.
     if dtype != "style":

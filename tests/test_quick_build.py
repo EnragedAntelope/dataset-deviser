@@ -109,3 +109,26 @@ def test_engine_note_prices_cloud_and_skips_style(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(A.settings, "gemini_api_key", "k")
     assert "$" in A.quick_engine_note("gemini", "character")
     assert "generate nothing" in A.quick_engine_note("gemini", "style")
+
+
+def test_finish_uses_the_saved_custom_endpoint(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 0.20.0-0.20.1: build_finish skipped resolve_captioner_config, so the custom
+    # endpoint reached the captioner with no base URL.
+    from studio import captioner, user_config
+
+    monkeypatch.setattr(user_config, "get_custom_captioner", lambda: {
+        "base_url": "http://127.0.0.1:1/v1", "model": "m", "api_key_env": "",
+        "min_interval_s": 0})
+    seen: dict = {}
+
+    def fake_caption(images, key, *a, **kw):
+        seen.update(kw)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(captioner, "caption_images", fake_caption)
+    with pytest.raises(RuntimeError, match="stop here"):
+        pipeline.build_finish(_start(tmp_path), [], name="Ann", trigger="ann",
+                              captioner="custom", output_root=tmp_path)
+    assert seen["spec_overrides"]["base_url"] == "http://127.0.0.1:1/v1"
+    assert seen["model_override"] == "m"

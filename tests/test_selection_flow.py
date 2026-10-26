@@ -41,7 +41,7 @@ def test_the_picker_script_embeds_those_same_ids() -> None:
 
 
 def test_the_picker_script_is_installed_on_the_page() -> None:
-    assert A.demo.head and "thumbnail-item" in A.demo.head
+    assert "thumbnail-item" in A.LAUNCH_KWARGS["head"]
 
 
 def test_the_picker_script_supports_shift_click_ranges() -> None:

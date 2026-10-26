@@ -15,12 +15,13 @@ import json
 import os
 import re
 import string
-import warnings
 from datetime import datetime
 from pathlib import Path
 
 import gradio as gr
 import pandas as pd
+from starlette.middleware import Middleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from studio import pipeline, shot_style
 from studio import user_config as _uc_boot
@@ -40,6 +41,7 @@ from studio.captioner import (
 from studio.config import (
     CAPTIONERS,
     CAPTIONERS_BY_KEY,
+    REPO_ROOT,
     friendly_api_error,
     list_images,
     load_caption_model_cache,
@@ -1917,16 +1919,8 @@ def do_quick_finish(start, keep: list[str], name: str, trigger: str, dataset_typ
 
 # ---------- layout ----------
 
-# Gradio 5 warns that `head=` moves to `launch()` in Gradio 6 — but `launch()` does not
-# accept it in 5.x, and `requirements.txt` pins `gradio<6` on purpose. Suppressed
-# narrowly so a start-up console that should be empty stays empty; the move is recorded
-# against lifting the gradio<6 cap in docs/ARCHITECTURE.md.
-with warnings.catch_warnings():
-    warnings.filterwarnings("ignore", message=".*'head' parameter in the Blocks.*",
-                            category=DeprecationWarning)
-    _blocks = gr.Blocks(title="Dataset Deviser", head=_PICKER_SCRIPT)
-
-with _blocks as demo:
+# Gradio 6 takes `head=` (the picker script) at launch(); see LAUNCH_KWARGS.
+with gr.Blocks(title="Dataset Deviser") as demo:
     gr.Markdown(
         "# Dataset Deviser\n"
         "Character, style, or concept → ready-to-train LoRA dataset. Every tab works standalone "
@@ -2847,6 +2841,13 @@ with _blocks as demo:
 
     demo.load(_check_for_update, None, update_notice)
 
+# Gradio 6 starts a Textbox with no value= at None (Gradio 5: ""), so an untouched box
+# (e.g. ③'s prefix inside a closed accordion) reached handlers as None and `.strip()` raised.
+for _c in demo.blocks.values():
+    if isinstance(_c, gr.Textbox) and _c.value is None:
+        _c.value = ""
+
+
 def _pick_port(preferred: int = 7861) -> int:
     """LDS_PORT if set, else ``preferred`` if bindable, else any free port.
 
@@ -2868,14 +2869,32 @@ def _pick_port(preferred: int = 7861) -> int:
     raise OSError("No free local port; set LDS_PORT in .env.")
 
 
+# Bound to localhost on purpose: no auth layer, and .env keys are reachable
+# through the process. Do not expose publicly / use share=True.
+# allowed_paths lets the galleries display images in user-chosen input/output
+# folders on any drive (Gradio otherwise refuses paths outside the CWD/temp
+# dir). It is fixed at launch, so it can't be narrowed per-request; the
+# consequence is that the local file endpoint can serve any file the process
+# can read. Safe ONLY because of the localhost-only, no-auth bind - see the
+# Security posture note in docs/ARCHITECTURE.md.
+# TrustedHostMiddleware stops DNS rebinding: Gradio's own CORS check only runs when
+# the Host header is localhost, so a page on evil.example re-pointed at 127.0.0.1
+# could otherwise read any of those files. blocked_paths keeps .env out regardless.
+# Gradio's bundled SourceSansPro-SemiBold.woff2 is a 55-glyph subset (it has "A" and
+# "B", not "C"-"z"), so bold text drew "A" in semibold and the rest in faux-bold.
+# Point weight 600 at the complete Bold file Gradio also ships.
+_FONT_FIX = ('@font-face { font-family: "Source Sans Pro"; font-weight: 600; '
+             'src: url("static/fonts/SourceSansPro/SourceSansPro-Bold.woff2") format("woff2"); }')
+
+LAUNCH_KWARGS: dict = {
+    "server_name": "127.0.0.1", "inbrowser": True, "head": _PICKER_SCRIPT, "css": _FONT_FIX,
+    "allowed_paths": _allowed_media_paths(),
+    "blocked_paths": [str(REPO_ROOT / ".env")],
+    # Gradio 6's run history keeps every call's inputs/outputs and offers HF-bucket upload.
+    "run_history": False,
+    "app_kwargs": {"middleware": [Middleware(TrustedHostMiddleware,
+                                             allowed_hosts=["127.0.0.1", "localhost"])]},
+}
+
 if __name__ == "__main__":
-    # Bound to localhost on purpose: no auth layer, and .env keys are reachable
-    # through the process. Do not expose publicly / use share=True.
-    # allowed_paths lets the galleries display images in user-chosen input/output
-    # folders on any drive (Gradio otherwise refuses paths outside the CWD/temp
-    # dir). It is fixed at launch, so it can't be narrowed per-request; the
-    # consequence is that the local file endpoint can serve any file the process
-    # can read. Safe ONLY because of the localhost-only, no-auth bind above — see
-    # the Security posture note in docs/ARCHITECTURE.md.
-    demo.launch(server_name="127.0.0.1", server_port=_pick_port(), inbrowser=True,
-                allowed_paths=_allowed_media_paths())
+    demo.launch(server_port=_pick_port(), **LAUNCH_KWARGS)

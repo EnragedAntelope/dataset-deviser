@@ -309,10 +309,14 @@ def build_finish(
 
     Returns the dataset folder and the train command ("" without a trainer).
     """
-    from studio.captioner import caption_images
+    from studio.captioner import caption_images, resolve_captioner_config
     from studio.package import package_dataset
 
+    # Without this the custom endpoint arrives with no base URL (the ③ tab and
+    # `cli caption` resolve it; Quick build and `cli build` did not).
+    model_override, spec_overrides = resolve_captioner_config(captioner)
     items = caption_images(images, captioner, name, trigger, progress=progress,
+                           model_override=model_override, spec_overrides=spec_overrides,
                            style=caption_style, prefix=prefix, suffix=suffix,
                            blacklist=drop_tags, dataset_type=dataset_type, sparse=sparse,
                            identity=identity)

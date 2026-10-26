@@ -1,6 +1,6 @@
 # Architecture
 
-Version: 0.20.1
+Version: 0.21.0
 
 ```
 app.py                  Gradio UI — thin wiring over the stage functions (⚡ Quick
@@ -402,11 +402,21 @@ quietly gets someone else's value.
   vanishes with no error. Conversely `gr.update()` is the right form when you want to
   change **one** prop, since the constructor form merges over the component's previous
   constructor args. Pick deliberately.
-- **Gradio 5 warns that `head=` moves to `launch()` — but 5.x's `launch()` has no `head`
-  parameter.** Verified against 5.50. The warning is advice for Gradio 6, which
-  `requirements.txt` pins away from on purpose, so it is suppressed by an exact-message
-  filter around that one call rather than left to print on every start-up. Move the
-  argument when the `gradio<6` cap is lifted, not before.
+- **Every `launch()` argument lives in `app.LAUNCH_KWARGS`.** Gradio 6 takes `head=` (the
+  gallery picker script) and `css=` at `launch()`, not on `Blocks`. Keeping them in one dict
+  lets `tests/test_launch_security.py` build the real app and check the security settings
+  without starting a server.
+- **Gradio's bundled SemiBold font is a 55-glyph subset.** `SourceSansPro-SemiBold.woff2`
+  (6.30) has "A" and "B" but not the rest of the alphabet, so bold text drew "A" in true
+  semibold and every other letter in faux-bold Regular ("own API key" looked like two fonts).
+  `_FONT_FIX` in `app.py` maps weight 600 to the complete Bold file Gradio also ships.
+- **Gradio 6 starts a Textbox with no `value=` at None** (Gradio 5: `""`). A box the user
+  never touched (③'s prefix inside a closed accordion) reached handlers as None and
+  `.strip()` raised. `app.py` sets every such Textbox to `""` after the layout is built;
+  `tests/test_gradio6_defaults.py` pins it. New Textboxes need nothing extra.
+- **The test suite must not write the user's settings.** `tests/conftest.py` repoints
+  `user_config.USER_SETTINGS_FILE` at tmp; before 0.21.0 a suite run overwrote the real
+  `.cache/user_settings.json` (dataset type, trainer, epochs).
 - **A cross-tab hand-off must move the user, not just the data.** "Send kept shots to ③"
   wrote its confirmation into a Markdown box that lives *on the ③ tab* — invisible from
   ②, so the button read as doing nothing at all. Any hand-off needs three things: switch
@@ -1106,14 +1116,12 @@ quietly gets someone else's value.
   filename now raises** `ComfyError` naming the `LDS_` setting to fix and the closest installed
   filenames (via `difflib`), instead of silently sending a value ComfyUI will reject anyway.
   Applies to LoRA/checkpoint/UNet inputs and `UpscaleModelLoader` alike.
-- **Gradio is capped `<6`.** On Gradio 6.20.0, components fed by `demo.load` in ②/③ (shot plan,
-  cost line, character-name box, isolation subject, wardrobe note) get stuck under a loading
-  overlay that never clears — the value arrives but the spinner keeps counting up. Reproduced by
-  A/B on the same code/`.env` (6 stuck components on 6.20.0, 0 on 5.50.0). Root cause inside
-  Gradio 6 is still unknown — logged under Future ideas so an eventual upgrade attempt starts from
-  here instead of re-discovering it. **Caveat for anyone changing the pin by hand:** installing
-  Gradio 5 can pull `pydantic` down to a version older than `google-genai`'s floor; reinstall
-  `pydantic>=2.12.5` afterward if `import google.genai` breaks.
+- **Gradio floor is 6.30 (0.21.0).** 0.12.1-0.20.1 capped `gradio<6` because on 6.20.0 the
+  components fed by `demo.load` in tabs 2 and 3 stuck under a loading overlay that never cleared. On
+  6.30.0 every tab loads clean with the same code (checked in a browser, no spinner left on any
+  tab), so the cap went with the 0.21.0 security update: Gradio 5 had open CVEs fixed only in
+  6.x, and it held Pillow and Starlette on vulnerable versions. The floor is the first tested
+  6.x, not 6.0: do not lower it below 6.30 without re-checking tabs 2 and 3 in a browser.
 - **Alpha cutout is builtin-backend-only and is never auto-filled into ②.** `isolate_builtin`'s
   `alpha_cutout` flag composites the subject onto transparency (straight alpha = the mask)
   instead of white; `isolate_subject` raises `IsolationError` if asked for alpha cutout on
@@ -1322,16 +1330,11 @@ ordered by benefit-to-cost.
 - **ComfyUI-backend alpha cutout.** The `alpha_cutout` toggle at ① (0.13.0) is builtin-SAM3-only —
   the bundled ComfyUI isolation workflows would need a graph change (a core alpha-join node) to
   support it. Revisit if a ComfyUI-only user asks for it.
-Both items below shipped in 0.14.1.
-- **Root-cause the Gradio 6 stuck-loading-overlay bug (0.12.1).** `requirements.txt` caps
-  `gradio<6` because 6.20.0 leaves `demo.load`-fed components stuck under a spinner that never
-  clears (see the Gradio gotcha). Nobody has dug into *why* Gradio 6 does this — worth a real
-  investigation before ever attempting to lift the cap, so the fix doesn't repeat. **When the
-  cap does lift**, two things move with it: pass `head=` to `launch()` instead of the `Blocks`
-  constructor (and drop the warning filter around it), and re-verify `_PICKER_SCRIPT` still
-  finds `.thumbnail-item` — a Gallery DOM change would break click-to-select silently, which
-  is what `tests/test_selection_flow.py`'s id-contract tests guard against on our side. A third:
-  the suite already warns that a tuple `row_count` is removed in Gradio 6.
+- **Pillow 13 (blocked upstream).** Pillow 13.0 fixes the rest of its open CVEs but needs
+  Python 3.11+, and gradio 6.30 requires `pillow<13`. Until Gradio allows it, `studio/__init__.py`
+  limits Pillow's decoders to the formats `IMAGE_EXTS` accepts (see Security posture). When
+  Gradio lifts its cap: raise the floor to `pillow>=13`, drop Python 3.10 from CI and the setup
+  scripts, and keep the decoder allowlist (it still narrows the attack surface).
 
 ## Repo rename: lora-dataset-studio → lora-distillery (0.12.2)
 
@@ -1493,6 +1496,25 @@ Style/Concept release):
   expose the port. (Considered and rejected: narrowing to the configured roots or to `$HOME` — both
   break the standalone "preview images from any folder" workflow for datasets stored elsewhere, for
   a read surface that the localhost boundary already contains.)
+- **Launch hardening (0.21.0), all in `app.LAUNCH_KWARGS` and pinned by
+  `tests/test_launch_security.py`:**
+  - *DNS rebinding.* Gradio's CORS check only runs when the `Host` header is a localhost name,
+    so a web page whose domain re-resolves to `127.0.0.1` could read any file the endpoint
+    serves (including `.env`). A Starlette `TrustedHostMiddleware` (passed through
+    `app_kwargs`) answers 400 to any `Host` other than `127.0.0.1`/`localhost`.
+  - *`.env` is in `blocked_paths`,* which beats `allowed_paths`, so the keys file is 403 even
+    though its drive root is allowed. Before 0.21.0 it was served.
+  - *Run history is off* (`run_history=False`). Gradio 6 records every call's inputs and outputs
+    in the browser and offers to upload them to a Hugging Face bucket; the app never had it.
+- **Pillow decoder allowlist.** `studio/__init__.py` drops every Pillow decoder except PNG, JPEG,
+  WebP, BMP and TIFF (the formats `IMAGE_EXTS` accepts). Pillow picks a decoder by content,
+  not extension, so without this a renamed EPS/PDF/JPEG2000/... file reaches decoders with open
+  CVEs that only Pillow 13 fixes (EPS also runs Ghostscript). Pinned by
+  `tests/test_pillow_formats.py`.
+- **Dependency floors are security floors.** The setup scripts install without `-U`, so a raised
+  floor in `requirements.txt` is what moves an existing install off a vulnerable version. Check
+  with `pip-audit -r requirements.txt` before each release (and the floors themselves with
+  `--no-deps`). Still open in 0.21.0: only Pillow's CVEs that need 13.0 (see Future ideas).
 - **Costs and content are the user's responsibility**, stated in-app (header banner + "Costs & your
   responsibility" accordion) and in the README. Cloud calls bill the user's own key; custom
   endpoints bill whatever provider the user points at. No charges flow through this project.
