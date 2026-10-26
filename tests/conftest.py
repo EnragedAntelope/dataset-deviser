@@ -17,10 +17,14 @@ def _isolate_run_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     some holding a full 24-shot set. Redirecting the three output roots per test
     makes the suite hermetic and keeps `runs/` meaning "work the user did".
     """
+    from studio import user_config
     from studio.config import settings
 
     for attr in ("runs_dir", "output_root", "shot_plans_dir"):
         monkeypatch.setattr(settings, attr, tmp_path / attr, raising=False)
+    # UI handlers persist choices (dataset type, ⑤ settings); without this the suite
+    # overwrote the developer's own .cache/user_settings.json.
+    monkeypatch.setattr(user_config, "USER_SETTINGS_FILE", tmp_path / "user_settings.json")
 
 
 @pytest.fixture
