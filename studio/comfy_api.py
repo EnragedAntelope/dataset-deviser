@@ -37,6 +37,11 @@ _MODEL_INPUTS = {
     "vae_name": "qwen21_vae",
     "ckpt_name": "sam3_checkpoint",
 }
+# Templates whose loaders need other settings than the defaults above.
+_TEMPLATE_MODEL_INPUTS = {
+    "fibo2_edit": {"unet_name": "fibo2_model", "clip_name": "fibo2_text_encoder",
+                   "vae_name": "fibo2_vae"},
+}
 _UPSCALE_SETTINGS = ("dejpg_model", "upscale_model")  # in template node order
 
 
@@ -85,6 +90,12 @@ def _server_filename(class_type: str, input_key: str, value: str,
     for opt in options:  # Windows paths are case-insensitive, ComfyUI's list is not
         if opt.replace("\\", "/").casefold() == norm.casefold():
             return opt
+    # A bare filename the user filed in a subfolder (fibo/x.safetensors), if unique.
+    if "/" not in norm:
+        hits = [o for o in options
+                if o.replace("\\", "/").rsplit("/", 1)[-1].casefold() == norm.casefold()]
+        if len(hits) == 1:
+            return hits[0]
     import difflib
 
     close = difflib.get_close_matches(norm, [o.replace("\\", "/") for o in options],
@@ -100,8 +111,9 @@ def _server_filename(class_type: str, input_key: str, value: str,
 def load_template(name: str) -> dict:
     graph = json.loads((WORKFLOWS_DIR / f"{name}.json").read_text(encoding="utf-8"))
     upscale_iter = iter(_UPSCALE_SETTINGS)
+    model_inputs = {**_MODEL_INPUTS, **_TEMPLATE_MODEL_INPUTS.get(name, {})}
     for node in graph.values():
-        for input_key, setting_attr in _MODEL_INPUTS.items():
+        for input_key, setting_attr in model_inputs.items():
             if input_key in node.get("inputs", {}):
                 node["inputs"][input_key] = _server_filename(
                     node["class_type"], input_key, getattr(settings, setting_attr),
@@ -112,6 +124,15 @@ def load_template(name: str) -> dict:
                 "UpscaleModelLoader", "model_name", getattr(settings, setting_attr),
                 setting_attr)
     return graph
+
+
+def device_type() -> str:
+    """ComfyUI's first compute device type ("cuda", "mps", "cpu"...), "" if unknown."""
+    try:
+        devices = httpx.get(f"{settings.comfy_url}/system_stats", timeout=10).json()["devices"]
+        return str(devices[0].get("type", ""))
+    except Exception:
+        return ""
 
 
 def is_up(timeout: float = 3.0) -> bool:

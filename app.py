@@ -68,8 +68,9 @@ from studio.trainer_configs import TRAINER_MODELS, TRAINERS, optimizer_choices
 TRAINER_CHOICES = [(label, key) for key, label in TRAINERS.items()]
 
 ENGINE_CHOICES = [
-    ("Cloud — Gemini image model (best identity fidelity, SFW only)", "gemini"),
-    ("Local — ComfyUI Qwen Image 2.1 (free, private, uncensored)", "comfyui"),
+    ("Cloud - Gemini image model (best identity fidelity, SFW only)", "gemini"),
+    ("Local - ComfyUI Fibo 2.0 Edit Turbo (free, private, uncensored, fast)", "comfyui"),
+    ("Local - ComfyUI Qwen Image 2.1 (free, private, uncensored)", "comfyui-qwen21"),
 ]
 CLOUD_MODEL_CHOICES = image_model_choices(known_image_models())
 
@@ -348,8 +349,9 @@ def preview_final_prompt(plan_df: pd.DataFrame, engine: str, exclude_props: bool
     shot = apply_wardrobe(shots[0])
     if exclude_props:
         shot = apply_prop_exclusion(shot)
-    field = "local_prompt" if engine == "comfyui" else "cloud_prompt"
-    which = "Local (ComfyUI / Qwen-Image 2.1)" if engine == "comfyui" else "Cloud (Gemini)"
+    local = engine.startswith("comfyui")
+    field = "local_prompt" if local else "cloud_prompt"
+    which = "Local (ComfyUI)" if local else "Cloud (Gemini)"
     return (f"**{which} prompt for `{shot.id}`** — exactly what the engine receives, "
             f"after outfit and prop-exclusion are folded in:\n\n```\n"
             f"{getattr(shot, field)}\n```")
@@ -1475,7 +1477,7 @@ def do_load_plan(plan_name: str):
     stale = sum("<sks>" in s.local_prompt for s in shots)
     if stale:
         note += (f" ⚠️ {stale} shot(s) still use the old Qwen-Image-Edit `<sks>` prompts, "
-                 f"which the local Qwen-Image 2.1 engine doesn't understand — rebuild the "
+                 f"which the local engines don't understand - rebuild the "
                  f"plan from the dataset type / shot style, or rewrite those local prompts.")
     return _shots_to_df(shots), note
 
@@ -1522,9 +1524,7 @@ def _repeats(trainer: str, stats, epochs, batch_size, repeats) -> int:
     """The typed repeats, or (0 = auto) the count that reaches the target steps."""
     if int(repeats or 0) > 0:
         return int(repeats)
-    if trainer == "fizgig":  # Fizgig's own guidance: repeats 1, more epochs
-        return 1
-    return stats.suggested_repeats(int(epochs or 1), int(batch_size or 1))
+    return stats.suggested_repeats(int(epochs or 1), int(batch_size or 1), trainer=trainer)
 
 
 def exposure_line(trainer: str, dataset_dir: str, epochs, repeats, batch_size) -> str:
@@ -1759,8 +1759,9 @@ def _check_for_update():
 
 # ---------- ⚡ Quick build ----------
 
-QUICK_ENGINES = [("Cloud — Gemini, billed to your Google key", "gemini"),
-                 ("Local — ComfyUI, free", "comfyui")]
+QUICK_ENGINES = [("Cloud - Gemini, billed to your Google key", "gemini"),
+                 ("Local - ComfyUI Fibo 2.0, free", "comfyui"),
+                 ("Local - ComfyUI Qwen Image 2.1, free", "comfyui-qwen21")]
 
 
 def quick_trigger(name: str, trigger: str) -> str:
@@ -1787,8 +1788,8 @@ def quick_engine_note(engine: str, dataset_type: str) -> str:
     up = check_comfyui()
     if up.warn:
         return f"⚠️ ComfyUI: {up.detail}"
-    models = check_comfyui_models()
-    if models and not models.ok:
+    models = check_comfyui_models(engine)
+    if models and models.warn:
         return f"⚠️ {models.detail}"
     return f"✅ ComfyUI is ready: {n} shots, $0."
 

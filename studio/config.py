@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -46,9 +46,10 @@ _BASE_PROMPT = (
     "Describe the subject's pose, the camera angle and framing, the setting, and the "
     "lighting. If the background is plain, just say so briefly. Do not describe the "
     "subject's fixed physical appearance in exhaustive detail (identity is learned "
-    "separately); focus on what varies between images. Do not mention that this is "
-    "AI-generated, a film still, or training data. Output only the caption paragraph, "
-    "nothing else."
+    "separately); focus on what varies between images. Describe only what is "
+    "visible: never list what is absent or say what the image is not. Do not "
+    "mention that this is AI-generated, a film still, or training data. Output only "
+    "the caption paragraph, nothing else."
 )
 
 # JoyCaption was trained on a specific instruction format and supports a
@@ -551,13 +552,24 @@ class Settings(BaseSettings):
     # pointing at the Qwen2.5-VL file would otherwise be fed to the 2.1 graph.
     qwen21_text_encoder: str = "qwen3vl_8b_int8_convrot.safetensors"
     qwen21_vae: str = "qwen_image_2.1_vae_bf16.safetensors"
-    # References per local shot (the node takes up to 16), in order: the chained
-    # view when there is one, then the primary, then the rest. 1 and 1536 won the
-    # 0.19.0 A/B (docs/ARCHITECTURE.md).
-    qwen21_max_refs: int = 1
-    # Each reference is resized to about this many pixels squared; the output
-    # follows the first reference's aspect at about the same size.
+    # References per local shot, either local model (the nodes take up to 16), in
+    # order: the chained view when there is one, then the primary, then the rest.
+    # 1 won the 0.19.0 A/B (docs/ARCHITECTURE.md). LDS_QWEN21_MAX_REFS is its old name.
+    local_max_refs: int = Field(default=1, validation_alias=AliasChoices(
+        "LDS_LOCAL_MAX_REFS", "LDS_QWEN21_MAX_REFS"))
+    # Qwen-Image 2.1 only: each reference is resized to about this many pixels
+    # squared; the output follows the first reference's aspect at about the same size.
     qwen21_resolution: int = 1536
+    # Fibo 2.0 Edit Turbo, the default local model (engine key "comfyui").
+    fibo2_model: str = "fibo2_edit_turbo_bf16.safetensors"
+    fibo2_text_encoder: str = "qwen3vl_4b_bf16.safetensors"
+    fibo2_vae: str = "flux2-vae.safetensors"
+    # Output size; the template scales RoPE to match. 4 won the 2026-11-24 A/B and is
+    # the cap (higher is untested), 1 MP gave soft faces.
+    fibo2_megapixels: float = 4.0
+    # "" = INT8 "comfy kitchen attention" when ComfyUI runs on CUDA (Nvidia/AMD),
+    # else "pytorch attention". Set either name to force it.
+    fibo2_attention: str = ""
     upscale_model: str = "4xNomosWebPhoto_RealPLKSR.safetensors"
     dejpg_model: str = "1xDeJPG_OmniSR.pth"
     sam3_checkpoint: str = "sam3.1_multiplex_fp16.safetensors"

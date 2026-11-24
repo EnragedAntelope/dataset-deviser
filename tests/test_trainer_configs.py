@@ -271,4 +271,9 @@ def test_default_config_writes_the_presets_defaults(tmp_path: Path) -> None:
                                       trigger="annlee")
     names = {p.name for p in written}
     assert "fizgig-dataset.toml" in names and "validation_prompts.txt" in names
-    assert "--max_train_epochs 30" in command and "ann-lee" in command
+    assert "--max_train_epochs 12" in command and "ann-lee" in command
+    assert "--network_dim 32" in command
+    # 3 images x 12 epochs reach Fizgig's ~800-step target through repeats.
+    toml = next(p for p in written if p.name == "fizgig-dataset.toml").read_text(
+        encoding="utf-8")
+    assert "num_repeats = 22" in toml

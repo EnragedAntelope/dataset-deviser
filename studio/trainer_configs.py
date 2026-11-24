@@ -216,13 +216,16 @@ TRAINER_MODELS: dict[str, list[ModelPreset]] = {
     # Fizgig (shootthesound/Fizgig, docs/CLI.md): `arch` is its --family. Each
     # preset is the GUI's default recipe — adaptive LR (which ignores
     # --learning_rate), EMA, and the speed LoRA / adapter it renders and trains
-    # with. Fizgig wants repeats 1 and more epochs.
+    # with. Auto repeats aim at FIZGIG_TARGET_STEPS, which leaves most sets at 1.
     "fizgig": [
+        # Not the GUI default (rank 8, 30 epochs): rank 32 / alpha 32, 12 epochs at
+        # about 800 steps is the recipe that trained a long run of Krea 2 character
+        # LoRAs on Fizgig, and beat LoKr and Prodigy in an A/B (2026-11).
         ModelPreset(key="krea2", label="Krea 2 (Raw)", arch="krea2",
                     musubi_args="--adaptive_lr --adaptive_lr_min 2e-4 --adaptive_lr_max 4e-4 "
                                 "--ema_decay 0.98 --speed_lora <<FILL: Krea 2 Turbo LoRA path>> "
                                 "--sample_steps 8",
-                    sample_guidance=1.0, sample_steps=8, rank=8, alpha=8, epochs=30),
+                    sample_guidance=1.0, sample_steps=8, rank=32, alpha=32, epochs=12),
         # 0.5 MP: Fizgig's Qwen presets train at [704, 704].
         ModelPreset(key="qwen_image21", label="Qwen Image 2.1", arch="qwen_image21",
                     musubi_args="--adaptive_lr --adaptive_lr_min 2e-4 --adaptive_lr_max 4e-4 "
@@ -272,9 +275,10 @@ def validation_prompts(cfg: TrainConfig) -> list[str]:
     """Eight fixed prompts the trainer samples every epoch, same seed each time.
 
     They probe what a LoRA gets wrong: a tight face (likeness), full body and a
-    back view (physique, the views a few references rarely show), an outfit and
-    a setting the dataset never had (does the trigger carry the subject or the
-    training images?), another medium (flexibility), and action. House rules
+    back view (physique, the views a few references rarely show), a close profile
+    (an undertrained or profile-poor LoRA turns it back toward the camera), an
+    outfit and setting the dataset never had (does the trigger carry the subject
+    or the training images?), another medium (flexibility), and action. House rules
     as ②: no negation, never "photorealistic".
 
     The medium follows the ② shot style: "a photo of <trigger>" is wrong for a
@@ -304,7 +308,8 @@ def validation_prompts(cfg: TrainConfig) -> list[str]:
             f"{subject}, seen from behind over the shoulder, walking down a city "
             f"street at dusk",
             f"{subject}, sitting at a cafe table wearing a yellow raincoat",
-            f"{subject}, standing on the deck of a sailing ship in a storm",
+            f"{subject}, head and shoulders seen from the side in full profile, "
+            f"soft evening light",
             f"a charcoal sketch of {who}, waist-up portrait",
             f"{subject}, jumping mid-air on a beach, arms raised"]
 
@@ -743,7 +748,7 @@ def default_config(dataset_dir: Path, trainer: str, model_key: str, *, name: str
     """⑤ with every field at the preset's default: Quick build and `cli build --trainer`.
 
     Same derivation ⑤ makes on its own: buckets from the dataset's real sizes,
-    repeats sized to the step target (Fizgig: 1, its own guidance).
+    repeats sized to the step target (Fizgig: its own, smaller target).
     """
     from studio.dataset_stats import inspect
     from studio.package import slugify
@@ -753,8 +758,7 @@ def default_config(dataset_dir: Path, trainer: str, model_key: str, *, name: str
     preset = next((p for p in TRAINER_MODELS[trainer] if p.key == model_key),
                   TRAINER_MODELS[trainer][0])
     stats = inspect(dataset_dir)
-    repeats = 1 if trainer == "fizgig" else stats.suggested_repeats(preset.epochs,
-                                                                    preset.batch_size)
+    repeats = stats.suggested_repeats(preset.epochs, preset.batch_size, trainer=trainer)
     cfg = TrainConfig(
         trainer=trainer, model=preset, dataset_dir=dataset_dir, trigger=trigger,
         name=slugify(name) or "lora", dataset_type=dataset_type,

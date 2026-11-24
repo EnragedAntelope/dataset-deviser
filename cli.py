@@ -92,7 +92,7 @@ def _preflight_comfyui(engine: str) -> None:
     `check_comfyui_models` validates every bundled template, including ones this
     run may never submit, so it must not block a run that would have worked.
     """
-    if engine != "comfyui":
+    if not engine.startswith("comfyui"):
         return
     from studio import comfy_api
     from studio.doctor import check_comfyui_models
@@ -103,7 +103,7 @@ def _preflight_comfyui(engine: str) -> None:
                    f"Start it, set LDS_COMFY_URL in .env (see docs/comfyui-setup.md), "
                    f"or use --engine gemini. Nothing was preprocessed.", err=True)
         raise typer.Exit(1)
-    models = check_comfyui_models()
+    models = check_comfyui_models(engine)
     if models is not None and models.warn:
         typer.echo(f"Warning: {models.detail}\n"
                    f"Fix the filename in .env (see docs/comfyui-setup.md) if the "
@@ -257,8 +257,9 @@ def generate(
         help="character (24-shot set) | concept (18-shot object set); style does not generate"),
     engine: str = typer.Option(
         settings.default_engine,
-        help="gemini (cloud, billed to your key) or comfyui (local, free — needs "
-             "the models in docs/comfyui-setup.md; `doctor` says if it is ready)"),
+        help="gemini (cloud, billed to your key), comfyui (local Fibo 2.0, free) or "
+             "comfyui-qwen21 (local Qwen-Image 2.1) - local needs the models in "
+             "docs/comfyui-setup.md; `doctor` says if it is ready"),
     cloud_model: str = typer.Option("", help=f"Cloud image model (default {settings.gemini_image_model})"),
     shot_style: str = typer.Option(
         "match", "--shot-style",
@@ -452,8 +453,9 @@ def build(
     trigger: str = typer.Option("", help="LoRA trigger word placed first in every caption"),
     engine: str = typer.Option(
         settings.default_engine,
-        help="gemini (cloud, billed to your key) or comfyui (local, free — needs "
-             "the models in docs/comfyui-setup.md; `doctor` says if it is ready)"),
+        help="gemini (cloud, billed to your key), comfyui (local Fibo 2.0, free) or "
+             "comfyui-qwen21 (local Qwen-Image 2.1) - local needs the models in "
+             "docs/comfyui-setup.md; `doctor` says if it is ready"),
     captioner: str = typer.Option(settings.default_captioner,
                                   help=f"one of {[c.key for c in CAPTIONERS]}"),
     caption_style: str = typer.Option(

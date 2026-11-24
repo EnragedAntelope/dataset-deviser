@@ -40,10 +40,13 @@ def new_run_dir(name: str = "") -> Path:
 
 
 def make_engine(engine_key: str, cloud_model: str = "", front: bool = False):
-    if engine_key == "comfyui":
+    if engine_key.startswith("comfyui"):
         from studio.engines.comfyui import ComfyUIEngine
 
-        return ComfyUIEngine(front=front)
+        return ComfyUIEngine(front=front, model=engine_key)
+    if engine_key != "gemini":
+        raise GenerationError(f"Unknown engine '{engine_key}' - use gemini, comfyui "
+                              f"(Fibo 2.0) or comfyui-qwen21 (Qwen-Image 2.1).")
     from studio.engines.gemini import GeminiEngine
 
     return GeminiEngine(model=cloud_model)
