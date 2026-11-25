@@ -1,7 +1,7 @@
 """Export: assemble the final ready-to-train dataset folder.
 
-Standalone like every other stage — `package_folder()` exports any folder
-that already has NN.txt caption sidecars (however they were produced).
+Standalone like every other stage: `resolve_export_items()` + `package_dataset()`
+export any images that have .txt caption sidecars (however they were produced).
 """
 
 from __future__ import annotations
@@ -230,35 +230,3 @@ def zip_dataset(ds_dir: Path) -> Path:
         for f in files:
             zf.write(f, arcname=f"{ds_dir.name}/{f.relative_to(ds_dir).as_posix()}")
     return zip_path
-
-
-def package_folder(
-    folder: Path,
-    output_root: Path,
-    character_name: str = "",
-    trigger: str = "",
-    only: list[Path] | None = None,
-) -> Path:
-    """Export a folder whose images already have .txt caption sidecars."""
-    from studio.config import list_images, read_caption
-
-    images = only if only else list_images(folder)
-    items: list[tuple[Path, str]] = []
-    missing: list[str] = []
-    for img in images:
-        if img.with_suffix(".txt").exists():
-            items.append((img, read_caption(img)))
-        else:
-            missing.append(img.name)
-    if not items:
-        raise RuntimeError(
-            f"No captioned images in {folder} — run captioning first (each image "
-            f"needs a matching .txt sidecar)."
-        )
-    metadata = {
-        "character_name": character_name,
-        "trigger": trigger,
-        "source_folder": str(folder),
-        "skipped_uncaptioned": missing,
-    }
-    return package_dataset(items, output_root, character_name, trigger, metadata)

@@ -85,6 +85,9 @@ class ComfyUIEngine:
                     graph[node]["inputs"]["image"] = self._source_name(ref)
                 images = comfy_api.run_prompt(graph, timeout=600, front=self.front)
                 return comfy_api.fetch_image(images[0], out_path)
+            except comfy_api.ComfyTimeout as e:
+                # Still queued or running in ComfyUI: a retry would run the shot twice.
+                raise GenerationError(f"shot {shot.id}: {e}") from e
             except (comfy_api.ComfyError, httpx.HTTPError) as e:
                 last_err = e
                 graph["6"]["inputs"]["seed"] = seed + 1

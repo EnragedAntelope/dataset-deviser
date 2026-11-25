@@ -19,6 +19,10 @@ class ComfyError(Exception):
     pass
 
 
+class ComfyTimeout(ComfyError):
+    """Our job outlived its timeout. It may still be running, so never re-queue it."""
+
+
 # Consecutive failed /history polls before a running job is given up on (each poll
 # waits up to 30 s, so a stalled server gets minutes, not seconds).
 MAX_STALLED_POLLS = 5
@@ -386,7 +390,7 @@ def run_prompt(graph: dict, timeout: float = 600.0, front: bool = False) -> list
                 if _is_pending(prompt_id):
                     deadline = now + timeout
         time.sleep(1.5)
-    raise ComfyError(
+    raise ComfyTimeout(
         f"ComfyUI did not finish within {timeout:g}s (prompt {prompt_id}). It may "
         f"still be running — check the ComfyUI window. A first run that downloads "
         f"or loads a large model can exceed this; retry once the model is cached, "

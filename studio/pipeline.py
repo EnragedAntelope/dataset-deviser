@@ -318,11 +318,28 @@ def build_finish(
     # Without this the custom endpoint arrives with no base URL (the ③ tab and
     # `cli caption` resolve it; Quick build and `cli build` did not).
     model_override, spec_overrides = resolve_captioner_config(captioner)
-    items = caption_images(images, captioner, name, trigger, progress=progress,
-                           model_override=model_override, spec_overrides=spec_overrides,
-                           style=caption_style, prefix=prefix, suffix=suffix,
-                           blacklist=drop_tags, dataset_type=dataset_type, sparse=sparse,
-                           identity=identity)
+    # Write each sidecar as it arrives, like the Caption tab: a cloud failure on the last image
+    # must not throw away the captions already paid for.
+    written: list[Path] = []
+
+    def persist(img: Path, caption: str) -> None:
+        img.with_suffix(".txt").write_text(caption, encoding="utf-8")
+        written.append(img)
+
+    try:
+        items = caption_images(images, captioner, name, trigger, progress=progress,
+                               model_override=model_override, spec_overrides=spec_overrides,
+                               style=caption_style, prefix=prefix, suffix=suffix,
+                               blacklist=drop_tags, dataset_type=dataset_type, sparse=sparse,
+                               identity=identity, on_item=persist)
+    except Exception as e:
+        if not written:
+            raise
+        raise RuntimeError(
+            f"captioning stopped after {len(written)} of {len(images)} images ({e}). "
+            f"The finished captions are saved next to their images under {start.run_dir} "
+            f"(prepped/ and generated/): caption the rest in the Caption tab with 'Skip images that "
+            f"already have a caption' ticked, then export in the Export tab.") from e
     metadata: dict = {
         "character_name": name,
         "trigger": trigger,

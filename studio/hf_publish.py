@@ -28,6 +28,11 @@ class HFPublishError(Exception):
     """
 
 
+# Files that stay on this machine: metadata.json and the Train configs hold absolute local
+# paths (the user's account name, folder layout); the hand-off sidecar is local state.
+# The images, captions, metadata.jsonl and README.txt are the dataset.
+LOCAL_ONLY = ["metadata.json", ".lora-studio/*", "validation/*", "*.yaml", "*.toml"]
+
 # owner/name or a bare name; HF allows letters, digits, '-', '_', '.'.
 _REPO_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?$")
 
@@ -75,7 +80,7 @@ def publish_dataset(
     """Create (if needed) and upload a dataset folder to the Hub. Returns its URL.
 
     Private by default. Requires a write token (HF_TOKEN). Only the files inside
-    `ds_dir` are uploaded.
+    `ds_dir` are uploaded, minus the ones in `LOCAL_ONLY`.
     """
     ds_dir = Path(ds_dir)
     if not ds_dir.is_dir():
@@ -103,6 +108,7 @@ def publish_dataset(
     api.create_repo(repo_id, repo_type="dataset", private=private, exist_ok=True)
     progress(f"Uploading {ds_dir.name} to {repo_id}...")
     api.upload_folder(folder_path=str(ds_dir), repo_id=repo_id, repo_type="dataset",
+                      ignore_patterns=LOCAL_ONLY,
                       commit_message="Upload LoRA dataset (Dataset Deviser)")
     url = f"https://huggingface.co/datasets/{repo_id}"
     progress(f"Published: {url}")

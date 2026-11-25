@@ -204,7 +204,7 @@ set. If you add a test that legitimately needs a real output root, opt out expli
 rather than deleting the fixture.
 
 `.github/workflows/ci.yml` runs both on every push to `main` and every PR, across Python
-3.10–3.12. It installs `requirements.txt` only (**no `torch`**): the suite is CPU-only and never
+3.10-3.13. It installs `requirements.txt` only (**no `torch`**): the suite is CPU-only and never
 needs the real ML backends, so CI stays fast and deterministic. The workflow declares
 `permissions: contents: read` — it only ever reads the repo, so the default write-capable token
 is more authority than it needs.
@@ -430,7 +430,9 @@ quietly gets someone else's value.
   collected every caption in memory and the caller wrote sidecars only once it returned,
   so a single Gemini 503 on the last image of a batch discarded 15 captions the user had
   already been billed for. The `on_item` callback exists solely so the sidecar hits disk
-  immediately. Any future batch stage over a paid API needs the same shape.
+  immediately. Any future batch stage over a paid API needs the same shape. Quick build Finish
+  and `cli build` (`pipeline.build_finish`) skipped it until 0.22.1 and lost every caption to
+  one failure; they now persist per item too and the error names how many were saved.
 - **The generated shots' medium was hard-coded, so an illustrated reference came back
   photographic.** A user reported it and it was a real defect, not a missing feature:
   `_build_local_prompt` appended `"photorealistic, consistent identity"` to every non-angle
@@ -937,6 +939,8 @@ quietly gets someone else's value.
   weights; the retry then queued the same job twice. `comfy_api.run_prompt` now tolerates
   `MAX_STALLED_POLLS` consecutive failed polls before giving up, and `ComfyUIEngine.generate` turns
   any `httpx` error (upload, poll, fetch) into a per-shot `GenerationError`, never a crashed run.
+  A job that outlives its timeout raises `ComfyTimeout` and is **not** retried (0.22.1): it may
+  still be running, and the retry queued a second copy behind it.
 - **ComfyUI caches model combo lists**; a freshly downloaded model file may need a ComfyUI
   restart before the bundled workflows validate.
 - **Model filenames are configuration — all of them.** The bundled workflow JSONs are patched at
@@ -1182,6 +1186,8 @@ quietly gets someone else's value.
   tab), so the cap went with the 0.21.0 security update: Gradio 5 had open CVEs fixed only in
   6.x, and it held Pillow and Starlette on vulnerable versions. The floor is the first tested
   6.x, not 6.0: do not lower it below 6.30 without re-checking tabs 2 and 3 in a browser.
+  **0.22.1 raised it to 6.32**, the first Gradio that allows Pillow 13 (`pillow<14`); every tab
+  was re-checked in a browser on 6.32.0.
 - **Alpha cutout is builtin-backend-only and is never auto-filled into ②.** `isolate_builtin`'s
   `alpha_cutout` flag composites the subject onto transparency (straight alpha = the mask)
   instead of white; `isolate_subject` raises `IsolationError` if asked for alpha cutout on
@@ -1365,10 +1371,6 @@ ordered by benefit-to-cost.
   the rendered prompts, not by a generation run — the shot mix (10 angles / 4 framing / 4 context)
   and the `front view high-angle` addition are reasoned, not measured. If object turnarounds come
   back weak, retune the mix or drop the shots the LoRA can't do, and record the finding here.
-- **Multi-reference generation (②, local).** Qwen-Image 2.1 accepts up to 10 references
-  (`TextEncodeQwenImage21`'s `images.image_N`); the engine still sends one per shot. Several
-  references of the same character could hold identity better on hard angles. Untested — needs
-  its own A/B before it earns a control.
 - **Face-similarity identity guard (② curate).** Flag generated shots that drift from the
   reference's identity. Genuinely useful for character LoRAs but needs a face-recognition
   dependency (InsightFace + onnxruntime); could be an optional extra like the gated SAM3 download.
@@ -1382,6 +1384,11 @@ ordered by benefit-to-cost.
   puts the LoRA on the attention projections only (via `--network_args "exclude_patterns=[…]"`),
   leaving the feed-forward layers, which hold more of the textures, clothes and backgrounds, alone.
   Evidence for a likeness gain is anecdotal and per-model; add when an A/B shows it.
+- **Strip photo metadata before a publish (Export).** Export copies JPEG/WebP bytes verbatim, so a
+  phone photo exported without Preprocess keeps its EXIF, GPS included, and an HF publish uploads it.
+  Stripping on export would re-encode (a quality cost) or need a lossless EXIF rewrite; a warning
+  in the publish step that names the files carrying GPS is the cheap half. Noted in the 0.22.1
+  audit; not built.
 - **Fizgig look-score report (⑤).** Fizgig writes `fizgig_look_scores.json` per run; reading it
   back into a per-epoch report beside `validation_scores.csv` would close the pick-the-epoch loop.
 - **Exact CLIP token count (③/④).** The 77-token warning is a tokenizer-free estimate; loading the
@@ -1390,11 +1397,6 @@ ordered by benefit-to-cost.
 - **ComfyUI-backend alpha cutout.** The `alpha_cutout` toggle at ① (0.13.0) is builtin-SAM3-only —
   the bundled ComfyUI isolation workflows would need a graph change (a core alpha-join node) to
   support it. Revisit if a ComfyUI-only user asks for it.
-- **Pillow 13 (blocked upstream).** Pillow 13.0 fixes the rest of its open CVEs but needs
-  Python 3.11+, and gradio 6.30 requires `pillow<13`. Until Gradio allows it, `studio/__init__.py`
-  limits Pillow's decoders to the formats `IMAGE_EXTS` accepts (see Security posture). When
-  Gradio lifts its cap: raise the floor to `pillow>=13`, drop Python 3.10 from CI and the setup
-  scripts, and keep the decoder allowlist (it still narrows the attack surface).
 
 ## Repo rename: lora-dataset-studio → lora-distillery (0.12.2)
 
@@ -1570,11 +1572,13 @@ Style/Concept release):
   WebP, BMP and TIFF (the formats `IMAGE_EXTS` accepts). Pillow picks a decoder by content,
   not extension, so without this a renamed EPS/PDF/JPEG2000/... file reaches decoders with open
   CVEs that only Pillow 13 fixes (EPS also runs Ghostscript). Pinned by
-  `tests/test_pillow_formats.py`.
+  `tests/test_pillow_formats.py`. Since 0.22.1 Python 3.11+ installs Pillow 13 (an environment
+  marker in `requirements.txt`); Pillow 13 needs 3.11, so 3.10 stays on 12.3 and the allowlist
+  is its mitigation. Kept on 13 too: it still narrows the attack surface.
 - **Dependency floors are security floors.** The setup scripts install without `-U`, so a raised
   floor in `requirements.txt` is what moves an existing install off a vulnerable version. Check
   with `pip-audit -r requirements.txt` before each release (and the floors themselves with
-  `--no-deps`). Still open in 0.21.0: only Pillow's CVEs that need 13.0 (see Future ideas).
+  `--no-deps`). Still open in 0.22.1: Pillow 12.3's CVEs on Python 3.10 only (see above).
 - **Costs and content are the user's responsibility**, stated in-app (header banner + "Costs & your
   responsibility" accordion) and in the README. Cloud calls bill the user's own key; custom
   endpoints bill whatever provider the user points at. No charges flow through this project.
@@ -1587,7 +1591,11 @@ Style/Concept release):
   reads the write token only from `HF_TOKEN` (never persisted). It uploads every image in the
   dataset folder to a remote host — the in-app notice states the user is responsible for the rights
   to that content and for HF's terms. Once uploaded, content may be cached/indexed even if later
-  deleted.
+  deleted. Since 0.22.1 `hf_publish.LOCAL_ONLY` keeps `metadata.json`, the Train tab's configs and
+  `validation/`, and `.lora-studio/` off the Hub: they hold absolute local paths (the user's
+  account name and folder layout). Images, captions, `metadata.jsonl` and `README.txt` go up.
+  Images exported verbatim keep their own EXIF (a JPEG straight from a phone can carry GPS); Preprocess's
+  PNGs carry only the `dd_source` chunk (source file name, size, capture time). See Future ideas.
 - Local model weights come from Hugging Face as safetensors; the WD/Z3D taggers download an ONNX
   model + tag CSV from a public repo (no gating). `onnxruntime` is an optional, lazy dep.
 - The ⑤ Train tab **generates and displays** config files and a run command — it never executes a
