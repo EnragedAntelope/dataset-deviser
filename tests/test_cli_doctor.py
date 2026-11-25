@@ -112,6 +112,55 @@ def test_comfyui_models_check_reports_a_bad_filename_without_failing_the_run(
     assert "LDS_SAM3_CHECKPOINT" in check.detail
 
 
+def _only_fibo_installed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    from studio import comfy_api
+
+    loaded: list[str] = []
+    monkeypatch.setattr(comfy_api, "is_up", lambda: True)
+
+    def fake_load_template(name: str) -> dict:
+        loaded.append(name)
+        if name == "qwen21_edit":
+            raise comfy_api.ComfyError("ComfyUI has no unet_name 'qwen.safetensors'")
+        return {}
+
+    monkeypatch.setattr(comfy_api, "load_template", fake_load_template)
+    return loaded
+
+
+def test_one_complete_local_model_is_enough(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fibo or Qwen, not both: doctor stays quiet about the one you don't have."""
+    _only_fibo_installed(monkeypatch)
+    check = D.check_comfyui_models()
+    assert check is not None and not check.warn
+
+
+def test_the_chosen_local_model_is_the_one_checked(monkeypatch: pytest.MonkeyPatch) -> None:
+    loaded = _only_fibo_installed(monkeypatch)
+    check = D.check_comfyui_models("comfyui")
+    assert check is not None and not check.warn
+    assert "qwen21_edit" not in loaded
+    check = D.check_comfyui_models("comfyui-qwen21")
+    assert check is not None and check.warn and "qwen.safetensors" in check.detail
+    assert "fibo2_edit" not in loaded[loaded.index("qwen21_edit"):]
+
+
+def test_no_complete_local_model_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    from studio import comfy_api
+
+    monkeypatch.setattr(comfy_api, "is_up", lambda: True)
+
+    def fake_load_template(name: str) -> dict:
+        if name in ("qwen21_edit", "fibo2_edit"):
+            raise comfy_api.ComfyError(f"{name} model missing")
+        return {}
+
+    monkeypatch.setattr(comfy_api, "load_template", fake_load_template)
+    check = D.check_comfyui_models()
+    assert check is not None and check.warn
+    assert "fibo2_edit model missing" in check.detail and "qwen21_edit model missing" in check.detail
+
+
 # --- key reporting ---------------------------------------------------------
 
 def test_key_report_names_what_a_missing_key_blocks(tmp_path: Path) -> None:

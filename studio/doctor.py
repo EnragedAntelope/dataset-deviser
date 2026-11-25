@@ -170,9 +170,13 @@ def check_comfyui() -> Check:
                  warn=True)
 
 
-def check_comfyui_models() -> Check | None:
+def check_comfyui_models(engine: str = "") -> Check | None:
     """If ComfyUI is reachable, validate every bundled template's configured model
     filename against the server's own list.
+
+    A user needs only one local generation model: with a local `engine` key the
+    other one is not checked; with none, a missing one is reported only when no
+    local model is complete.
 
     Reuses `comfy_api.load_template()` itself — the exact seam a real generate/
     preprocess run goes through — rather than re-implementing the matching, so
@@ -188,14 +192,28 @@ def check_comfyui_models() -> Check | None:
     except Exception:
         return None
 
+    from studio.engines.comfyui import LOCAL_MODELS
+
+    local = {t for t, _ in LOCAL_MODELS.values()}
+    if engine in LOCAL_MODELS:
+        skip = local - {LOCAL_MODELS[engine][0]}
+    else:
+        skip = set()
     problems: list[str] = []
+    local_problems: list[str] = []
+    local_ok = False
     for path in sorted(comfy_api.WORKFLOWS_DIR.glob("*.json")):
+        if path.stem in skip:
+            continue
         try:
             comfy_api.load_template(path.stem)
+            local_ok = local_ok or path.stem in local
         except comfy_api.ComfyError as e:
-            problems.append(str(e))
+            (local_problems if path.stem in local else problems).append(f"{path.stem}: {e}")
         except Exception:
             continue  # a template JSON/parse issue isn't this check's job to report
+    if not local_ok:
+        problems = local_problems + problems
     if not problems:
         return Check("ComfyUI models", True, "all configured model filenames found on the server")
     return Check("ComfyUI models", True, " | ".join(problems), warn=True)

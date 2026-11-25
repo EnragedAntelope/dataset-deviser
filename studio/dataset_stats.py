@@ -22,6 +22,9 @@ from studio.config import list_images
 STEPS_PER_IMAGE = 75
 MIN_STEPS = 1000
 MAX_STEPS = 4000
+# Fizgig's adaptive LR learns a character in far fewer steps: 560-890 trained a long
+# run of Krea 2 LoRAs well (9 images: 14 epochs x 6 repeats; 75 images: 11 x 1).
+FIZGIG_TARGET_STEPS = 800
 
 # PNG text chunk ① writes into every prepped image: the source photo's name,
 # original size and capture time. ③ only writes sidecars and ④ copies bytes,
@@ -65,8 +68,8 @@ class DatasetStats:
             return MIN_STEPS
         return max(MIN_STEPS, min(MAX_STEPS, self.n_images * STEPS_PER_IMAGE))
 
-    def suggested_repeats(self, epochs: int, batch_size: int = 1) -> int:
-        """Repeats that bring `epochs` passes near `target_steps`.
+    def suggested_repeats(self, epochs: int, batch_size: int = 1, trainer: str = "") -> int:
+        """Repeats that bring `epochs` passes near `target_steps` (Fizgig: its own).
 
         Epochs set how many checkpoints there are to compare; repeats set how
         long each one trains. 16 epochs of a 24-image set at repeats 1 is only
@@ -74,8 +77,9 @@ class DatasetStats:
         """
         if not self.n_images:
             return 1
+        target = FIZGIG_TARGET_STEPS if trainer == "fizgig" else self.target_steps
         per_repeat = self.n_images * max(epochs, 1) / max(batch_size, 1)
-        return max(1, round(self.target_steps / per_repeat))
+        return max(1, round(target / per_repeat))
 
     def buckets_for(self, resolution: int) -> list[int]:
         """Bucket ladder capped at `resolution` — never upscale past the

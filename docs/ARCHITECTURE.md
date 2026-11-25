@@ -167,9 +167,13 @@ studio/
                         and reports failures through friendly_api_error().
                         shot_aspect() sets 2:3 / 1:1 per shot; references are capped
                         at the model's character limit (CHARACTER_REFS)
-    comfyui.py          Local engine (Qwen-Image 2.1): one LoadImage per reference up
-                        to LDS_QWEN21_MAX_REFS, at LDS_QWEN21_RESOLUTION
-  comfy_workflows/*.json  API-format ComfyUI graphs (restore, isolate ×2, qwen21 edit)
+    comfyui.py          Local engine. LOCAL_MODELS maps the engine key to a template:
+                        "comfyui" = Fibo 2.0 Edit Turbo (fibo2_edit, default),
+                        "comfyui-qwen21" = Qwen-Image 2.1 (qwen21_edit). Loads the
+                        template once (a missing model fails before any shot), then one
+                        LoadImage per reference up to LDS_LOCAL_MAX_REFS
+  comfy_workflows/*.json  API-format ComfyUI graphs (restore, isolate ×2, qwen21 edit,
+                          fibo2 edit)
   comfy_workflows/legacy/ The pre-0.17 Qwen-Image-Edit-2511 + Multiple-Angles graph, kept
                           for anyone who wants it; nothing loads it (see its README)
 ```
@@ -647,6 +651,40 @@ quietly gets someone else's value.
   the reference's aspect ratio). Hard side-light once darkened light hair; soften the setting
   phrase if a set shows it. The model is under the Qwen Research License (non-commercial);
   what users do with their outputs is theirs to decide, the README just names the license.
+- **Fibo 2.0 Edit Turbo is the default local model (0.22.0).** Local A/B on 2026-11-24 (RTX
+  5090, 3 stock subjects, deviser's own photographic shot prompts, seed 1), likeness = ArcFace
+  cosine of the generated face to the reference face (the same photo flipped scores 0.93-0.96,
+  different people under 0.09):
+
+  | Model / setting | Likeness | Angle and scene following | Look |
+  |---|---|---|---|
+  | Qwen-Image 2.1 | 0.739 | Weak: often keeps the reference pose and background | Photo |
+  | **Fibo 2.0 Edit Turbo, 4 MP** | **0.80** | Strong: real 3/4, profile, back, seated full body | Photographic, detailed skin |
+  | Fibo 2.0 Edit Turbo, 1 MP | 0.785 | 3/4 heads on "full profile" | Soft faces |
+  | Fibo 2.0 Dev, 24 steps CFG 5 | 0.81 | Turns the face to camera on back views | Softer; ~4x slower |
+  | MiniMax H3-Image | 0.57-0.63 | Strong | Filmic, identity drifts |
+  | SenseNova U1.6 | 0.40 / 0.22 | Strong | Cartoonish: rejected |
+
+  Samplers (euler 6/8, euler_ancestral, er_sde, res_2s, beta, bong_tangent) all scored
+  0.77-0.80; euler/simple 8 stays because it is core. Citation tokens (`<image_1>`) changed
+  nothing, so the shared plain-English prompts work as they are. `fibo2_edit.json` sizes the
+  output from the first reference's aspect at `LDS_FIBO2_MEGAPIXELS` (GetImageSize + two
+  ComfyMathExpression nodes, multiples of 16) and feeds `ScaleROPE` sqrt(1 / MP): without it
+  Fibo repeats people above ~1 MP. The engine caps megapixels at 4 (higher untested) and picks
+  INT8 "comfy kitchen attention" when ComfyUI's `/system_stats` reports a CUDA device (it is
+  Nvidia/AMD only), else "pytorch attention". The A/B covered photographic subjects only:
+  other mediums and the `match` style on Fibo are untested. **License: CC BY-NC 4.0 (BRIA
+  AI)**, the same non-commercial footing as Qwen's. Qwen-Image 2.1 stays as engine
+  `comfyui-qwen21`. Open items from the A/B:
+  - *Face close-up as a second reference*: a square head crop (about 5x the eye distance)
+    as `images.image_2` raised likeness 0.813 to 0.849 over the 15 face-visible shots and
+    completed seated full-body shots, but pulled full profiles to near 3/4 and turned one back
+    view to camera. Worth it for front, 3/4, low/high, seated and emotion shots, not for
+    profiles or back views. Needs a face detector step deviser does not have.
+  - *Per-shot aspect*: output follows the first reference, so full-body shots from a landscape
+    photo come out small. TextEncodeFibo2 center-crops a single reference to the output size,
+    which could cut the body out; test before adopting.
+  - *Low angle* follows the night scene but reads as eye level; a stronger phrase is untested.
 - **VRAM choreography:** before loading a ~17 GB local captioner, the pipeline asks
   ComfyUI to `/free` its models (best effort) and unloads the in-process SAM3.
 - **ComfyUI queue guard:** if ComfyUI already has >10 pending jobs, the client fails
@@ -780,7 +818,9 @@ quietly gets someone else's value.
   comma-joins, keeps the trigger first, and does **not** inject the character name (identity is
   the trigger). An unknown style value falls back to prose rather than raising. Caveat: the
   backend *instructs* a general VLM to emit tags, so output approximates the vocabulary; a
-  dedicated tagger is needed for a canonical set.
+  dedicated tagger is needed for a canonical set. Since 0.22.0 the prose prompt also forbids
+  stating absences ("no glasses", "not a photo"): a trigger trained on a caption that names a
+  thing learns that thing, negated or not.
 - **Dataset type composes prompts; it never stores per-type templates.** Character returns the
   tuned per-model templates verbatim (byte-identical — the default must not regress). Style and
   Concept instead COMPOSE `prompt_for(style, dataset_type, sparse)` from one *framing* clause
@@ -900,7 +940,8 @@ quietly gets someone else's value.
 - **ComfyUI caches model combo lists**; a freshly downloaded model file may need a ComfyUI
   restart before the bundled workflows validate.
 - **Model filenames are configuration — all of them.** The bundled workflow JSONs are patched at
-  load time from settings (`LDS_QWEN21_MODEL` etc.), so users don't edit JSON to match their
+  load time from settings (`LDS_QWEN21_MODEL`, `LDS_FIBO2_MODEL` etc.; per-template ones in
+  `_TEMPLATE_MODEL_INPUTS`; a bare filename also matches a unique file in a subfolder), so users don't edit JSON to match their
   filenames. `comfy_api._MODEL_INPUTS` is keyed by the loader's *input name*, which is unique per
   class across every bundled template; `UpscaleModelLoader` is the one exception and is mapped
   positionally through `_UPSCALE_SETTINGS`. Anything **not** in that map is a filename the user
@@ -915,23 +956,33 @@ quietly gets someone else's value.
   (often GPU-bound) preprocess pass. `_preflight_comfyui` runs `server_status()` +
   `check_comfyui_models()` at the top instead. Unreachable aborts with the fix and
   "Nothing was preprocessed"; a model-name mismatch only *warns*, because that check covers every
-  bundled template including ones the run may never submit.
+  bundled template including ones the run may never submit. Since 0.22.0
+  `check_comfyui_models(engine)` takes the local engine key and skips the other local model's
+  template; without one (plain `doctor`) a local model's missing files are reported only when
+  neither local model is complete. Quick build's readiness line passes its engine too (before
+  0.22.0 it tested `not ok` on a check that only ever sets `warn`, so it never showed a model
+  problem).
 - **Trainer configs are derived from the dataset, not from constants.** `dataset_stats.inspect()`
   reads image count/dimensions (Pillow header parse only) so training scales with the set and
   buckets come from the images that actually exist. Only config keys attested in each trainer's
   own examples are emitted — inventing plausible keys produces configs that fail hours into a run.
 - **⑤ counts epochs, not steps (0.18.0).** An epoch is the unit you compare: every trainer saves
   one checkpoint and renders one sample set per epoch, so "pick the best checkpoint" means "pick
-  an epoch". Each preset carries `epochs` (16 for ai-toolkit/musubi/kohya, 30–55 for Fizgig per
-  its docs). Plain epochs undertrain a small set (24 images × 16 epochs = 384 steps), so
-  **Repeats = 0 means auto**: `suggested_repeats()` picks the repeats that bring the run near
-  `target_steps` (n × 75, clamped 1000–4000 — the old steps rule, now a target). Fizgig's auto
-  is always 1 — its guidance is more epochs, not repeats. ai-toolkit counts steps, so its YAML
+  an epoch". Each preset carries `epochs` (16 for ai-toolkit/musubi/kohya, 12 for Fizgig Krea 2,
+  30-55 for Fizgig's others per its docs). Plain epochs undertrain a small set (24 images × 16
+  epochs = 384 steps), so **Repeats = 0 means auto**: `suggested_repeats()` picks the repeats
+  that bring the run near `target_steps` (n × 75, clamped 1000-4000 - the old steps rule, now a
+  target). Fizgig aims at `FIZGIG_TARGET_STEPS` (800) instead: its adaptive LR learns a
+  character in 560-890 steps, and the Fizgig Krea 2 preset is rank 32 / alpha 32 at 12 epochs,
+  the recipe that trained a long run of Krea 2 character LoRAs and beat LoKr and Prodigy in an
+  A/B (0.22.0; it was the GUI default, rank 8 at 30 epochs, repeats always 1). Most sets still
+  land on 1 repeat at Fizgig's 30-55 epochs; a 3-image set gets 22. ai-toolkit counts steps, so its YAML
   gets `steps = epochs × steps_per_epoch` and saves/samples every `steps_per_epoch`.
   `exposure()` is the one formula; ⑤'s live exposure line shows it and warns below 400 or above
   6000 total steps.
 - **Every config ships a validation pack (0.18.0).** `write_configs` writes
-  `validation/validation_prompts.txt` (8 fixed prompts per dataset type), `validation.md` (how to
+  `validation/validation_prompts.txt` (8 fixed prompts per dataset type; the character set has a
+  close-profile prompt since 0.22.0), `validation.md` (how to
   pick the epoch, inference settings, held-out photos) and `validation_scores.csv` (a row per
   epoch × prompt), all sampled at `VALIDATION_SEED` so between epochs only the LoRA changes. They
   live in a **subfolder** because every trainer pairs `NN.txt` with `NN.png` in the dataset
@@ -972,6 +1023,15 @@ quietly gets someone else's value.
   an empty policy keeps the tuned templates verbatim. Recorded in metadata.json.
 - **Framing is a Shot field, and coverage counts what was requested (0.19.0).** Two emotions
   became tight face crops and two poses waist-up, so a default plan spans four framing tiers.
+  Since 0.22.0 three close-ups also turn the head (serious: three-quarter, contemplative: right
+  profile, sad: left profile): a full-body turnaround's face is too small to teach a side-view
+  likeness (a synthetic full-body left view scored 0.37 ArcFace in the krea2 pipeline), and a
+  set without close profiles trains a LoRA that draws a profile prompt as a three-quarter view.
+  The character validation pack probes it with a close-profile prompt. The local prompts name
+  the image edge the face points to: "seen directly from the right side" drew the same
+  left-facing profile as the sad shot on Fibo, while "turned toward the right/left edge of the
+  image" gave opposite sides on Fibo and Qwen (live check, two seeds). Both models land between
+  three-quarter and full profile.
   ②'s coverage panel counts the kept shots by framing, turnaround view, expression and outfit
   from the plan's own fields, labelled "requested, not verified" (imported photos count as
   unknown). Dominance is checked on the turnaround views and expressions only, and only for a

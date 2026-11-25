@@ -106,15 +106,23 @@ def test_a_model_name_mismatch_warns_but_does_not_abort(
     """`check_comfyui_models` covers every bundled template, including ones this
     run may never submit — so it must not block a run that would have worked."""
     monkeypatch.setattr(comfy_api, "server_status", _up)
-    monkeypatch.setattr(doctor, "check_comfyui_models",
-                        lambda: doctor.Check("ComfyUI models", True,
-                                             "qwen21_edit: no such vae_name", warn=True))
+    seen: dict = {}
+
+    def check(engine: str = "") -> doctor.Check:
+        seen["engine"] = engine
+        return doctor.Check("ComfyUI models", True, "fibo2_edit: no such vae_name", warn=True)
+
+    monkeypatch.setattr(doctor, "check_comfyui_models", check)
 
     cli._preflight_comfyui("comfyui")  # must not raise
 
     err = capsys.readouterr().err
     assert "no such vae_name" in err
     assert "docs/comfyui-setup.md" in err
+    # The check is told which local model this run uses.
+    assert seen["engine"] == "comfyui"
+    cli._preflight_comfyui("comfyui-qwen21")
+    assert seen["engine"] == "comfyui-qwen21"
 
 
 def test_a_clean_model_check_says_nothing(
@@ -122,7 +130,7 @@ def test_a_clean_model_check_says_nothing(
 ) -> None:
     monkeypatch.setattr(comfy_api, "server_status", _up)
     monkeypatch.setattr(doctor, "check_comfyui_models",
-                        lambda: doctor.Check("ComfyUI models", True, "all found"))
+                        lambda *_: doctor.Check("ComfyUI models", True, "all found"))
 
     cli._preflight_comfyui("comfyui")
 

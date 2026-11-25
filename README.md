@@ -55,7 +55,7 @@ step auto-fills the next) or jump straight to the one you need.
 |---|---|---|
 | ① Restore / upscale | ComfyUI models, or basic Lanczos | — |
 | ① Subject isolation | **Built-in SAM3** (no ComfyUI) or ComfyUI SAM3 | — |
-| ② Generate shots *(character + concept)* | ComfyUI: Qwen-Image 2.1 *(Qwen Research License)* | Gemini (Nano Banana) |
+| ② Generate shots *(character + concept)* | ComfyUI: Fibo 2.0 Edit Turbo *(CC BY-NC 4.0)* or Qwen-Image 2.1 *(Qwen Research License)* | Gemini (Nano Banana) |
 | ③ Caption | Qwen3-VL-8B, JoyCaption, NSFW finetune, **WD + e621 taggers**, LM Studio / Ollama / any OpenAI endpoint | Gemini Flash, Groq free tier |
 | ④ Export | always local (+ optional **.zip** and **Hugging Face** publish) | — |
 | ⑤ Train config | ai-toolkit (incl. SDXL) / **kohya sd-scripts** / musubi-tuner / **Fizgig** | — |

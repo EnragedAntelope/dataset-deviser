@@ -51,6 +51,27 @@ def test_server_filename_case_insensitive_fallback(monkeypatch: pytest.MonkeyPat
     assert result == "Qwen/Model.safetensors"
 
 
+def test_server_filename_finds_a_bare_name_filed_in_a_subfolder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The setting says fibo2_edit_turbo_bf16.safetensors, the user put it in fibo/."""
+    payload = _combo_payload("UNETLoader", "unet_name",
+                             ["fibo\\fibo2_edit_turbo_bf16.safetensors", "other.safetensors"])
+    monkeypatch.setattr(comfy_api.httpx, "get", lambda *a, **k: _FakeResponse(payload))
+
+    assert comfy_api._server_filename(
+        "UNETLoader", "unet_name", "fibo2_edit_turbo_bf16.safetensors", "fibo2_model"
+    ) == "fibo\\fibo2_edit_turbo_bf16.safetensors"
+
+
+def test_server_filename_refuses_an_ambiguous_bare_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = _combo_payload("UNETLoader", "unet_name", ["a/m.safetensors", "b/m.safetensors"])
+    monkeypatch.setattr(comfy_api.httpx, "get", lambda *a, **k: _FakeResponse(payload))
+
+    with pytest.raises(comfy_api.ComfyError, match="LDS_FIBO2_MODEL"):
+        comfy_api._server_filename("UNETLoader", "unet_name", "m.safetensors", "fibo2_model")
+
+
 def test_server_filename_raises_with_hint_on_unknown_value(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -163,5 +184,7 @@ def test_every_model_setting_is_a_real_setting() -> None:
     raise AttributeError only once a user actually ran that template."""
     from studio.config import settings
 
-    for attr in list(comfy_api._MODEL_INPUTS.values()) + list(comfy_api._UPSCALE_SETTINGS):
+    overrides = [a for m in comfy_api._TEMPLATE_MODEL_INPUTS.values() for a in m.values()]
+    for attr in (list(comfy_api._MODEL_INPUTS.values()) + overrides
+                 + list(comfy_api._UPSCALE_SETTINGS)):
         assert isinstance(getattr(settings, attr), str), f"settings.{attr} is missing"

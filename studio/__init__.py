@@ -1,6 +1,6 @@
 """Dataset Deviser: turn a character, style, or concept into a ready-to-train LoRA dataset."""
 
-__version__ = "0.21.0"
+__version__ = "0.22.0"
 
 # Decode only the formats config.IMAGE_EXTS accepts. Pillow content-sniffs, so a
 # ".png" that is really EPS/PDF/JPEG2000/... would otherwise reach decoders with

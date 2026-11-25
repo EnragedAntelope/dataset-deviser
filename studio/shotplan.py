@@ -66,7 +66,10 @@ _FRAMING = {"pose-arms-raised": "waist-up", "pose-looking-back": "waist-up",
 #   two are the same generic standing shot.
 # - 8 poses: each pose is paired with a setting and emotion; lighting is part
 #   of the setting rather than a separate repeated pose.
-# - 7 emotions: close-up expression shots with varied angles and settings.
+# - 7 emotions: close-up expression shots with varied angles and settings. Two
+#   are full profiles and one a three-quarter view: in the full-body turnaround
+#   the face is too small to teach a side-view likeness, and a set without close
+#   profiles trains a LoRA that turns a profile prompt back toward the camera.
 # - Framing tiers: two poses are waist-up and two close-ups are tight face crops
 #   (see _FRAMING), so the set isn't only full body plus one close-up distance.
 # - Total: 24 shots (down from 28) while improving per-shot diversity.
@@ -242,8 +245,8 @@ _SHOTS = [
     (
         "serious",
         "emotion",
-        "a close-up of the face and upper shoulders, with a stern, serious expression and a furrowed brow",
-        "a close-up of the face and upper shoulders, serious expression",
+        "a close-up of the head and shoulders in a three-quarter view, the face turned partly away from the camera, with a stern, serious expression and a furrowed brow",
+        "a close-up of the head and shoulders from a three-quarter angle, serious expression",
         "",
         "serious",
         "lit by dramatic hard side lighting against a dark background",
@@ -269,8 +272,8 @@ _SHOTS = [
     (
         "contemplative",
         "emotion",
-        "a close-up of the face and upper shoulders, with a thoughtful, distant gaze",
-        "a close-up of the face and upper shoulders, contemplative gaze",
+        "a close-up of the head and shoulders in full profile, the face turned toward the right edge of the image, with a thoughtful, distant gaze",
+        "a close-up of the head and shoulders seen from the right side in full profile, contemplative gaze",
         "",
         "contemplative",
         "outdoors at night under cool moonlight",
@@ -287,8 +290,8 @@ _SHOTS = [
     (
         "sad",
         "emotion",
-        "a close-up of the face and upper shoulders, with a sad, downcast expression and glistening eyes",
-        "a close-up of the face and upper shoulders, sad expression",
+        "a close-up of the head and shoulders in full profile, the face turned toward the left edge of the image, with a sad, downcast expression",
+        "a close-up of the head and shoulders seen from the left side in full profile, sad expression",
         "",
         "sad",
         "in a warmly lit interior room",
