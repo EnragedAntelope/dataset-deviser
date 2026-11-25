@@ -1027,7 +1027,11 @@ quietly gets someone else's value.
   profile, sad: left profile): a full-body turnaround's face is too small to teach a side-view
   likeness (a synthetic full-body left view scored 0.37 ArcFace in the krea2 pipeline), and a
   set without close profiles trains a LoRA that draws a profile prompt as a three-quarter view.
-  The character validation pack probes it with a close-profile prompt.
+  The character validation pack probes it with a close-profile prompt. The local prompts name
+  the image edge the face points to: "seen directly from the right side" drew the same
+  left-facing profile as the sad shot on Fibo, while "turned toward the right/left edge of the
+  image" gave opposite sides on Fibo and Qwen (live check, two seeds). Both models land between
+  three-quarter and full profile.
   ②'s coverage panel counts the kept shots by framing, turnaround view, expression and outfit
   from the plan's own fields, labelled "requested, not verified" (imported photos count as
   unknown). Dominance is checked on the turnaround views and expressions only, and only for a

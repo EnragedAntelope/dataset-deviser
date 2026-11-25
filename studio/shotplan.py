@@ -272,7 +272,7 @@ _SHOTS = [
     (
         "contemplative",
         "emotion",
-        "a close-up of the head and shoulders seen directly from the right side in full profile, with a thoughtful, distant gaze",
+        "a close-up of the head and shoulders in full profile, the face turned toward the right edge of the image, with a thoughtful, distant gaze",
         "a close-up of the head and shoulders seen from the right side in full profile, contemplative gaze",
         "",
         "contemplative",
