@@ -11,11 +11,23 @@ from pathlib import Path
 import pytest
 
 from studio.hf_publish import (
+    LOCAL_ONLY,
     HFPublishError,
     normalize_repo_id,
     publish_dataset,
     resolve_token,
 )
+
+
+def test_files_with_local_paths_stay_off_the_hub() -> None:
+    # Matched by huggingface_hub's own filter, the one upload_folder applies.
+    from huggingface_hub.utils import filter_repo_objects
+
+    files = ["01.png", "01.txt", "metadata.jsonl", "README.txt", "metadata.json",
+             "ai-toolkit.yaml", "dataset.toml", "validation/validation.md",
+             ".lora-studio/ratings.json"]
+    kept = list(filter_repo_objects(files, ignore_patterns=LOCAL_ONLY))
+    assert kept == ["01.png", "01.txt", "metadata.jsonl", "README.txt"]
 
 
 def test_normalize_repo_id_trims_and_accepts_valid() -> None:

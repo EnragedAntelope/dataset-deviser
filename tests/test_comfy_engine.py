@@ -104,6 +104,24 @@ def test_a_dead_comfyui_fails_the_shot_not_the_run(
         ComfyUIEngine().generate(_src(tmp_path), default_plan()[0], tmp_path / "o.png", seed=1)
 
 
+def test_a_timeout_is_not_retried(
+    offline: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A timed-out job may still be running in ComfyUI; retrying queues it twice."""
+    calls = []
+
+    def slow(*_: object, **__: object) -> None:
+        calls.append(1)
+        raise comfy_api.ComfyTimeout("ComfyUI did not finish within 600s")
+
+    monkeypatch.setattr(comfy_api, "upload_image", lambda path: "uploaded.png")
+    monkeypatch.setattr(comfy_api, "run_prompt", slow)
+
+    with pytest.raises(GenerationError, match="did not finish"):
+        ComfyUIEngine().generate(_src(tmp_path), default_plan()[0], tmp_path / "o.png", seed=1)
+    assert len(calls) == 1
+
+
 def test_generate_shots_keeps_going_when_comfyui_dies(
     offline: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

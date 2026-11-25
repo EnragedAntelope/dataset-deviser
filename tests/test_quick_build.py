@@ -132,3 +132,22 @@ def test_finish_uses_the_saved_custom_endpoint(
                               captioner="custom", output_root=tmp_path)
     assert seen["spec_overrides"]["base_url"] == "http://127.0.0.1:1/v1"
     assert seen["model_override"] == "m"
+
+
+def test_finish_keeps_paid_captions_when_captioning_fails(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Before 0.22.1 a mid-batch failure in Finish/`cli build` discarded every caption.
+    from studio import captioner
+
+    start = _start(tmp_path)
+    images = start.prepped
+
+    def half_then_503(imgs, key, *a, on_item=None, **kw):
+        on_item(imgs[0], "ann, standing")
+        raise RuntimeError("503 unavailable")
+
+    monkeypatch.setattr(captioner, "caption_images", half_then_503)
+    with pytest.raises(RuntimeError, match=r"1 of 2 images \(503 unavailable\)"):
+        pipeline.build_finish(start, images, name="Ann", trigger="ann",
+                              captioner="gemini-flash", output_root=tmp_path / "out")
+    assert images[0].with_suffix(".txt").read_text(encoding="utf-8") == "ann, standing"
